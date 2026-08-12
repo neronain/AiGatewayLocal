@@ -336,3 +336,11 @@ nav button[aria-selected="true"] .ti { opacity: 1; }
 .fit li.warning::marker { color: var(--warn); }
 .fit li.blocker::marker { color: var(--bad); }
 .fit li.blocker { color: var(--fg); }
+
+/* A row where one field grows and the buttons stay their own size. `.row` is a
+   grid of equal columns, which is right for form fields and wrong the moment a
+   button joins them - the button gets a whole column and looks like the primary
+   action on the page. */
+.form-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.form-row .field { flex: 1 1 200px; margin: 0; }
+.form-row button { flex: 0 0 auto; }

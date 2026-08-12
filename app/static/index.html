@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.8.1">
+<link rel="stylesheet" href="style.css?v=1.8.2">
 </head>
 <body>
 
@@ -328,12 +328,12 @@
         the asker&#39;s permissions and spends the asker&#39;s quota.
         <span class="th">โมเดลที่ตอบในกล่องแชท — ใช้สิทธิ์และโควตาของคนถามเหมือน request ปกติ</span>
       </p>
-      <div class="row" style="margin-top:14px;align-items:flex-end">
-        <div class="field" style="flex:1">
+      <div class="form-row" style="margin-top:14px">
+        <div class="field">
           <label for="as-model">Model</label>
           <select id="as-model"></select>
         </div>
-        <button id="as-save" class="primary" style="flex:none">Save</button>
+        <button id="as-save" class="primary">Save</button>
       </div>
       <p id="as-current" class="hint" style="margin-top:10px"></p>
     </div>
@@ -346,17 +346,17 @@
         paste somewhere else. Leave it empty and everything works as before.
         <span class="th">ไม่บังคับ — ต่อ LMDS แล้วผลตรวจจะมีปุ่มสั่งแก้ให้เลย ไม่ต้องไปพิมพ์คำสั่งเอง</span>
       </p>
-      <div class="row" style="margin-top:14px;align-items:flex-end">
-        <div class="field" style="flex:2">
+      <div class="form-row" style="margin-top:14px">
+        <div class="field" style="flex:2 1 260px">
           <label for="lm-url">Base URL</label>
           <input id="lm-url" placeholder="http://192.168.1.92:8600" autocomplete="off">
         </div>
-        <div class="field" style="flex:1">
+        <div class="field">
           <label for="lm-token">Token</label>
           <input id="lm-token" type="password" placeholder="leave blank to keep" autocomplete="off">
         </div>
-        <button id="lm-save" class="primary" style="flex:none">Save</button>
-        <button id="lm-test" class="ghost" style="flex:none">Test</button>
+        <button id="lm-save" class="primary">Save</button>
+        <button id="lm-test" class="ghost">Test</button>
       </div>
       <p id="lm-state" class="hint" style="margin-top:10px"></p>
     </div>
@@ -519,6 +519,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.8.1"></script>
+<script src="app.js?v=1.8.2"></script>
 </body>
 </html>
