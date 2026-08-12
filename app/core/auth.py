@@ -66,6 +66,10 @@ class Principal:
     api_key_id: str
     workspace_id: str | None
     scopes: list[str]
+    # "key" for a program, "session" for a signed-in human. Self-service actions
+    # that mint credentials require a session: a leaked key must not be able to
+    # mint more keys for itself.
+    via: str = "key"
 
     @property
     def is_admin(self) -> bool:
@@ -104,7 +108,15 @@ async def authenticate(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> Principal:
-    """FastAPI dependency: resolve the caller or raise a GatewayError."""
+    """Resolve the caller from an API key or a console session.
+
+    Programs send a key; the console sends a cookie. Both end up as the same
+    Principal, so every route downstream is written once.
+    """
+    from_session = await _principal_from_session(request, session)
+    if from_session is not None:
+        return from_session
+
     token = extract_bearer_token(request)
     digest = hash_api_key(token)
 
@@ -142,6 +154,41 @@ async def authenticate(
         api_key_id=api_key.id,
         workspace_id=api_key.workspace_id,
         scopes=list(api_key.scopes or []),
+        via="key",
+    )
+
+
+
+async def _principal_from_session(
+    request: Request, session: AsyncSession
+) -> Principal | None:
+    """The browser's cookie, if it carries a session this server still honours."""
+    from app.core.passwords import SESSION_COOKIE, read_session
+
+    raw = request.cookies.get(SESSION_COOKIE)
+    if not raw:
+        return None
+    payload = read_session(raw)
+    if payload is None:
+        return None
+
+    user = await session.get(User, payload.get("sub"))
+    if user is None or user.status != "active":
+        return None
+    # A password change bumps session_epoch, which retires every token issued
+    # before it without needing a session table.
+    if int(payload.get("epoch", -1)) != int(user.session_epoch or 0):
+        return None
+
+    return Principal(
+        user_id=user.id,
+        external_id=user.external_id,
+        role=normalise_role(user.role),
+        display_name=user.display_name,
+        api_key_id="",
+        workspace_id=None,
+        scopes=[],
+        via="session",
     )
 
 

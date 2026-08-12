@@ -7,24 +7,23 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.4.0">
+<link rel="stylesheet" href="style.css?v=1.5.1">
 </head>
 <body>
 
 <header>
   <div class="wrap">
     <div class="bar">
-      <h1>EDULLM GATEWAY</h1>
+      <h1>LITEGATE</h1>
       <span class="sub" id="whoami">not connected</span>
       <span class="spacer"></span>
-      <input id="key" type="password" placeholder="API key (edu_sk_...)"
-             autocomplete="off" style="max-width:320px">
-      <button id="connect" class="primary">Connect</button>
       <button id="refresh" class="ghost">Refresh</button>
+      <button id="signout" class="ghost" hidden>Sign out</button>
       <button id="theme" class="ghost" title="Switch theme">◐</button>
     </div>
     <nav id="tabs" role="tablist">
       <button data-tab="dashboard" role="tab" aria-selected="true">Dashboard</button>
+      <button data-tab="account"   role="tab" aria-selected="false">My account</button>
       <button data-tab="models"    role="tab" aria-selected="false" data-admin>Models</button>
       <button data-tab="access"    role="tab" aria-selected="false" data-staff>Access &amp; Keys</button>
       <button data-tab="quota"     role="tab" aria-selected="false" data-staff>Quota</button>
@@ -34,6 +33,76 @@
 
 <main>
   <div id="error"></div>
+
+  <!-- ================= Sign in / first-run setup ================= -->
+  <section id="tab-signin" hidden>
+    <div class="card" style="max-width:420px;margin:40px auto">
+      <h3 id="signin-title">Sign in</h3>
+      <p class="hint" id="signin-hint">Use the account your administrator gave you.</p>
+      <div class="field" style="margin-top:14px">
+        <label for="username">Username</label>
+        <input id="username" autocomplete="username">
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password">
+      </div>
+      <div class="field" id="display-name-field" hidden>
+        <label for="display-name">Display name</label>
+        <input id="display-name" autocomplete="name">
+      </div>
+      <button id="signin" class="primary">Sign in</button>
+      <span class="sub" id="signin-status"></span>
+      <p class="hint" style="margin-top:14px">
+        API keys live under <strong>My account</strong> once you are in. A key is
+        for programs &mdash; the SDK, Claude Code &mdash; not for signing in here.
+      </p>
+    </div>
+  </section>
+
+  <!-- ================= My account ================= -->
+  <section id="tab-account" class="stack" hidden>
+    <div>
+      <h2>My quota</h2>
+      <div class="scroll"><table id="my-quota"></table></div>
+    </div>
+
+    <div>
+      <h2>Models I can use</h2>
+      <div id="my-models"></div>
+    </div>
+
+    <div>
+      <div class="bar" style="margin-bottom:12px">
+        <h2 style="margin:0;flex:1">My API keys</h2>
+        <span class="sub" id="key-count"></span>
+        <button id="new-key" class="primary">+ New key</button>
+      </div>
+      <p class="hint" style="margin:-6px 0 10px">
+        One key per machine or project, so losing a laptop costs you one key
+        rather than all of them. A key is shown once and stored only as a hash.
+      </p>
+      <div id="new-key-out"></div>
+      <div class="scroll"><table id="my-keys"></table></div>
+    </div>
+
+    <div class="card">
+      <h3>Change password</h3>
+      <p class="hint">Changing it signs out every other session.</p>
+      <div class="row" style="margin-top:12px">
+        <div class="field">
+          <label for="pw-current">Current password</label>
+          <input id="pw-current" type="password" autocomplete="current-password">
+        </div>
+        <div class="field">
+          <label for="pw-new">New password</label>
+          <input id="pw-new" type="password" autocomplete="new-password">
+        </div>
+      </div>
+      <button id="change-password">Change password</button>
+      <span class="sub" id="pw-status"></span>
+    </div>
+  </section>
 
   <!-- ================= Dashboard ================= -->
   <section id="tab-dashboard" class="stack">
@@ -372,6 +441,6 @@
   </div>
 </template>
 
-<script src="app.js?v=1.4.0"></script>
+<script src="app.js?v=1.5.1"></script>
 </body>
 </html>

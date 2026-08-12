@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     # "a,b" - or an empty value - would fail to parse as list[str].
     cors_origins: str = ""
     bootstrap_admin_key: str = ""
+    # First administrator, created on an empty database so nobody has to dig a
+    # token out of the log to get in. Password is generated when unset.
+    admin_user: str = "admin"
+    admin_password: str = ""
+    # Keys a member may hold at once. Keys are what nobody cleans up; a list
+    # that grows without bound is one nobody can audit.
+    max_keys_per_member: int = 5
 
     # Storage
     database_url: str = "sqlite+aiosqlite:///./data/gateway.db"

@@ -79,6 +79,39 @@ Compose, native systemd, and a no-GPU staging path.
 
 ---
 
+## Accounts and keys
+
+Two credentials, two audiences — the distinction that keeps production keys out
+of browsers:
+
+| | API key (`lg_sk_...`) | Console sign-in |
+|---|---|---|
+| Authenticates | a **program** — SDK, Claude Code, curl | a **person** in a browser |
+| Lives in | a config file or `.env` | the operator's head |
+| Lifetime | long (default 180 days) | 8 hours |
+| How many | several — one per machine or project | one session |
+| If it leaks | revoke that key; other work is unaffected | sign out, change password |
+
+On first start the console asks for a username and password rather than a token,
+and creates the first administrator. Set `GW_ADMIN_USER` / `GW_ADMIN_PASSWORD` to
+choose them; otherwise a password is generated and printed once.
+
+### What each role can do
+
+| | member | manager | admin |
+|---|---|---|---|
+| See the models they may use, and their own quota | ✅ | ✅ | ✅ |
+| Issue, name and revoke **their own** API keys | ✅ | ✅ | ✅ |
+| Manage people in their workspace, issue keys for them | — | ✅ | ✅ |
+| Choose which models a workspace may use | — | ✅ | ✅ |
+| Set workspace quota, read workspace usage | — | ✅ | ✅ |
+| Add, edit or delete models in the registry | — | — | ✅ |
+| Verify backends, run the model test suite, reload the registry | — | — | ✅ |
+
+The line is deliberate: **a manager decides who may use what; an admin decides
+what exists.** Adding a model touches GPUs and machine configuration, which is
+not a people-management decision.
+
 ## For members
 
 **Python**

@@ -67,6 +67,16 @@ class User(Base, TimestampMixin):
     role: Mapped[str] = mapped_column(String(32), default="member")  # member|manager|admin
     status: Mapped[str] = mapped_column(String(32), default="active")  # active|suspended
 
+    # Console sign-in. Separate from API keys on purpose: a key is a credential
+    # for a program and belongs in a config file, a password is a credential for
+    # a person and belongs in their head. Using one for the other is how people
+    # end up pasting a production key into a browser.
+    password_hash: Mapped[str] = mapped_column(String(255), default="")
+    # Bumped whenever the password changes, and carried inside every session
+    # token, so changing a password signs every existing session out.
+    session_epoch: Mapped[int] = mapped_column(Integer, default=0)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
+
     api_keys: Mapped[list[ApiKey]] = relationship(back_populates="user")
     memberships: Mapped[list[Membership]] = relationship(back_populates="user")
 

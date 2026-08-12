@@ -2,10 +2,12 @@
    Plain browser JS: the page must run from a static mount with no build step
    and no network access beyond the gateway itself. */
 
-const KEY_STORE = 'litegate_key';
 const THEME_STORE = 'litegate_theme';
 const $ = (id) => document.getElementById(id);
-const state = { key: sessionStorage.getItem(KEY_STORE) || '', me: null, cache: {} };
+// The console authenticates with a session cookie, set by signing in. It never
+// holds an API key: a key is a credential for a program, and asking a person to
+// paste one into a browser is how production keys end up in shell history.
+const state = { me: null, cache: {} };
 
 /* ---------------------------------------------------------------- theme */
 (function initTheme() {
@@ -44,8 +46,8 @@ function flash(el, kind, message) {
 async function api(path, options = {}) {
   const response = await fetch(path, {
     ...options,
+    credentials: 'same-origin',
     headers: {
-      Authorization: `Bearer ${state.key}`,
       ...(options.body ? { 'Content-Type': 'application/json' } : {}),
       ...(options.headers || {}),
     },
@@ -87,7 +89,7 @@ function showTab(name) {
   for (const sec of document.querySelectorAll('main > section')) {
     sec.hidden = sec.id !== `tab-${name}`;
   }
-  const loaders = { models: loadModels, access: loadAccess, quota: loadQuota };
+  const loaders = { account: loadAccount, models: loadModels, access: loadAccess, quota: loadQuota };
   if (loaders[name]) loaders[name]().catch((e) => showError(e.message));
 }
 for (const btn of document.querySelectorAll('#tabs button')) {
@@ -107,6 +109,10 @@ function applyRole(role) {
 
 /* ------------------------------------------------------------ dashboard */
 function renderQuota(me) {
+  renderQuotaInto('quota', me);
+}
+
+function renderQuotaInto(target, me) {
   const { used, limits } = me.quota;
   const row = (label, u, limit) => {
     const pct = limit ? Math.min(100, Math.round((u / limit) * 100)) : 0;
@@ -115,7 +121,7 @@ function renderQuota(me) {
       <td class="num">${limit ? num(limit) : 'unlimited'}</td>
       <td><span class="pill ${cls}">${limit ? pct + '%' : 'n/a'}</span></td></tr>`;
   };
-  $('quota').innerHTML = `
+  $(target).innerHTML = `
     <tr><th>Resource</th><th class="num">Used</th><th class="num">Limit</th><th>Status</th></tr>
     ${row('Requests', used.requests, limits.max_requests)}
     ${row('Input tokens', used.input_tokens, limits.max_input_tokens)}
@@ -767,36 +773,151 @@ $('create-quota').onclick = async () => {
   } catch (e) { showError(e.message); }
 };
 
+/* -------------------------------------------------------- my account */
+async function loadAccount() {
+  const [me, keys, catalog] = await Promise.all([
+    api('/v1/me'), api('/v1/me/api-keys'), api('/v1/catalog'),
+  ]);
+  state.me = me;
+  renderQuotaInto('my-quota', me);
+
+  $('key-count').textContent = `${keys.active} of ${keys.limit} active`;
+  $('new-key').disabled = keys.active >= keys.limit;
+
+  $('my-keys').innerHTML = `
+    <tr><th>Name</th><th>Prefix</th><th>Created</th><th>Expires</th>
+        <th>Last used</th><th>State</th><th></th></tr>
+    ${keys.data.map((k) => `<tr>
+      <td>${esc(k.name || '—')}</td>
+      <td><code>${esc(k.key_prefix)}…</code></td>
+      <td class="hint">${k.created_at ? new Date(k.created_at).toLocaleDateString() : '—'}</td>
+      <td class="hint">${k.expires_at ? new Date(k.expires_at).toLocaleDateString() : 'never'}</td>
+      <td class="hint">${k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'never'}</td>
+      <td><span class="pill ${k.revoked ? 'err' : 'ok'}">${k.revoked ? 'revoked' : 'active'}</span></td>
+      <td>${k.revoked ? '' : `<button class="danger small" data-revoke-mine="${esc(k.id)}">Revoke</button>`}</td>
+    </tr>`).join('') || '<tr><td class="empty">No keys yet. Create one to use the API.</td></tr>'}`;
+
+  for (const btn of $('my-keys').querySelectorAll('[data-revoke-mine]')) {
+    btn.onclick = async () => {
+      if (!confirm('Revoke this key? Anything using it stops working immediately.')) return;
+      try { await del(`/v1/me/api-keys/${btn.dataset.revokeMine}`); await loadAccount(); }
+      catch (e) { showError(e.message); }
+    };
+  }
+
+  const models = catalog.sections.flatMap((section) => section.models);
+  $('my-models').innerHTML = models.length ? `<div class="grid">
+    ${models.map((m) => `<div class="card">
+      <h3>${esc(m.name)}</h3>
+      <div class="mono" style="color:var(--fg3)">${esc(m.id)}</div>
+      <div class="badges">${m.badges.map((b) => `<span class="badge">${esc(b)}</span>`).join('')}</div>
+      <div class="sub">${esc(m.context)}${m.claude_code_ready ? ' · <span class="pill ok">Claude Code Ready</span>' : ''}</div>
+    </div>`).join('')}</div>`
+    : '<div class="empty">No models are enabled for you yet. Ask your manager.</div>';
+}
+
+$('new-key').onclick = async () => {
+  const name = prompt('What is this key for? (e.g. laptop, CI, Claude Code)');
+  if (name === null) return;
+  try {
+    const created = await post('/v1/me/api-keys', { name: name.trim() });
+    $('new-key-out').innerHTML = `<div class="secret">
+      <strong>Store this key now — it cannot be retrieved again.</strong>
+      <code class="mono">${esc(created.api_key)}</code>
+      <button class="ghost small" id="copy-new-key">Copy</button></div>`;
+    $('copy-new-key').onclick = () => navigator.clipboard.writeText(created.api_key);
+    await loadAccount();
+  } catch (e) { showError(e.message); }
+};
+
+$('change-password').onclick = async () => {
+  flash('pw-status', '', 'changing…');
+  try {
+    await post('/auth/password', {
+      current_password: $('pw-current').value,
+      new_password: $('pw-new').value,
+    });
+    $('pw-current').value = ''; $('pw-new').value = '';
+    flash('pw-status', 'ok', 'changed — other sessions signed out');
+  } catch (e) { flash('pw-status', 'err', e.message); }
+};
+
+/* ------------------------------------------------------------- sign in */
+function showSignIn(needsSetup) {
+  for (const sec of document.querySelectorAll('main > section')) sec.hidden = true;
+  $('tab-signin').hidden = false;
+  document.querySelector('#tabs').hidden = true;
+  $('signout').hidden = true;
+  $('whoami').textContent = needsSetup ? 'first-run setup' : 'not signed in';
+  $('signin-title').textContent = needsSetup ? 'Create the first administrator' : 'Sign in';
+  $('signin-hint').textContent = needsSetup
+    ? 'This instance has no accounts yet. The account you create here is the administrator.'
+    : 'Use the account your administrator gave you.';
+  $('signin').textContent = needsSetup ? 'Create administrator' : 'Sign in';
+  $('display-name-field').hidden = !needsSetup;
+  state.needsSetup = needsSetup;
+}
+
+$('signin').onclick = async () => {
+  flash('signin-status', '', 'checking…');
+  const body = {
+    username: $('username').value.trim(),
+    password: $('password').value,
+  };
+  if (state.needsSetup) body.display_name = $('display-name').value.trim();
+  try {
+    await post(state.needsSetup ? '/auth/setup' : '/auth/login', body);
+    $('password').value = '';
+    flash('signin-status', '', '');
+    document.querySelector('#tabs').hidden = false;
+    await load();
+    showTab('dashboard');
+  } catch (e) {
+    flash('signin-status', 'err', e.message.replace(/^[A-Z_]+: /, ''));
+  }
+};
+for (const id of ['username', 'password']) {
+  $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') $('signin').click(); });
+}
+
+$('signout').onclick = async () => {
+  try { await post('/auth/logout'); } catch { /* signing out locally regardless */ }
+  state.me = null;
+  showSignIn(false);
+};
+
 /* ----------------------------------------------------------------- boot */
 async function load() {
-  if (!state.key) { showError('Enter an API key to connect.'); return; }
   showError('');
-  try {
-    const me = await api('/v1/me');
-    state.me = me;
-    $('whoami').textContent = `${me.display_name || me.external_id} · ${me.role}`;
-    applyRole(me.role);
-    renderQuota(me);
-    renderCatalog(await api('/v1/catalog'));
-    if (me.role === 'admin') renderHealth((await api('/v1/health/endpoints')).data);
-    if (me.role === 'admin' || me.role === 'manager') {
-      renderUsage(await api('/admin/usage/summary?days=7'));
-    }
-  } catch (err) {
-    showError(err.message);
-    $('whoami').textContent = 'not connected';
+  const me = await api('/v1/me');
+  state.me = me;
+  $('whoami').textContent = `${me.display_name || me.external_id} · ${me.role}`;
+  $('signout').hidden = false;
+  applyRole(me.role);
+  renderQuota(me);
+  renderCatalog(await api('/v1/catalog'));
+  if (me.role === 'admin') renderHealth((await api('/v1/health/endpoints')).data);
+  if (me.role === 'admin' || me.role === 'manager') {
+    renderUsage(await api('/admin/usage/summary?days=7'));
   }
 }
 
-$('connect').onclick = () => {
-  state.key = $('key').value.trim();
-  try { sessionStorage.setItem(KEY_STORE, state.key); } catch { /* private mode */ }
-  load();
-};
 $('refresh').onclick = () => {
   const active = document.querySelector('#tabs button[aria-selected="true"]');
-  load().then(() => { if (active && active.dataset.tab !== 'dashboard') showTab(active.dataset.tab); });
+  load()
+    .then(() => { if (active && active.dataset.tab !== 'dashboard') showTab(active.dataset.tab); })
+    .catch((e) => showError(e.message));
 };
-$('key').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('connect').click(); });
 
-if (state.key) { $('key').value = state.key; load(); }
+(async function boot() {
+  try {
+    const status = await api('/auth/status');
+    if (!status.session) { showSignIn(status.needs_setup); return; }
+    document.querySelector('#tabs').hidden = false;
+    await load();
+    showTab('dashboard');
+  } catch (e) {
+    showSignIn(false);
+    flash('signin-status', 'err', e.message);
+  }
+})();

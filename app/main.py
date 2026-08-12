@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -16,7 +17,7 @@ from prometheus_client import Counter, Gauge, Histogram
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.api import admin, anthropic, catalog, health, openai
+from app.api import admin, anthropic, auth, catalog, health, openai
 from app.config import get_settings
 from app.core.auth import generate_api_key
 from app.core.errors import ErrorCode, GatewayError
@@ -66,10 +67,13 @@ def _configure_logging(level: str) -> None:
 
 
 async def _bootstrap_admin(app: FastAPI) -> None:
-    """Create the first admin on an empty database so the system is usable.
+    """Create the first administrator on an empty database.
 
-    Uses GW_BOOTSTRAP_ADMIN_KEY when provided; otherwise generates one and logs
-    it exactly once. In production, set the env var and rotate after first use.
+    Gives that account a console password as well as an API key, so a new
+    deployment can be signed into with a username and password instead of
+    someone pasting a key out of the log into a browser. Set GW_ADMIN_USER and
+    GW_ADMIN_PASSWORD to choose them; otherwise a password is generated and
+    printed once.
     """
     settings = get_settings()
     try:
@@ -78,10 +82,17 @@ async def _bootstrap_admin(app: FastAPI) -> None:
             if existing.scalars().first() is not None:
                 return
 
+            from app.core.passwords import hash_password
+
+            password = settings.admin_password or secrets.token_urlsafe(12)
             admin_user = User(
-                external_id="bootstrap-admin",
-                display_name="Bootstrap Administrator",
+                external_id=settings.admin_user or "admin",
+                display_name="Administrator",
                 role="admin",
+                password_hash=hash_password(password),
+                # Generated passwords must be replaced; a chosen one is the
+                # operator's own decision.
+                must_change_password=not settings.admin_password,
             )
             session.add(admin_user)
             await session.flush()
@@ -111,6 +122,13 @@ async def _bootstrap_admin(app: FastAPI) -> None:
         return
 
     rule = "=" * 72
+    log.warning(
+        "\n%s\nCONSOLE SIGN-IN (shown once)\n  username: %s\n  password: %s\n%s",
+        rule,
+        settings.admin_user or "admin",
+        "(the one you set in GW_ADMIN_PASSWORD)" if settings.admin_password else password,
+        rule,
+    )
     log.warning(
         "\n%s\nBOOTSTRAP ADMIN KEY (shown once): %s\n"
         "Store it now, then create real admin accounts and revoke this key.\n%s",
@@ -244,6 +262,7 @@ def create_app() -> FastAPI:
         )
         return JSONResponse(status_code=500, content=error.to_openai(request_id))
 
+    app.include_router(auth.router)
     app.include_router(health.router)
     app.include_router(openai.router)
     app.include_router(anthropic.router)

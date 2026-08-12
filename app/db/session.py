@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import InternalError, OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -91,6 +91,7 @@ async def init_db(attempts: int = 5) -> None:
         try:
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all, checkfirst=True)
+            await _add_missing_columns(engine)
             log.info("database ready: %s", get_settings().database_url.split("@")[-1])
             return
         except (OperationalError, ProgrammingError, InternalError) as exc:
@@ -106,6 +107,53 @@ async def init_db(attempts: int = 5) -> None:
         f"could not initialise the database after {attempts} attempts"
     ) from last_error
 
+
+
+async def _add_missing_columns(engine: AsyncEngine) -> None:
+    """Add columns the code expects but the database does not have yet.
+
+    `create_all` only ever creates missing *tables*. A release that adds a
+    column to an existing table - console passwords, for instance - would
+    otherwise start and then fail on the first query with "no such column",
+    which is a confusing way to learn you needed a migration.
+
+    Additive only: this never drops, renames or retypes anything, so it cannot
+    lose data. Anything beyond adding a column is a real migration and belongs
+    in a reviewed script.
+    """
+    def _plan(sync_conn) -> list[str]:  # noqa: ANN001
+        inspector = inspect(sync_conn)
+        existing_tables = set(inspector.get_table_names())
+        statements: list[str] = []
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue
+            present = {c["name"] for c in inspector.get_columns(table.name)}
+            for column in table.columns:
+                if column.name in present:
+                    continue
+                if not column.nullable and column.default is None:
+                    log.error(
+                        "cannot add required column %s.%s automatically - "
+                        "it needs a migration with a backfill",
+                        table.name, column.name,
+                    )
+                    continue
+                ddl = f"ALTER TABLE {table.name} ADD COLUMN {column.name} "
+                ddl += column.type.compile(sync_conn.dialect)
+                default = getattr(column.default, "arg", None)
+                if default is not None and not callable(default):
+                    literal = f"'{default}'" if isinstance(default, str) else int(default) \
+                        if isinstance(default, bool) else default
+                    ddl += f" DEFAULT {literal}"
+                statements.append(ddl)
+        return statements
+
+    async with engine.begin() as conn:
+        statements = await conn.run_sync(_plan)
+        for statement in statements:
+            log.warning("schema upgrade: %s", statement)
+            await conn.execute(text(statement))
 
 async def _schema_present(engine: AsyncEngine) -> bool:
     """True when every expected table exists."""
