@@ -1,0 +1,73 @@
+apiVersion: edullm.gateway/v1
+kind: Model
+
+metadata:
+  alias: coding
+  display_name: Local Coder
+  description: >-
+    Agentic coding model with tool calling and long context.
+    Validated for Claude Code and Qwen Code.
+  visibility: student
+  tags: [coding, agent, claude-code]
+
+spec:
+  upstream_model: ucbye/Qwen3-Coder-Next-NVFP4-GB10
+
+  purpose:
+    - coding
+    - agent
+
+  limits:
+    context_tokens: 262144
+    max_output_tokens: 16384
+
+  modalities:
+    input: [text]
+    output: [text]
+
+  capabilities:
+    chat: true
+    vision: false          # -> image requests to this alias are rejected with 400
+    coding: true
+    tools: true
+    streaming: true
+    reasoning: false
+    agentic: true
+    audio: false
+    embedding: false
+
+  protocols:
+    openai: true
+    anthropic: true
+
+  agent_clients:
+    claude_code:
+      enabled: true
+      tested: true
+      notes: "MODEL-009 passed 2026-08-12; tools + streaming + 256K context."
+    qwen_code:
+      enabled: true
+      tested: true
+    cline:
+      enabled: false
+      tested: false
+
+  endpoints:
+    - name: dgx03
+      server_type: vllm
+      base_url: http://dgx03:8000
+      api_key_env: DGX03_API_KEY
+      priority: 100
+      weight: 1
+      max_concurrency: 16
+      health_path: /health
+      protocols:
+        openai: true
+        # vLLM does not serve the Anthropic API; the gateway translates.
+        anthropic: false
+      modalities:
+        text: true
+        image: false
+        audio: false
+        video: false
+      enabled: true

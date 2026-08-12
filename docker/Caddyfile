@@ -1,0 +1,44 @@
+# TLS termination for the EduLLM Gateway.
+#
+# Public domain  -> Caddy gets a Let's Encrypt certificate automatically.
+# Internal only  -> replace the site address with the internal name and add
+#                   `tls internal` inside the block (Caddy's local CA).
+
+{$GATEWAY_DOMAIN} {
+	encode zstd gzip
+
+	# Streaming responses must not be buffered or the student sees nothing
+	# until generation finishes.
+	reverse_proxy gateway:8080 {
+		flush_interval -1
+		transport http {
+			# Long generations and agent loops legitimately run for minutes.
+			read_timeout 900s
+			write_timeout 900s
+		}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# Metrics stay on the internal network only.
+	@metrics path /metrics
+	respond @metrics 404
+
+	log {
+		output file /data/access.log {
+			roll_size 50MiB
+			roll_keep 10
+		}
+		# Never log request bodies: they contain student prompts (PRD §11).
+		format json
+	}
+}

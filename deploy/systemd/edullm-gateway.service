@@ -1,0 +1,56 @@
+[Unit]
+Description=EduLLM Gateway
+Documentation=https://github.com/neronain/AiGatewayLocal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=edullm
+Group=edullm
+WorkingDirectory=/opt/edullm-gateway
+
+# Secrets live here, readable only by the service user (chmod 600).
+EnvironmentFile=/opt/edullm-gateway/.env
+
+ExecStart=/opt/edullm-gateway/.venv/bin/uvicorn app.main:app \
+    --host 0.0.0.0 \
+    --port 8080 \
+    --workers 4 \
+    --proxy-headers \
+    --forwarded-allow-ips '*'
+
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+# Give in-flight streaming responses a chance to finish before SIGKILL.
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+# --- Hardening -------------------------------------------------------------
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# The only writable paths the service needs.
+ReadWritePaths=/opt/edullm-gateway/data /opt/edullm-gateway/logs
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# --- Limits ----------------------------------------------------------------
+LimitNOFILE=65535
+MemoryMax=4G
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=edullm-gateway
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,97 @@
+# EduLLM Gateway - development / staging stack.
+# Production overrides: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+#   docker compose up -d --build
+#   docker compose logs -f gateway
+#
+# The gateway talks to model servers that run OUTSIDE this stack (DGX nodes).
+# Point config/models/*.yaml at their real addresses before going live.
+
+name: edullm-gateway
+
+services:
+  gateway:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: edullm-gateway:1.3.0
+    restart: unless-stopped
+    ports:
+      - "${GW_BIND:-0.0.0.0}:8080:8080"
+    environment:
+      GW_ENV: ${GW_ENV:-staging}
+      GW_LOG_LEVEL: ${GW_LOG_LEVEL:-INFO}
+      GW_API_KEY_PEPPER: ${GW_API_KEY_PEPPER:?set GW_API_KEY_PEPPER in .env}
+      GW_BOOTSTRAP_ADMIN_KEY: ${GW_BOOTSTRAP_ADMIN_KEY:-}
+      GW_DATABASE_URL: postgresql+asyncpg://edullm:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/edullm
+      GW_REDIS_URL: redis://redis:6379/0
+      GW_CONFIG_DIR: /app/config
+      GW_CORS_ORIGINS: ${GW_CORS_ORIGINS:-}
+      DGX01_API_KEY: ${DGX01_API_KEY:-}
+      DGX02_API_KEY: ${DGX02_API_KEY:-}
+      DGX03_API_KEY: ${DGX03_API_KEY:-}
+    volumes:
+      # Registry is mounted read-only: a compromised container cannot rewrite
+      # which backends it routes to.
+      - ../config:/app/config:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Model servers live on the host network / LAN, not in this compose file.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: edullm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: edullm
+      # Deterministic collation, so ORDER BY does not change under a locale update.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U edullm -d edullm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Not published: only the gateway needs it.
+    expose:
+      - "5432"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    expose:
+      - "6379"
+
+volumes:
+  postgres_data:
+  redis_data:

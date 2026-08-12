@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Data
+*.db
+*.sqlite3
+data/
+logs/
+
+# Local agent tooling
+.claude/
+.claude-flow/
+.swarm/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

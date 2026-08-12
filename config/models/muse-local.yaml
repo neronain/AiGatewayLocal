@@ -1,0 +1,70 @@
+apiVersion: edullm.gateway/v1
+kind: Model
+
+metadata:
+  alias: muse-local
+  display_name: Muse Local
+  description: General-purpose assistant with image understanding and tool use.
+  visibility: student
+  tags: [general, multimodal]
+
+spec:
+  # Admin-only. Students never see this string (PRD §6).
+  upstream_model: meta-models/Muse-Glimmer-30B
+
+  purpose:
+    - general
+    - vision
+    - agent
+
+  limits:
+    context_tokens: 131072
+    max_output_tokens: 8192
+
+  modalities:
+    input: [text, image]
+    output: [text]
+
+  capabilities:
+    chat: true
+    vision: true
+    coding: true
+    tools: true
+    streaming: true
+    reasoning: true
+    agentic: true
+    audio: false
+    embedding: false
+
+  protocols:
+    openai: true
+    # Served over the Anthropic API by translation; the backend itself is OpenAI.
+    anthropic: false
+
+  agent_clients:
+    claude_code:
+      enabled: false
+      tested: false
+      notes: "Not validated for Claude Code; use the 'coding' alias."
+    qwen_code:
+      enabled: true
+      tested: false
+
+  endpoints:
+    - name: dgx01
+      server_type: vllm
+      base_url: http://dgx01:8000
+      api_key_env: DGX01_API_KEY
+      priority: 100
+      weight: 1
+      max_concurrency: 32
+      health_path: /health
+      protocols:
+        openai: true
+        anthropic: false
+      modalities:
+        text: true
+        image: true
+        audio: false
+        video: false
+      enabled: true

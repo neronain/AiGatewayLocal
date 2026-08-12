@@ -1,0 +1,49 @@
+apiVersion: edullm.gateway/v1
+kind: GatewayConfig
+
+# ---------------------------------------------------------------------------
+# Vision policy (PRD §12). Per-model overrides live in config/models/<alias>.yaml.
+# ---------------------------------------------------------------------------
+vision_policy:
+  max_images_per_request: 4
+  max_image_size_mb: 10
+  allowed_types:
+    - image/jpeg
+    - image/png
+    - image/webp
+  remote_image_url:
+    # Keep false on an internal deployment: with it on, the gateway becomes a
+    # URL fetcher that can be pointed at internal hosts. Students send base64.
+    enabled: false
+    allowed_hosts: []
+
+# ---------------------------------------------------------------------------
+# Privacy (PRD §11). All three MUST stay false unless a documented, approved
+# exception exists - the schema has no columns to store this content anyway.
+# ---------------------------------------------------------------------------
+privacy:
+  store_prompts: false
+  store_responses: false
+  store_images: false
+
+# ---------------------------------------------------------------------------
+# Quota fallback, applied when no quota_policies row matches the caller.
+# ---------------------------------------------------------------------------
+quota_defaults:
+  window: day
+  max_requests: 500
+  max_input_tokens: 2000000
+  max_output_tokens: 500000
+  max_images: 100
+
+rate_limit_defaults:
+  requests_per_minute: 60
+  concurrent_requests: 4
+
+# ---------------------------------------------------------------------------
+# Backend health. Hysteresis prevents a single blip from ejecting an endpoint.
+# ---------------------------------------------------------------------------
+health_check_interval_seconds: 15
+health_check_timeout_seconds: 5
+unhealthy_threshold: 3
+healthy_threshold: 2

@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EduLLM Gateway Console</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --ink: #14171c; --muted: #666e7a;
+    --line: #e3e6ea; --accent: #2f5cff; --ok: #0f8a4a; --warn: #b26a00; --err: #c02626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116; --panel: #161a21; --ink: #e8eaed; --muted: #9aa3ae;
+      --line: #262c36; --accent: #6f8dff; --ok: #3fbb78; --warn: #e0a13c; --err: #ef6b6b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans Thai", sans-serif;
+  }
+  header {
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    padding: 14px 22px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+    position: sticky; top: 0; z-index: 10;
+  }
+  h1 { font-size: 17px; margin: 0; font-weight: 650; }
+  .sub { color: var(--muted); font-size: 13px; }
+  main { max-width: 1140px; margin: 0 auto; padding: 22px; }
+  input, button, select {
+    font: inherit; padding: 7px 11px; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  }
+  input { min-width: 320px; }
+  button { cursor: pointer; border-color: var(--accent); color: var(--accent); font-weight: 550; }
+  button:hover { background: var(--accent); color: #fff; }
+  button.ghost { border-color: var(--line); color: var(--muted); font-weight: 450; }
+  section { margin-bottom: 30px; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .07em;
+       color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 15px;
+  }
+  .card h3 { margin: 0 0 3px; font-size: 16px; }
+  .card .alias { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
+  .card p { margin: 8px 0; color: var(--muted); font-size: 13.5px; }
+  .badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 6px; }
+  .badge {
+    font-size: 11.5px; padding: 2.5px 8px; border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  .meta { font-size: 12.5px; color: var(--muted); display: flex; gap: 12px; flex-wrap: wrap; }
+  .pill { font-size: 11.5px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
+  .pill.ok   { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+  .pill.warn { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
+  .pill.err  { background: color-mix(in srgb, var(--err) 15%, transparent); color: var(--err); }
+  table { width: 100%; border-collapse: collapse; background: var(--panel);
+          border: 1px solid var(--line); border-radius: 11px; overflow: hidden; }
+  th, td { padding: 9px 13px; text-align: left; border-bottom: 1px solid var(--line);
+           font-size: 13.5px; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase;
+       letter-spacing: .05em; }
+  tr:last-child td { border-bottom: none; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .scroll { overflow-x: auto; }
+  .empty { color: var(--muted); font-size: 13.5px; padding: 14px 0; }
+  .banner { padding: 11px 14px; border-radius: 9px; margin-bottom: 16px; font-size: 13.5px; }
+  .banner.err { background: color-mix(in srgb, var(--err) 12%, transparent); color: var(--err); }
+  code { font-family: ui-monospace, monospace; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>EduLLM Gateway</h1>
+  <span class="sub" id="status">not connected</span>
+  <span style="flex:1"></span>
+  <input id="key" type="password" placeholder="API key (edu_sk_...)" autocomplete="off">
+  <button id="connect">Connect</button>
+  <button id="refresh" class="ghost">Refresh</button>
+</header>
+
+<main>
+  <div id="error"></div>
+
+  <section id="quota-section" hidden>
+    <h2>My quota</h2>
+    <div class="scroll"><table id="quota"></table></div>
+  </section>
+
+  <section id="catalog-section" hidden>
+    <h2>Available AI models</h2>
+    <div id="catalog"></div>
+  </section>
+
+  <section id="health-section" hidden>
+    <h2>Backend health</h2>
+    <div class="scroll"><table id="health"></table></div>
+  </section>
+
+  <section id="usage-section" hidden>
+    <h2>Usage (7 days)</h2>
+    <div class="scroll"><table id="usage"></table></div>
+  </section>
+</main>
+
+<script>
+// The key is kept in sessionStorage only: it disappears when the tab closes and
+// is never written to localStorage, where it would outlive the session.
+const KEY_STORE = 'edullm_key';
+const $ = (id) => document.getElementById(id);
+
+const state = { key: sessionStorage.getItem(KEY_STORE) || '', me: null };
+
+function headers() { return { 'Authorization': 'Bearer ' + state.key }; }
+
+function showError(message) {
+  $('error').innerHTML = message ? `<div class="banner err">${escapeHtml(message)}</div>` : '';
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+async function api(path) {
+  const response = await fetch(path, { headers: headers() });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = body.error || body;
+    throw new Error(`${error.code || response.status}: ${error.message || 'request failed'}`);
+  }
+  return body;
+}
+
+function num(value) { return (value || 0).toLocaleString(); }
+
+function renderQuota(me) {
+  const q = me.quota, used = q.used, limits = q.limits;
+  const row = (label, usedValue, limit) => {
+    const pct = limit ? Math.min(100, Math.round(usedValue / limit * 100)) : 0;
+    const cls = !limit ? 'ok' : pct >= 100 ? 'err' : pct >= 80 ? 'warn' : 'ok';
+    return `<tr><td>${label}</td><td class="num">${num(usedValue)}</td>
+      <td class="num">${limit ? num(limit) : 'unlimited'}</td>
+      <td><span class="pill ${cls}">${limit ? pct + '%' : 'n/a'}</span></td></tr>`;
+  };
+  $('quota').innerHTML = `
+    <tr><th>Resource</th><th class="num">Used</th><th class="num">Limit</th><th>Status</th></tr>
+    ${row('Requests', used.requests, limits.max_requests)}
+    ${row('Input tokens', used.input_tokens, limits.max_input_tokens)}
+    ${row('&nbsp;&nbsp;· text', used.text_input_tokens, 0)}
+    ${row('&nbsp;&nbsp;· visual', used.visual_input_tokens, 0)}
+    ${row('Output tokens', used.output_tokens, limits.max_output_tokens)}
+    ${row('Images', used.images, limits.max_images)}
+    <tr><td colspan="4" class="empty">Window: ${escapeHtml(q.window)} ·
+      resets ${new Date(q.window_end).toLocaleString()}</td></tr>`;
+  $('quota-section').hidden = false;
+}
+
+function renderCatalog(data) {
+  const html = data.sections.map((section) => `
+    <h3 style="margin:18px 0 10px;font-size:15px">${escapeHtml(section.title)}</h3>
+    <div class="grid">
+      ${section.models.map((m) => `
+        <div class="card">
+          <h3>${escapeHtml(m.name)}</h3>
+          <div class="alias">${escapeHtml(m.id)}</div>
+          ${m.description ? `<p>${escapeHtml(m.description)}</p>` : ''}
+          <div class="badges">
+            ${m.badges.map((b) => `<span class="badge">${escapeHtml(b)}</span>`).join('')}
+          </div>
+          <div class="meta">
+            <span>${escapeHtml(m.context)}</span>
+            ${m.claude_code_ready ? '<span class="pill ok">Claude Code Ready</span>' : ''}
+          </div>
+        </div>`).join('')}
+    </div>`).join('');
+  $('catalog').innerHTML = html || '<div class="empty">No models available.</div>';
+  $('catalog-section').hidden = false;
+}
+
+function renderHealth(report) {
+  const rows = Object.values(report);
+  if (!rows.length) { $('health-section').hidden = true; return; }
+  $('health').innerHTML = `
+    <tr><th>Model</th><th>Endpoint</th><th>Type</th><th>Status</th>
+        <th class="num">In flight</th><th class="num">Requests</th><th>Last error</th></tr>
+    ${rows.map((r) => `
+      <tr>
+        <td><code>${escapeHtml(r.model)}</code></td>
+        <td>${escapeHtml(r.endpoint)}</td>
+        <td>${escapeHtml(r.server_type)}</td>
+        <td><span class="pill ${r.healthy ? 'ok' : 'err'}">${r.healthy ? 'healthy' : 'down'}</span></td>
+        <td class="num">${r.in_flight}/${r.max_concurrency}</td>
+        <td class="num">${num(r.total_requests)}</td>
+        <td class="empty">${escapeHtml((r.last_error || '').slice(0, 70))}</td>
+      </tr>`).join('')}`;
+  $('health-section').hidden = false;
+}
+
+function renderUsage(summary) {
+  if (!summary.by_model.length) {
+    $('usage').innerHTML = '<tr><td class="empty">No usage recorded yet.</td></tr>';
+    $('usage-section').hidden = false;
+    return;
+  }
+  $('usage').innerHTML = `
+    <tr><th>Model</th><th class="num">Requests</th><th class="num">Text in</th>
+        <th class="num">Visual in</th><th class="num">Out</th><th class="num">Images</th>
+        <th class="num">Avg ms</th><th class="num">TTFT ms</th></tr>
+    ${summary.by_model.map((r) => `
+      <tr>
+        <td><code>${escapeHtml(r.model)}</code></td>
+        <td class="num">${num(r.requests)}</td>
+        <td class="num">${num(r.text_input_tokens)}</td>
+        <td class="num">${num(r.visual_input_tokens)}</td>
+        <td class="num">${num(r.output_tokens)}</td>
+        <td class="num">${num(r.images)}</td>
+        <td class="num">${r.avg_latency_ms}</td>
+        <td class="num">${r.avg_ttft_ms ?? '-'}</td>
+      </tr>`).join('')}
+    ${summary.errors.length ? `<tr><td colspan="8" class="empty">Errors: ${
+      summary.errors.map((e) => escapeHtml(e.code) + ' ×' + e.count).join(', ')}</td></tr>` : ''}`;
+  $('usage-section').hidden = false;
+}
+
+async function load() {
+  if (!state.key) { showError('Enter an API key to connect.'); return; }
+  showError('');
+  try {
+    const me = await api('/v1/me');
+    state.me = me;
+    $('status').textContent = `${me.display_name || me.external_id} · ${me.role}`;
+    renderQuota(me);
+    renderCatalog(await api('/v1/catalog'));
+
+    // Admin-only panels. A student key simply skips them.
+    if (me.role === 'admin') {
+      renderHealth((await api('/v1/health/endpoints')).data);
+    }
+    if (me.role === 'admin' || me.role === 'instructor') {
+      renderUsage(await api('/admin/usage/summary?days=7'));
+    }
+  } catch (err) {
+    showError(err.message);
+    $('status').textContent = 'not connected';
+  }
+}
+
+$('connect').addEventListener('click', () => {
+  state.key = $('key').value.trim();
+  sessionStorage.setItem(KEY_STORE, state.key);
+  load();
+});
+$('refresh').addEventListener('click', load);
+$('key').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('connect').click(); });
+
+if (state.key) { $('key').value = state.key; load(); }
+</script>
+</body>
+</html>

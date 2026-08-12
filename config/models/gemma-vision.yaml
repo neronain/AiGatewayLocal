@@ -1,0 +1,70 @@
+apiVersion: edullm.gateway/v1
+kind: Model
+
+metadata:
+  alias: gemma-vision
+  display_name: Gemma Vision
+  description: >-
+    Reads screenshots, diagrams, charts, circuit drawings and worksheets.
+    Long context for whole-document analysis.
+  visibility: student
+  tags: [vision, reasoning]
+
+spec:
+  upstream_model: google/gemma-4-31B-it
+
+  purpose:
+    - vision
+    - reasoning
+
+  limits:
+    context_tokens: 262144
+    max_output_tokens: 8192
+
+  modalities:
+    input: [text, image]
+    output: [text]
+
+  capabilities:
+    chat: true
+    vision: true
+    coding: true
+    tools: true
+    streaming: true
+    reasoning: true
+    agentic: true
+    audio: false
+    embedding: false
+
+  # The v1.2 addendum omitted this block for gemma-vision; the schema now
+  # requires it, so the protocol surface is explicit rather than assumed.
+  protocols:
+    openai: true
+    anthropic: false
+
+  agent_clients:
+    claude_code:
+      enabled: false
+      tested: false
+    qwen_code:
+      enabled: false
+      tested: false
+
+  endpoints:
+    - name: dgx02
+      server_type: vllm
+      base_url: http://dgx02:8000
+      api_key_env: DGX02_API_KEY
+      priority: 100
+      weight: 1
+      max_concurrency: 24
+      health_path: /health
+      protocols:
+        openai: true
+        anthropic: false
+      modalities:
+        text: true
+        image: true
+        audio: false
+        video: false
+      enabled: true

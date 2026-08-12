@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check app tests scripts
+
+      - name: Validate the model registry
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from app.registry.store import load_snapshot
+          snapshot = load_snapshot(Path("config"))
+          if snapshot.errors:
+              raise SystemExit("registry errors:\n" + "\n".join(snapshot.errors))
+          print("registry OK:", ", ".join(sorted(snapshot.models)))
+          PY
+
+      - name: Test
+        run: pytest tests/ -v --tb=short
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -f docker/Dockerfile -t edullm-gateway:ci .
+
+      - name: Boot the container and check health
+        run: |
+          docker run -d --name gw \
+            -e GW_API_KEY_PEPPER=ci-test-pepper-not-secret \
+            -e GW_DATABASE_URL=sqlite+aiosqlite:///./data/ci.db \
+            -p 8080:8080 edullm-gateway:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/healthz; then
+              echo "healthy"; exit 0
+            fi
+            sleep 2
+          done
+          echo "container did not become healthy"; docker logs gw; exit 1
+
+      - name: Container logs
+        if: always()
+        run: docker logs gw || true

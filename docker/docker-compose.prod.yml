@@ -1,0 +1,62 @@
+# Production overlay. Adds TLS termination and hardens the gateway container.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Caddy obtains and renews certificates automatically. For an internal-only
+# deployment with no public DNS, use `tls internal` in the Caddyfile instead.
+
+services:
+  gateway:
+    environment:
+      GW_ENV: production
+      GW_WORKERS: ${GW_WORKERS:-8}
+    # Only Caddy reaches the gateway; nothing binds to the host directly.
+    ports: !override []
+    expose:
+      - "8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 4G
+        reservations:
+          memory: 1G
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      GATEWAY_DOMAIN: ${GATEWAY_DOMAIN:?set GATEWAY_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+  postgres:
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    command: >
+      postgres
+      -c max_connections=200
+      -c shared_buffers=512MB
+      -c effective_cache_size=1536MB
+      -c work_mem=8MB
+
+volumes:
+  caddy_data:
+  caddy_config:
