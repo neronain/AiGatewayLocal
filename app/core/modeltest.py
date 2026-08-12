@@ -107,6 +107,18 @@ class SuiteSummary:
 ProgressCallback = Callable[[TestResult], Awaitable[None]]
 
 
+def _short_error(response: httpx.Response) -> str:
+    """The backend's own message, which usually names the missing flag."""
+    try:
+        body = response.json()
+        error = body.get("error", body)
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])[:200]
+        return json.dumps(body)[:200]
+    except Exception:
+        return response.text[:200]
+
+
 def _describe_error(response: httpx.Response) -> str:
     try:
         body = response.json()
@@ -393,26 +405,31 @@ class ModelTestSuite:
         return TestResult("MODEL-008", "agent_loop", "pass", elapsed, "tool result accepted")
 
     async def model_009(self) -> TestResult:
+        # Claude Code needs tool calling. When the model has none we still
+        # exercise the Anthropic surface - without tools, so the gateway's own
+        # capability gate does not reject the request - and report the result as
+        # degraded rather than pass: the protocol works, the client will not.
+        has_tools = await self._declares("tools")
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": 128,
+            "system": "You are a coding assistant.",
+            "messages": [{"role": "user", "content": "Say OK."}],
+        }
+        if has_tools:
+            payload["tools"] = [
+                {
+                    "name": "read_file",
+                    "description": "Read a file",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                    },
+                }
+            ]
+
         started = time.perf_counter()
-        response = await self._client.post(
-            "/v1/messages",
-            json={
-                "model": self.model,
-                "max_tokens": 128,
-                "system": "You are a coding assistant.",
-                "messages": [{"role": "user", "content": "Say OK."}],
-                "tools": [
-                    {
-                        "name": "read_file",
-                        "description": "Read a file",
-                        "input_schema": {
-                            "type": "object",
-                            "properties": {"path": {"type": "string"}},
-                        },
-                    }
-                ],
-            },
-        )
+        response = await self._client.post("/v1/messages", json=payload)
         elapsed = int((time.perf_counter() - started) * 1000)
         if response.status_code == 400 and "PROTOCOL_NOT_SUPPORTED" in response.text:
             return TestResult(
@@ -430,6 +447,15 @@ class ModelTestSuite:
         if body.get("type") != "message" or not body.get("content"):
             return TestResult(
                 "MODEL-009", "claude_code", "degraded", elapsed, "unexpected response shape"
+            )
+        if not has_tools:
+            return TestResult(
+                "MODEL-009",
+                "claude_code",
+                "degraded",
+                elapsed,
+                "Anthropic surface works, but the model has no tool calling - "
+                "Claude Code needs it",
             )
         return TestResult(
             "MODEL-009", "claude_code", "pass", elapsed, f"stop_reason={body.get('stop_reason')}"
@@ -668,6 +694,13 @@ async def probe_backend(
                     "tools: backend accepted the request but returned no tool_calls "
                     "(vLLM needs --enable-auto-tool-choice with a --tool-call-parser)"
                 )
+        elif response is not None:
+            # A rejected tools request usually says exactly what the backend is
+            # missing - that message is the most actionable thing an admin can
+            # get here, so surface it rather than just recording tools=false.
+            result.notes.append(
+                f"tools -> HTTP {response.status_code}: {_short_error(response)}"
+            )
         result.capabilities["tools"] = tools
 
         # 5. vision - a vision-capable architecture may still be served without
@@ -690,12 +723,9 @@ async def probe_backend(
         vision = bool(response is not None and response.status_code == 200)
         result.capabilities["vision"] = vision
         if response is not None and response.status_code != 200:
-            detail = ""
-            try:
-                detail = json.dumps(response.json())[:160]
-            except Exception:
-                detail = response.text[:160]
-            result.notes.append(f"vision -> HTTP {response.status_code}: {detail}")
+            result.notes.append(
+                f"vision -> HTTP {response.status_code}: {_short_error(response)}"
+            )
 
         # 6. native Anthropic surface?
         anthropic = False
