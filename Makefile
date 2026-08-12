@@ -37,9 +37,9 @@ run: ## Run the gateway locally with reload
 mock: ## Run a mock model backend on :8000
 	$(PY) scripts/mock_backend.py --port 8000
 
-seed: ## Seed a demo course (COURSE=CS101 STUDENTS=64123,64124)
-	$(PY) scripts/seed.py --course $(or $(COURSE),CS101) \
-	  --students $(or $(STUDENTS),6412345678) \
+seed: ## Seed a demo workspace (COURSE=CS101 STUDENTS=64123,64124)
+	$(PY) scripts/seed.py --workspace $(or $(COURSE),CS101) \
+	  --members $(or $(STUDENTS),6412345678) \
 	  --models $(or $(MODELS),coding)
 
 docker-build: ## Build the container image

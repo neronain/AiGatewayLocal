@@ -33,7 +33,7 @@ ENV PYTHONUNBUFFERED=1 \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl tini \
  && rm -rf /var/lib/apt/lists/* \
- && useradd --create-home --uid 10001 --shell /usr/sbin/nologin edullm
+ && useradd --create-home --uid 10001 --shell /usr/sbin/nologin litegate
 
 COPY --from=builder /opt/venv /opt/venv
 
@@ -42,9 +42,9 @@ COPY app ./app
 COPY config ./config
 COPY scripts ./scripts
 
-RUN mkdir -p /app/data && chown -R edullm:edullm /app
+RUN mkdir -p /app/data && chown -R litegate:litegate /app
 
-USER edullm
+USER litegate
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

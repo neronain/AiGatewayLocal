@@ -5,7 +5,7 @@ and the admin API (`POST /admin/models/{alias}/test`) both drive this module, so
 the console badge and the terminal run can never disagree.
 
 Everything here talks to the gateway over HTTP with the caller's own API key.
-Running the suite therefore exercises the exact path a student would take -
+Running the suite therefore exercises the exact path a member would take -
 auth, policy, capability gates, quota and routing included.
 """
 
@@ -331,7 +331,7 @@ class ModelTestSuite:
         if response.status_code != 200:
             return TestResult("MODEL-006", "vision", "fail", elapsed, _describe_error(response))
         visual = (
-            response.json().get("usage", {}).get("edullm", {}).get("visual_input_tokens", 0)
+            response.json().get("usage", {}).get("litegate", {}).get("visual_input_tokens", 0)
         )
         return TestResult("MODEL-006", "vision", "pass", elapsed, f"visual_input_tokens={visual}")
 

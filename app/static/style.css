@@ -1,4 +1,4 @@
-/* EduLLM Gateway console.
+/* LiteGate console.
    Design tokens deliberately mirror the LMDS console on the fleet controller,
    so an operator moving between the two reads the same visual language.
    No CDN, no framework, no build step - the gateway may run air-gapped. */

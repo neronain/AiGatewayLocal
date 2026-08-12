@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# Native (non-Docker) install of the EduLLM Gateway on Debian/Ubuntu.
+# Native (non-Docker) install of the LiteGate on Debian/Ubuntu.
 #
-#   sudo ./scripts/bootstrap.sh                 # install to /opt/edullm-gateway
-#   sudo INSTALL_DIR=/srv/edullm ./scripts/bootstrap.sh
+#   sudo ./scripts/bootstrap.sh                 # install to /opt/litegate
+#   sudo INSTALL_DIR=/srv/litegate ./scripts/bootstrap.sh
 #
 # Installs into a dedicated venv, creates a system user, writes .env with a
 # generated pepper, and installs + starts the systemd unit.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
-INSTALL_DIR="${INSTALL_DIR:-/opt/edullm-gateway}"
-SERVICE_USER="${SERVICE_USER:-edullm}"
-SERVICE_NAME="edullm-gateway"
+INSTALL_DIR="${INSTALL_DIR:-/opt/litegate}"
+SERVICE_USER="${SERVICE_USER:-litegate}"
+SERVICE_NAME="litegate"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 log()  { printf '\033[36m==>\033[0m %s\n' "$*"; }
@@ -76,7 +76,7 @@ chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 chmod 600 "$INSTALL_DIR/.env"
 
 log "Installing systemd unit"
-sed "s#/opt/edullm-gateway#${INSTALL_DIR}#g; s#User=edullm#User=${SERVICE_USER}#; s#Group=edullm#Group=${SERVICE_USER}#" \
+sed "s#/opt/litegate#${INSTALL_DIR}#g; s#User=litegate#User=${SERVICE_USER}#; s#Group=litegate#Group=${SERVICE_USER}#" \
     "$REPO_DIR/deploy/systemd/${SERVICE_NAME}.service" > "/etc/systemd/system/${SERVICE_NAME}.service"
 
 systemctl daemon-reload

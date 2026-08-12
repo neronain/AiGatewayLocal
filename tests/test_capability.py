@@ -108,3 +108,41 @@ def test_model_and_endpoint_capability_must_both_pass(snapshot):
 
     coding_endpoint = snapshot.get("coding").spec.endpoints[0]
     assert endpoint_supports(coding_endpoint, profile, "openai") is False
+
+
+# ---------------------------------------------------------------------------
+# Quota windows must not assume anyone's calendar
+# ---------------------------------------------------------------------------
+def test_term_window_follows_the_configured_calendar():
+    """A term is whatever the organisation says it is."""
+    from datetime import UTC, datetime
+
+    from app.core.quota import DEFAULT_TERM_START_MONTHS, window_bounds
+
+    march = datetime(2026, 3, 15, tzinfo=UTC)
+
+    # Default (Thai academic year): Jan-Jun term contains March.
+    start, end = window_bounds("term", march, DEFAULT_TERM_START_MONTHS)
+    assert (start.year, start.month) == (2026, 1)
+    assert (end.year, end.month) == (2026, 6)
+
+    # Fiscal quarters: March sits in Jan-Apr.
+    start, end = window_bounds("term", march, (1, 4, 7, 10))
+    assert (start.year, start.month) == (2026, 1)
+    assert (end.year, end.month) == (2026, 4)
+
+    # Two semesters starting September: March belongs to the Feb term.
+    start, end = window_bounds("term", march, (9, 2))
+    assert (start.year, start.month) == (2026, 2)
+    assert (end.year, end.month) == (2026, 9)
+
+
+def test_term_window_wraps_the_year_end():
+    from datetime import UTC, datetime
+
+    from app.core.quota import window_bounds
+
+    december = datetime(2026, 12, 20, tzinfo=UTC)
+    start, end = window_bounds("term", december, (1, 6, 8))
+    assert (start.year, start.month) == (2026, 8)
+    assert (end.year, end.month) == (2027, 1)

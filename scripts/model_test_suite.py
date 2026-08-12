@@ -61,7 +61,7 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="EduLLM Gateway model test suite")
+    parser = argparse.ArgumentParser(description="LiteGate model test suite")
     parser.add_argument("--base-url", default="http://localhost:8080")
     parser.add_argument("--admin-key", required=True)
     parser.add_argument("--model", required=True, help="model alias to test")

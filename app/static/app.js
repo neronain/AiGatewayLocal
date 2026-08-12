@@ -1,9 +1,9 @@
-/* EduLLM Gateway console.
+/* LiteGate console.
    Plain browser JS: the page must run from a static mount with no build step
    and no network access beyond the gateway itself. */
 
-const KEY_STORE = 'edullm_key';
-const THEME_STORE = 'edullm_theme';
+const KEY_STORE = 'litegate_key';
+const THEME_STORE = 'litegate_theme';
 const $ = (id) => document.getElementById(id);
 const state = { key: sessionStorage.getItem(KEY_STORE) || '', me: null, cache: {} };
 
@@ -96,7 +96,7 @@ for (const btn of document.querySelectorAll('#tabs button')) {
 
 function applyRole(role) {
   const admin = role === 'admin';
-  const staff = admin || role === 'instructor';
+  const staff = admin || role === 'manager';
   for (const btn of document.querySelectorAll('#tabs button')) {
     if (btn.hasAttribute('data-admin')) btn.hidden = !admin;
     if (btn.hasAttribute('data-staff')) btn.hidden = !staff;
@@ -237,7 +237,7 @@ async function loadModels() {
   for (const btn of $('model-table').querySelectorAll('[data-del]')) {
     btn.onclick = async () => {
       if (!confirm(`Delete the registry file for "${btn.dataset.del}"?\n\n` +
-                   'Students calling this alias will get MODEL_NOT_FOUND.')) return;
+                   'Members calling this alias will get MODEL_NOT_FOUND.')) return;
       try { await del(`/admin/models/${encodeURIComponent(btn.dataset.del)}`); await loadModels(); }
       catch (e) { showError(e.message); }
     };
@@ -414,7 +414,7 @@ function editorValues() {
   const vision = checked('c-vision');
 
   const definition = {
-    apiVersion: 'edullm.gateway/v1',
+    apiVersion: 'litegate.dev/v1',
     kind: 'Model',
     metadata: {
       alias: $('m-alias').value.trim(),
@@ -464,7 +464,7 @@ function openEditor(model) {
 
   if (!model) {
     ['m-alias', 'm-name', 'm-desc', 'm-upstream'].forEach((i) => set(i, ''));
-    set('m-ctx', 131072); set('m-out', 8192); set('m-visibility', 'student');
+    set('m-ctx', 131072); set('m-out', 8192); set('m-visibility', 'member');
     ['c-vision', 'c-tools', 'c-coding', 'c-reasoning', 'c-agentic', 'x-anthropic', 'x-claudecode']
       .forEach((i) => check(i, false));
     ['c-chat', 'c-streaming', 'x-openai', 'p-general'].forEach((i) => check(i, true));
@@ -598,33 +598,33 @@ $('verify-all').onclick = async () => {
 
 /* --------------------------------------------------------- access & keys */
 async function loadAccess() {
-  const [users, courses, keys] = await Promise.all([
-    api('/admin/users'), api('/admin/courses'), api('/admin/api-keys'),
+  const [users, workspaces, keys] = await Promise.all([
+    api('/admin/users'), api('/admin/workspaces'), api('/admin/api-keys'),
   ]);
   state.cache.users = users.data;
-  state.cache.courses = courses.data;
+  state.cache.workspaces = workspaces.data;
 
   const userOpts = users.data
     .map((u) => `<option value="${esc(u.id)}">${esc(u.external_id)} — ${esc(u.display_name || u.role)}</option>`)
     .join('');
   $('k-user').innerHTML = userOpts;
   $('q-user').innerHTML = userOpts;
-  const courseOpts = courses.data
+  const workspaceOpts = workspaces.data
     .map((c) => `<option value="${esc(c.id)}">${esc(c.code)} — ${esc(c.name)}</option>`).join('');
-  $('k-course').innerHTML = '<option value="">— none —</option>' + courseOpts;
-  $('q-course').innerHTML = courseOpts;
+  $('k-workspace').innerHTML = '<option value="">— none —</option>' + workspaceOpts;
+  $('q-workspace').innerHTML = workspaceOpts;
 
   const byId = Object.fromEntries(users.data.map((u) => [u.id, u]));
   $('key-table').innerHTML = `
-    <tr><th>Prefix</th><th>User</th><th>Course</th><th>Label</th>
+    <tr><th>Prefix</th><th>User</th><th>Workspace</th><th>Label</th>
         <th>Expires</th><th>Last used</th><th>State</th><th></th></tr>
     ${keys.data.map((k) => {
       const u = byId[k.user_id];
-      const course = courses.data.find((c) => c.id === k.course_id);
+      const workspace = workspaces.data.find((c) => c.id === k.workspace_id);
       return `<tr>
         <td><code>${esc(k.key_prefix)}…</code></td>
         <td>${esc(u ? u.external_id : k.user_id)}</td>
-        <td>${esc(course ? course.code : '—')}</td>
+        <td>${esc(workspace ? workspace.code : '—')}</td>
         <td>${esc(k.name || '—')}</td>
         <td class="hint">${k.expires_at ? new Date(k.expires_at).toLocaleDateString() : 'never'}</td>
         <td class="hint">${k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'never'}</td>
@@ -642,23 +642,23 @@ async function loadAccess() {
   }
 
   const aliases = (state.cache.models || []).map((m) => m.alias);
-  $('course-table').innerHTML = `
+  $('workspace-table').innerHTML = `
     <tr><th>Code</th><th>Name</th><th>Term</th><th>Allowed models</th><th></th></tr>
-    ${courses.data.map((c) => `<tr>
+    ${workspaces.data.map((c) => `<tr>
       <td><code>${esc(c.code)}</code></td><td>${esc(c.name)}</td><td>${esc(c.term)}</td>
       <td class="checks">${aliases.map((a) => `
-        <label><input type="checkbox" data-course="${esc(c.id)}" value="${esc(a)}"> ${esc(a)}</label>
+        <label><input type="checkbox" data-workspace="${esc(c.id)}" value="${esc(a)}"> ${esc(a)}</label>
       `).join('') || '<span class="hint">open the Models tab first</span>'}</td>
-      <td><button class="ghost small" data-savecourse="${esc(c.id)}">Save</button></td>
-    </tr>`).join('') || '<tr><td class="empty">No courses yet.</td></tr>'}`;
+      <td><button class="ghost small" data-saveworkspace="${esc(c.id)}">Save</button></td>
+    </tr>`).join('') || '<tr><td class="empty">No workspaces yet.</td></tr>'}`;
 
-  for (const btn of $('course-table').querySelectorAll('[data-savecourse]')) {
+  for (const btn of $('workspace-table').querySelectorAll('[data-saveworkspace]')) {
     btn.onclick = async () => {
-      const id = btn.dataset.savecourse;
-      const models = [...document.querySelectorAll(`input[data-course="${id}"]:checked`)]
+      const id = btn.dataset.saveworkspace;
+      const models = [...document.querySelectorAll(`input[data-workspace="${id}"]:checked`)]
         .map((i) => i.value);
       try {
-        await post(`/admin/courses/${id}/models`, { models });
+        await post(`/admin/workspaces/${id}/models`, { models });
         banner('error', 'ok', `Updated allowed models: ${models.join(', ') || 'none'}`);
       } catch (e) { showError(e.message); }
     };
@@ -669,7 +669,7 @@ $('issue-key').onclick = async () => {
   try {
     const result = await post('/admin/api-keys', {
       user_id: $('k-user').value,
-      course_id: $('k-course').value || null,
+      workspace_id: $('k-workspace').value || null,
       name: $('k-name').value.trim(),
       expires_in_days: Number($('k-days').value) || null,
     });
@@ -694,9 +694,9 @@ $('create-user').onclick = async () => {
   } catch (e) { showError(e.message); }
 };
 
-$('create-course').onclick = async () => {
+$('create-workspace').onclick = async () => {
   try {
-    await post('/admin/courses', {
+    await post('/admin/workspaces', {
       code: $('c-code').value.trim(),
       name: $('c-name').value.trim() || $('c-code').value.trim(),
       term: $('c-term').value.trim(),
@@ -708,7 +708,7 @@ $('create-course').onclick = async () => {
 
 /* ---------------------------------------------------------------- quota */
 $('q-scope').onchange = () => {
-  $('q-course-wrap').hidden = $('q-scope').value !== 'course';
+  $('q-workspace-wrap').hidden = $('q-scope').value !== 'workspace';
   $('q-user-wrap').hidden = $('q-scope').value !== 'user';
 };
 
@@ -722,7 +722,7 @@ async function loadQuota() {
     (state.cache.models || []).map((m) => `<option value="${esc(m.alias)}">${esc(m.alias)}</option>`).join('');
 
   const users = Object.fromEntries((state.cache.users || []).map((u) => [u.id, u.external_id]));
-  const courses = Object.fromEntries((state.cache.courses || []).map((c) => [c.id, c.code]));
+  const workspaces = Object.fromEntries((state.cache.workspaces || []).map((c) => [c.id, c.code]));
   const lim = (v) => (v ? num(v) : '∞');
 
   $('quota-table').innerHTML = `
@@ -731,7 +731,7 @@ async function loadQuota() {
         <th class="num">Output</th><th class="num">Images</th></tr>
     ${policies.data.map((p) => `<tr>
       <td><span class="pill mute">${esc(p.scope)}</span></td>
-      <td>${esc(users[p.user_id] || courses[p.course_id] || 'everyone')}</td>
+      <td>${esc(users[p.user_id] || workspaces[p.workspace_id] || 'everyone')}</td>
       <td><code>${esc(p.model_alias || 'all')}</code></td>
       <td>${esc(p.window)}</td>
       <td class="num">${lim(p.max_requests)}</td><td class="num">${lim(p.max_input_tokens)}</td>
@@ -754,7 +754,7 @@ $('create-quota').onclick = async () => {
   try {
     await post('/admin/quota-policies', {
       scope,
-      course_id: scope === 'course' ? $('q-course').value : null,
+      workspace_id: scope === 'workspace' ? $('q-workspace').value : null,
       user_id: scope === 'user' ? $('q-user').value : null,
       model_alias: $('q-model').value || null,
       window: $('q-window').value,
@@ -779,7 +779,7 @@ async function load() {
     renderQuota(me);
     renderCatalog(await api('/v1/catalog'));
     if (me.role === 'admin') renderHealth((await api('/v1/health/endpoints')).data);
-    if (me.role === 'admin' || me.role === 'instructor') {
+    if (me.role === 'admin' || me.role === 'manager') {
       renderUsage(await api('/admin/usage/summary?days=7'));
     }
   } catch (err) {

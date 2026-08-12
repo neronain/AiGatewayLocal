@@ -108,12 +108,12 @@ def _bootstrap_key(app) -> str:
 
 
 @pytest.fixture
-def student_key(client):
-    """A student account with a key, created through the admin API."""
+def member_key(client):
+    """A member account with a key, created through the admin API."""
     headers = {"Authorization": f"Bearer {client.admin_key}"}
     user = client.post(
         "/admin/users",
-        json={"external_id": "6412345678", "display_name": "Somchai", "role": "student"},
+        json={"external_id": "6412345678", "display_name": "Somchai", "role": "member"},
         headers=headers,
     ).json()
     key = client.post(

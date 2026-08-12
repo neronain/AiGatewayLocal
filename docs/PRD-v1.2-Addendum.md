@@ -284,7 +284,7 @@ purpose:
 
 ---
 
-# 6. Student Model UX
+# 6. Member Model UX
 
 นักเรียนไม่ควรต้องเห็น model repository name
 
@@ -340,7 +340,7 @@ coding
 สำหรับ infrastructure ชุดแรก:
 
 ```text
-                  EduLLM Gateway
+                  LiteGate
                          │
           ┌──────────────┼───────────────┐
           │              │               │
@@ -464,8 +464,8 @@ Usage record:
 ```text
 request_id
 
-student_id
-course_id
+member_id
+workspace_id
 
 model_id
 
@@ -655,7 +655,7 @@ endpoint
 Request
    │
    ▼
-Student Permission
+Member Permission
    │
    ▼
 Model Alias
@@ -900,7 +900,7 @@ notes
 [ ] Add visual usage fields
 [ ] Add Vision compatibility test
 [ ] Add capability badges in Admin UI
-[ ] Add capability badges in Student UI
+[ ] Add capability badges in Member UI
 [ ] Add backend capability validation
 ```
 
@@ -940,10 +940,10 @@ GW-112 Multimodal Load Test
                             │
                             ▼
               ┌─────────────────────────┐
-              │     EduLLM Gateway      │
+              │     LiteGate      │
               │                         │
               │ Authentication          │
-              │ Course Policy           │
+              │ Workspace Policy           │
               │ Capability Registry     │
               │ Modality Validation     │
               │ Quota                   │

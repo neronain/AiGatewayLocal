@@ -49,10 +49,10 @@ class RegistrySnapshot:
 
     def visible_to(self, role: str) -> list[ModelDefinition]:
         allowed = {
-            "student": {Visibility.STUDENT},
-            "instructor": {Visibility.STUDENT, Visibility.INSTRUCTOR},
-            "admin": {Visibility.STUDENT, Visibility.INSTRUCTOR, Visibility.ADMIN},
-        }.get(role, {Visibility.STUDENT})
+            "member": {Visibility.MEMBER},
+            "manager": {Visibility.MEMBER, Visibility.MANAGER},
+            "admin": {Visibility.MEMBER, Visibility.MANAGER, Visibility.ADMIN},
+        }.get(role, {Visibility.MEMBER})
         return [
             m
             for m in self.models.values()

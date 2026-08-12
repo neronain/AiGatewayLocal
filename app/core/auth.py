@@ -1,6 +1,10 @@
 """API-key authentication and the request Principal.
 
-Key format:  edu_sk_<43 url-safe base64 chars>   (256 bits of entropy)
+Key format:  lg_sk_<43 url-safe base64 chars>   (256 bits of entropy)
+
+Keys issued before the rename start with `edu_sk_` and keep working: a key is
+verified by HMAC over the whole string, so the prefix is a label for a human
+reading a key list, not part of the check.
 
 Because the secret is high-entropy random (not a human password), a single
 HMAC-SHA256 with a server-side pepper is the correct verification primitive:
@@ -23,12 +27,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.errors import ErrorCode, GatewayError
-from app.db.models import ApiKey, CourseModel, User, utcnow
+from app.db.models import ApiKey, User, WorkspaceModel, utcnow
 from app.db.session import get_session
 
 log = logging.getLogger(__name__)
 
-KEY_PREFIX = "edu_sk_"
+KEY_PREFIX = "lg_sk_"
+
+# Roles recorded before the rename. Rows are not rewritten on upgrade, so a
+# manager stored as "instructor" must keep their privileges.
+LEGACY_ROLES = {"student": "member", "instructor": "manager"}
+
+
+def normalise_role(role: str) -> str:
+    return LEGACY_ROLES.get(role, role)
 PREFIX_LEN = 12
 
 
@@ -52,7 +64,7 @@ class Principal:
     role: str
     display_name: str
     api_key_id: str
-    course_id: str | None
+    workspace_id: str | None
     scopes: list[str]
 
     @property
@@ -60,8 +72,8 @@ class Principal:
         return self.role == "admin"
 
     @property
-    def is_instructor(self) -> bool:
-        return self.role in {"admin", "instructor"}
+    def is_manager(self) -> bool:
+        return self.role in {"admin", "manager"}
 
     def require_scope(self, scope: str) -> None:
         if self.is_admin or not self.scopes or scope in self.scopes:
@@ -111,7 +123,7 @@ async def authenticate(
     user = await session.get(User, api_key.user_id)
     if user is None or user.status != "active":
         raise GatewayError(
-            ErrorCode.ACCOUNT_DISABLED, "This account is not active. Contact your instructor."
+            ErrorCode.ACCOUNT_DISABLED, "This account is not active. Contact your manager."
         )
 
     # Best-effort last-used stamp; never fail a request over telemetry.
@@ -125,10 +137,10 @@ async def authenticate(
     return Principal(
         user_id=user.id,
         external_id=user.external_id,
-        role=user.role,
+        role=normalise_role(user.role),
         display_name=user.display_name,
         api_key_id=api_key.id,
-        course_id=api_key.course_id,
+        workspace_id=api_key.workspace_id,
         scopes=list(api_key.scopes or []),
     )
 
@@ -141,10 +153,10 @@ async def require_admin(principal: Principal = Depends(authenticate)) -> Princip
     return principal
 
 
-async def require_instructor(principal: Principal = Depends(authenticate)) -> Principal:
-    if not principal.is_instructor:
+async def require_manager(principal: Principal = Depends(authenticate)) -> Principal:
+    if not principal.is_manager:
         raise GatewayError(
-            ErrorCode.INSUFFICIENT_SCOPE, "Instructor privileges are required."
+            ErrorCode.INSUFFICIENT_SCOPE, "Manager privileges are required."
         )
     return principal
 
@@ -152,28 +164,28 @@ async def require_instructor(principal: Principal = Depends(authenticate)) -> Pr
 async def assert_model_permitted(
     session: AsyncSession, principal: Principal, alias: str
 ) -> None:
-    """Course policy gate (PRD §15 step 1).
+    """Workspace policy gate (PRD §15 step 1).
 
-    Admins and instructors bypass. A key bound to a course may only use aliases
-    that course enables. An unbound student key is allowed any student-visible
+    Admins and managers bypass. A key bound to a workspace may only use aliases
+    that workspace enables. An unbound member key is allowed any member-visible
     model - visibility is enforced separately by the registry.
     """
-    if principal.is_instructor:
+    if principal.is_manager:
         return
-    if principal.course_id is None:
+    if principal.workspace_id is None:
         return
 
     result = await session.execute(
-        select(CourseModel).where(
-            CourseModel.course_id == principal.course_id,
-            CourseModel.model_alias == alias,
+        select(WorkspaceModel).where(
+            WorkspaceModel.workspace_id == principal.workspace_id,
+            WorkspaceModel.model_alias == alias,
         )
     )
     row = result.scalar_one_or_none()
     if row is None or not row.enabled:
         raise GatewayError(
             ErrorCode.MODEL_NOT_PERMITTED,
-            f"Model '{alias}' is not enabled for your course.",
+            f"Model '{alias}' is not enabled for your workspace.",
             details={"model": alias},
         )
 

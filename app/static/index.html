@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>EduLLM Gateway Console</title>
+<title>LiteGate Console</title>
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
@@ -76,7 +76,7 @@
 
       <div class="row" style="margin-top:14px">
         <div class="field">
-          <label for="m-alias">Alias — what students type</label>
+          <label for="m-alias">Alias — what members type</label>
           <input id="m-alias" placeholder="coding" autocomplete="off">
         </div>
         <div class="field">
@@ -86,8 +86,8 @@
         <div class="field">
           <label for="m-visibility">Visibility</label>
           <select id="m-visibility">
-            <option value="student">student</option>
-            <option value="instructor">instructor</option>
+            <option value="member">member</option>
+            <option value="manager">manager</option>
             <option value="admin">admin</option>
           </select>
         </div>
@@ -126,7 +126,7 @@
       </div>
 
       <div class="field">
-        <label>Purpose — the catalogue section students browse</label>
+        <label>Purpose — the catalogue section members browse</label>
         <div class="checks">
           <label><input type="checkbox" id="p-general" checked> general</label>
           <label><input type="checkbox" id="p-coding"> coding</label>
@@ -180,8 +180,8 @@
           <select id="k-user"></select>
         </div>
         <div class="field">
-          <label for="k-course">Course (optional — restricts to that course's models)</label>
-          <select id="k-course"><option value="">— none —</option></select>
+          <label for="k-workspace">Workspace (optional — restricts to that workspace's models)</label>
+          <select id="k-workspace"><option value="">— none —</option></select>
         </div>
         <div class="field">
           <label for="k-name">Label</label>
@@ -205,7 +205,7 @@
       <h3>Create a user</h3>
       <div class="row" style="margin-top:12px">
         <div class="field">
-          <label for="u-id">Student / staff ID</label>
+          <label for="u-id">Member / staff ID</label>
           <input id="u-id" placeholder="6412345678" autocomplete="off">
         </div>
         <div class="field">
@@ -215,8 +215,8 @@
         <div class="field">
           <label for="u-role">Role</label>
           <select id="u-role">
-            <option value="student">student</option>
-            <option value="instructor">instructor</option>
+            <option value="member">member</option>
+            <option value="manager">manager</option>
             <option value="admin">admin</option>
           </select>
         </div>
@@ -225,7 +225,7 @@
     </div>
 
     <div class="card">
-      <h3>Create a course</h3>
+      <h3>Create a workspace</h3>
       <div class="row" style="margin-top:12px">
         <div class="field">
           <label for="c-code">Code</label>
@@ -240,12 +240,12 @@
           <input id="c-term" placeholder="1/2569" autocomplete="off">
         </div>
       </div>
-      <button id="create-course">Create course</button>
+      <button id="create-workspace">Create workspace</button>
     </div>
 
     <div>
-      <h2>Courses — allowed models</h2>
-      <div class="scroll"><table id="course-table"></table></div>
+      <h2>Workspaces — allowed models</h2>
+      <div class="scroll"><table id="workspace-table"></table></div>
     </div>
   </section>
 
@@ -254,7 +254,7 @@
     <div class="card">
       <h3>Add a quota policy</h3>
       <p class="hint">
-        The most specific match wins: user + model &gt; user &gt; course + model &gt; course &gt; global.
+        The most specific match wins: user + model &gt; user &gt; workspace + model &gt; workspace &gt; global.
         Leave a limit at 0 for unlimited.
       </p>
       <div class="row" style="margin-top:12px">
@@ -262,13 +262,13 @@
           <label for="q-scope">Scope</label>
           <select id="q-scope">
             <option value="global">global</option>
-            <option value="course">course</option>
+            <option value="workspace">workspace</option>
             <option value="user">user</option>
           </select>
         </div>
-        <div class="field" id="q-course-wrap" hidden>
-          <label for="q-course">Course</label>
-          <select id="q-course"></select>
+        <div class="field" id="q-workspace-wrap" hidden>
+          <label for="q-workspace">Workspace</label>
+          <select id="q-workspace"></select>
         </div>
         <div class="field" id="q-user-wrap" hidden>
           <label for="q-user">User</label>

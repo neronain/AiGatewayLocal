@@ -2,7 +2,7 @@
 
 The pipeline, in the order the PRD specifies (§15):
 
-    authenticate -> course policy -> resolve alias -> parse content blocks
+    authenticate -> workspace policy -> resolve alias -> parse content blocks
     -> validate model capability -> validate vision policy -> context budget
     -> quota -> select compatible healthy endpoint -> forward -> record usage
 """
@@ -50,7 +50,7 @@ async def list_models(
     principal: Principal = Depends(authenticate),
     state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
-    """OpenAI-shaped catalogue. Students only ever see the alias (PRD §6)."""
+    """OpenAI-shaped catalogue. Members only ever see the alias (PRD §6)."""
     snapshot = state.registry.snapshot
     data = []
     for model in snapshot.visible_to(principal.role):
@@ -58,7 +58,7 @@ async def list_models(
             "id": model.alias,
             "object": "model",
             "created": 0,
-            "owned_by": "edullm-gateway",
+            "owned_by": "litegate",
             # Non-standard but harmless extras that OpenAI SDKs pass through.
             "display_name": model.metadata.display_name,
             "description": model.metadata.description,
@@ -109,7 +109,7 @@ async def chat_completions(
     )
 
     limits = await state.quota.resolve_limits(
-        session, principal.user_id, principal.course_id, alias
+        session, principal.user_id, principal.workspace_id, alias
     )
     await state.quota.check(principal.user_id, limits)
 
@@ -257,7 +257,7 @@ async def _complete_chat(
             ErrorCode.UPSTREAM_ERROR, "The model server returned a malformed response."
         ) from exc
 
-    # The student asked for the alias; never leak the upstream repository name.
+    # The member asked for the alias; never leak the upstream repository name.
     data["model"] = alias
     usage = resolve_usage(ctx.profile, data.get("usage"))
     _augment_usage_payload(data, usage)
@@ -267,8 +267,11 @@ async def _complete_chat(
         content=data,
         headers={
             "x-request-id": ctx.request_id,
+            "x-litegate-model": alias,
+            # Legacy alias, one release only: scripts and dashboards still
+            # read x-edullm-model.
             "x-edullm-model": alias,
-            "x-edullm-endpoint": endpoint.name,
+            "x-litegate-endpoint": endpoint.name,
         },
     )
 
@@ -282,7 +285,7 @@ def _augment_usage_payload(data: dict[str, Any], usage: TokenUsage) -> None:
             "completion_tokens": usage.output_tokens,
             "total_tokens": usage.total_tokens,
         }
-    existing["edullm"] = {
+    existing["litegate"] = {
         "text_input_tokens": usage.text_input_tokens,
         "visual_input_tokens": usage.visual_input_tokens,
         "accounting": usage.accounting,
@@ -378,6 +381,7 @@ async def _stream_chat(
             "connection": "keep-alive",
             "x-accel-buffering": "no",  # nginx must not buffer SSE
             "x-request-id": ctx.request_id,
+            "x-litegate-model": ctx.model.alias,
             "x-edullm-model": ctx.model.alias,
         },
     )

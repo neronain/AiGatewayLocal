@@ -6,7 +6,7 @@ by a code change without a schema change and a review.
 
 Writes are buffered and flushed by a background task: a slow database must never
 add latency to an inference response, and losing at most one flush window of
-usage rows is preferable to failing student requests.
+usage rows is preferable to failing member requests.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ class UsageRecord:
     protocol: str
     ts: datetime = field(default_factory=utcnow)
     user_id: str | None = None
-    course_id: str | None = None
+    workspace_id: str | None = None
     api_key_id: str | None = None
     endpoint_name: str = ""
     request_modality: str = "text"
@@ -61,7 +61,7 @@ class UsageRecord:
             request_id=self.request_id,
             ts=self.ts,
             user_id=self.user_id,
-            course_id=self.course_id,
+            workspace_id=self.workspace_id,
             api_key_id=self.api_key_id,
             model_alias=self.model_alias,
             endpoint_name=self.endpoint_name,
@@ -105,7 +105,7 @@ def build_record(
         model_alias=model_alias,
         protocol=protocol,
         user_id=principal.user_id if principal else None,
-        course_id=principal.course_id if principal else None,
+        workspace_id=principal.workspace_id if principal else None,
         api_key_id=principal.api_key_id if principal else None,
         endpoint_name=endpoint_name,
         request_modality=profile.request_modality if profile else "text",

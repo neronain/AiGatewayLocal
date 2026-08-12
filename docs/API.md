@@ -43,7 +43,7 @@ Every response carries `x-request-id`. Quote it when reporting a problem.
 
 ---
 
-## Student endpoints
+## Member endpoints
 
 ### `GET /v1/models`
 
@@ -55,7 +55,7 @@ OpenAI-shaped catalogue, filtered by the caller's role.
   "data": [{
     "id": "coding",
     "object": "model",
-    "owned_by": "edullm-gateway",
+    "owned_by": "litegate",
     "display_name": "Local Coder",
     "purpose": ["coding", "agent"],
     "capabilities": { "chat": true, "vision": false, "tools": true, "streaming": true,
@@ -73,11 +73,11 @@ OpenAI-shaped catalogue, filtered by the caller's role.
 
 ### `GET /v1/catalog`
 
-The same models grouped by purpose, for a student-facing UI.
+The same models grouped by purpose, for a member-facing UI.
 
 ```json
 {
-  "user": { "display_name": "Somchai", "role": "student" },
+  "user": { "display_name": "Somchai", "role": "member" },
   "sections": [{
     "purpose": "coding",
     "title": "Coding AI",
@@ -99,7 +99,7 @@ Identity plus remaining quota.
 
 ```json
 {
-  "user_id": "…", "external_id": "6412345678", "role": "student",
+  "user_id": "…", "external_id": "6412345678", "role": "member",
   "quota": {
     "window": "day",
     "window_end": "2026-08-13T00:00:00+00:00",
@@ -150,13 +150,13 @@ curl -X POST $GW/v1/chat/completions \
                 "finish_reason": "stop" }],
   "usage": {
     "prompt_tokens": 1465, "completion_tokens": 210, "total_tokens": 1675,
-    "edullm": { "text_input_tokens": 360, "visual_input_tokens": 1105,
+    "litegate": { "text_input_tokens": 360, "visual_input_tokens": 1105,
                 "accounting": "upstream" }
   }
 }
 ```
 
-`usage.edullm` is a gateway addition; OpenAI SDKs ignore unknown fields.
+`usage.litegate` is a gateway addition; OpenAI SDKs ignore unknown fields.
 `accounting` is `upstream` (backend-reported) or `estimated` — see
 [PRD §8.3](PRD.md#fr-37--visual-token-accounting--p1).
 
@@ -170,8 +170,8 @@ you, so the stream matches exactly what you asked for.
 | Header | Meaning |
 |---|---|
 | `x-request-id` | Correlates with logs and usage rows |
-| `x-edullm-model` | The alias that served the request |
-| `x-edullm-endpoint` | Which backend was chosen |
+| `x-litegate-model` | The alias that served the request |
+| `x-litegate-endpoint` | Which backend was chosen |
 
 ---
 
@@ -209,7 +209,7 @@ message_start → content_block_start → content_block_delta* → content_block
 Anthropic-only features with no OpenAI equivalent (extended thinking, citations,
 cache control) are dropped when translating and never fabricated on the way back.
 
-`x-edullm-protocol` tells you which path served the request:
+`x-litegate-protocol` tells you which path served the request:
 `anthropic-native` or `anthropic-via-openai`.
 
 ### `POST /v1/messages/count_tokens`
@@ -219,7 +219,7 @@ treat it as approximate.
 
 ```json
 { "input_tokens": 1465,
-  "edullm": { "text_input_tokens": 360, "visual_input_tokens": 1105,
+  "litegate": { "text_input_tokens": 360, "visual_input_tokens": 1105,
               "accounting": "estimated" } }
 ```
 
@@ -227,29 +227,29 @@ treat it as approximate.
 
 ## Admin endpoints
 
-`instructor` or `admin` required as noted. Restrict `/admin/*` to the management
+`manager` or `admin` required as noted. Restrict `/admin/*` to the management
 network at the proxy (SEC-5).
 
 | Method | Path | Role | Purpose |
 |---|---|---|---|
 | POST | `/admin/users` | admin | Create a user |
-| GET | `/admin/users?role=` | instructor | List users |
+| GET | `/admin/users?role=` | manager | List users |
 | PATCH | `/admin/users/{id}` | admin | Update role / status |
-| POST | `/admin/courses` | admin | Create a course |
-| GET | `/admin/courses` | instructor | List courses |
-| POST | `/admin/courses/{id}/models` | instructor | Replace the allowed alias list |
-| POST | `/admin/courses/{id}/enroll` | instructor | Enroll a user |
-| POST | `/admin/api-keys` | instructor | Issue a key (**plaintext returned once**) |
-| GET | `/admin/api-keys?user_id=` | instructor | List keys (prefix only) |
-| DELETE | `/admin/api-keys/{id}` | instructor | Revoke |
+| POST | `/admin/workspaces` | admin | Create a workspace |
+| GET | `/admin/workspaces` | manager | List workspaces |
+| POST | `/admin/workspaces/{id}/models` | manager | Replace the allowed alias list |
+| POST | `/admin/workspaces/{id}/join` | manager | Enroll a user |
+| POST | `/admin/api-keys` | manager | Issue a key (**plaintext returned once**) |
+| GET | `/admin/api-keys?user_id=` | manager | List keys (prefix only) |
+| DELETE | `/admin/api-keys/{id}` | manager | Revoke |
 | POST | `/admin/quota-policies` | admin | Create a policy |
-| GET | `/admin/quota-policies` | instructor | List policies |
+| GET | `/admin/quota-policies` | manager | List policies |
 | GET | `/admin/models` | admin | Registry incl. upstream names, endpoints, health |
 | POST | `/admin/registry/reload` | admin | Reload YAML (see the worker caveat below) |
 | POST | `/admin/models/{alias}/compatibility` | admin | Record a test result |
-| GET | `/admin/models/{alias}/compatibility` | instructor | READY / DEGRADED roll-up |
-| GET | `/admin/usage/summary?days=` | instructor | Per-model totals |
-| GET | `/admin/usage/top-users?days=` | instructor | Heaviest users |
+| GET | `/admin/models/{alias}/compatibility` | manager | READY / DEGRADED roll-up |
+| GET | `/admin/usage/summary?days=` | manager | Per-model totals |
+| GET | `/admin/usage/top-users?days=` | manager | Heaviest users |
 
 > **`POST /admin/registry/reload` reloads only the worker that handled the
 > request.** With multiple uvicorn workers, the file-watcher
@@ -258,7 +258,7 @@ network at the proxy (SEC-5).
 ### `POST /admin/api-keys`
 
 ```json
-{ "user_id": "…", "course_id": "…", "name": "CS101 key", "expires_in_days": 180 }
+{ "user_id": "…", "workspace_id": "…", "name": "CS101 key", "expires_in_days": 180 }
 ```
 
 ```json

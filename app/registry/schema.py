@@ -24,7 +24,7 @@ class Modality(StrEnum):
 
 
 class Purpose(StrEnum):
-    """Catalogue grouping shown to students. A model may have several."""
+    """Catalogue grouping shown to members. A model may have several."""
 
     GENERAL = "general"
     CODING = "coding"
@@ -44,9 +44,21 @@ class ServerType(StrEnum):
 
 
 class Visibility(StrEnum):
-    STUDENT = "student"
-    INSTRUCTOR = "instructor"
+    MEMBER = "member"
+    MANAGER = "manager"
     ADMIN = "admin"
+
+    @classmethod
+    def _missing_(cls, value: object) -> Visibility | None:
+        """Accept the pre-rename vocabulary.
+
+        Registries written as `visibility: student` predate the move to
+        workspace vocabulary. Rejecting them empties the registry on upgrade,
+        which is exactly what happened once before this existed.
+        """
+        return {"student": cls.MEMBER, "instructor": cls.MANAGER}.get(
+            str(value).lower()
+        )
 
 
 class Capabilities(BaseModel):
@@ -165,11 +177,11 @@ class Endpoint(BaseModel):
 class ModelMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    # Stable public identifier. This is the ONLY name a student ever sees.
+    # Stable public identifier. This is the ONLY name a member ever sees.
     alias: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{1,62}$")
     display_name: str
     description: str = ""
-    visibility: Visibility = Visibility.STUDENT
+    visibility: Visibility = Visibility.MEMBER
     tags: list[str] = Field(default_factory=list)
 
 
@@ -242,7 +254,9 @@ class ModelDefinition(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    apiVersion: Literal["edullm.gateway/v1"] = "edullm.gateway/v1"
+    # The former identifier is still accepted: a registry written before the
+    # rename must keep loading without anyone editing every file.
+    apiVersion: Literal["litegate.dev/v1", "edullm.gateway/v1"] = "litegate.dev/v1"
     kind: Literal["Model"] = "Model"
     metadata: ModelMetadata
     spec: ModelSpec
@@ -256,6 +270,10 @@ class QuotaDefaults(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     window: Literal["day", "month", "term"] = "day"
+    # Months a "term" begins on, for organisations that bill or budget on a
+    # calendar of their own: [1, 4, 7, 10] for fiscal quarters, [9, 2] for a
+    # two-semester year. Default is the Thai academic year this first ran on.
+    term_start_months: list[int] = Field(default_factory=lambda: [1, 6, 8])
     max_requests: int = Field(default=1000, ge=0)
     max_input_tokens: int = Field(default=2_000_000, ge=0)
     max_output_tokens: int = Field(default=500_000, ge=0)
@@ -284,7 +302,9 @@ class GatewayConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    apiVersion: Literal["edullm.gateway/v1"] = "edullm.gateway/v1"
+    # The former identifier is still accepted: a registry written before the
+    # rename must keep loading without anyone editing every file.
+    apiVersion: Literal["litegate.dev/v1", "edullm.gateway/v1"] = "litegate.dev/v1"
     kind: Literal["GatewayConfig"] = "GatewayConfig"
     vision_policy: VisionPolicy = Field(default_factory=VisionPolicy)
     privacy: PrivacyPolicy = Field(default_factory=PrivacyPolicy)

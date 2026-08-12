@@ -1,4 +1,4 @@
-"""Persistence layer (PRD v1.3 §12 Data Model).
+"""Persistence layer (PRD §12 Data Model).
 
 Design rules encoded here:
   * Prompts, responses and images are NEVER columns. Privacy default is no-store
@@ -7,6 +7,11 @@ Design rules encoded here:
     projection kept for foreign keys and reporting, refreshed on registry load.
   * API keys are stored as HMAC-SHA256 digests; the plaintext exists only in the
     response that created it.
+  * Physical table and column names predate the rename to workspace vocabulary
+    and are kept as-is. They are not part of the product surface, and renaming
+    them would force every existing deployment through a migration to gain
+    nothing a user can see. Where the Python attribute and the column differ,
+    mapped_column states the column name explicitly.
 """
 
 from __future__ import annotations
@@ -55,18 +60,18 @@ class User(Base, TimestampMixin):
     __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    # Student ID / staff ID from the university IdP.
+    # Member ID / staff ID from the university IdP.
     external_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     email: Mapped[str | None] = mapped_column(String(255), index=True)
     display_name: Mapped[str] = mapped_column(String(255), default="")
-    role: Mapped[str] = mapped_column(String(32), default="student")  # student|instructor|admin
+    role: Mapped[str] = mapped_column(String(32), default="member")  # member|manager|admin
     status: Mapped[str] = mapped_column(String(32), default="active")  # active|suspended
 
     api_keys: Mapped[list[ApiKey]] = relationship(back_populates="user")
-    enrollments: Mapped[list[Enrollment]] = relationship(back_populates="user")
+    memberships: Mapped[list[Membership]] = relationship(back_populates="user")
 
 
-class Course(Base, TimestampMixin):
+class Workspace(Base, TimestampMixin):
     __tablename__ = "courses"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
@@ -75,21 +80,23 @@ class Course(Base, TimestampMixin):
     term: Mapped[str] = mapped_column(String(32), default="")
     status: Mapped[str] = mapped_column(String(32), default="active")
 
-    enrollments: Mapped[list[Enrollment]] = relationship(back_populates="course")
-    allowed_models: Mapped[list[CourseModel]] = relationship(back_populates="course")
+    memberships: Mapped[list[Membership]] = relationship(back_populates="workspace")
+    allowed_models: Mapped[list[WorkspaceModel]] = relationship(back_populates="workspace")
 
 
-class Enrollment(Base, TimestampMixin):
+class Membership(Base, TimestampMixin):
     __tablename__ = "enrollments"
     __table_args__ = (UniqueConstraint("user_id", "course_id", name="uq_enrollment"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
-    course_id: Mapped[str] = mapped_column(ForeignKey("courses.id"), index=True)
-    role: Mapped[str] = mapped_column(String(32), default="student")
+    workspace_id: Mapped[str] = mapped_column(
+        "course_id", ForeignKey("courses.id"), index=True
+    )
+    role: Mapped[str] = mapped_column(String(32), default="member")
 
-    user: Mapped[User] = relationship(back_populates="enrollments")
-    course: Mapped[Course] = relationship(back_populates="enrollments")
+    user: Mapped[User] = relationship(back_populates="memberships")
+    workspace: Mapped[Workspace] = relationship(back_populates="memberships")
 
 
 class ApiKey(Base, TimestampMixin):
@@ -97,8 +104,10 @@ class ApiKey(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
-    # Optional binding: a key issued for one course can only spend that course's quota.
-    course_id: Mapped[str | None] = mapped_column(ForeignKey("courses.id"), index=True)
+    # Optional binding: a key issued for one workspace can only spend that workspace's quota.
+    workspace_id: Mapped[str | None] = mapped_column(
+        "course_id", ForeignKey("courses.id"), index=True
+    )
     name: Mapped[str] = mapped_column(String(128), default="")
     # First 12 chars ("edu_sk_ab12"), shown in UI so a key can be identified.
     key_prefix: Mapped[str] = mapped_column(String(24), index=True)
@@ -141,7 +150,7 @@ class ModelRecord(Base, TimestampMixin):
     supports_anthropic: Mapped[bool] = mapped_column(Boolean, default=False)
     claude_code_compatible: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    visibility: Mapped[str] = mapped_column(String(32), default="student")
+    visibility: Mapped[str] = mapped_column(String(32), default="member")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
     compatibility: Mapped[list[ModelCompatibility]] = relationship(
@@ -149,18 +158,20 @@ class ModelRecord(Base, TimestampMixin):
     )
 
 
-class CourseModel(Base, TimestampMixin):
-    """Which aliases a course may call. Absent row == not permitted."""
+class WorkspaceModel(Base, TimestampMixin):
+    """Which aliases a workspace may call. Absent row == not permitted."""
 
     __tablename__ = "course_models"
     __table_args__ = (UniqueConstraint("course_id", "model_alias", name="uq_course_model"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    course_id: Mapped[str] = mapped_column(ForeignKey("courses.id"), index=True)
+    workspace_id: Mapped[str] = mapped_column(
+        "course_id", ForeignKey("courses.id"), index=True
+    )
     model_alias: Mapped[str] = mapped_column(String(64), index=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    course: Mapped[Course] = relationship(back_populates="allowed_models")
+    workspace: Mapped[Workspace] = relationship(back_populates="allowed_models")
 
 
 class ModelCompatibility(Base):
@@ -185,13 +196,15 @@ class ModelCompatibility(Base):
 # Quota + usage
 # --------------------------------------------------------------------------
 class QuotaPolicy(Base, TimestampMixin):
-    """Most specific matching policy wins: user > course > global."""
+    """Most specific matching policy wins: user > workspace > global."""
 
     __tablename__ = "quota_policies"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
-    scope: Mapped[str] = mapped_column(String(16), default="global")  # global|course|user
-    course_id: Mapped[str | None] = mapped_column(ForeignKey("courses.id"), index=True)
+    scope: Mapped[str] = mapped_column(String(16), default="global")  # global|workspace|user
+    workspace_id: Mapped[str | None] = mapped_column(
+        "course_id", ForeignKey("courses.id"), index=True
+    )
     user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), index=True)
     model_alias: Mapped[str | None] = mapped_column(String(64), index=True)
 
@@ -233,7 +246,7 @@ class UsageLog(Base):
     __tablename__ = "usage_logs"
     __table_args__ = (
         Index("ix_usage_ts_user", "ts", "user_id"),
-        Index("ix_usage_ts_course", "ts", "course_id"),
+        Index("ix_usage_ts_workspace", "ts", "course_id"),
         Index("ix_usage_ts_model", "ts", "model_alias"),
     )
 
@@ -242,7 +255,7 @@ class UsageLog(Base):
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
     user_id: Mapped[str | None] = mapped_column(String(32), index=True)
-    course_id: Mapped[str | None] = mapped_column(String(32), index=True)
+    workspace_id: Mapped[str | None] = mapped_column("course_id", String(32), index=True)
     api_key_id: Mapped[str | None] = mapped_column(String(32), index=True)
 
     model_alias: Mapped[str] = mapped_column(String(64), index=True)
