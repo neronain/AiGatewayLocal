@@ -115,6 +115,11 @@ def validate_context_budget(
     return max(max_output, 1)
 
 
+def upstream_model_for(model: ModelDefinition, endpoint: Endpoint) -> str:
+    """The name this particular backend knows the model by (PRD §4.1)."""
+    return endpoint.upstream_model or model.spec.upstream_model
+
+
 def compatibility_badges(model: ModelDefinition) -> list[str]:
     """Short capability labels for the student catalogue (PRD §6)."""
     caps = model.spec.capabilities

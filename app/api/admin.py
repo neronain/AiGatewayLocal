@@ -436,6 +436,10 @@ async def admin_models(
             {
                 "alias": alias,
                 "display_name": model.metadata.display_name,
+                # Returned so the console's Edit form can round-trip a model
+                # without silently dropping fields it did not show.
+                "description": model.metadata.description,
+                "tags": model.metadata.tags,
                 "visibility": model.metadata.visibility.value,
                 "upstream_model": model.spec.upstream_model,
                 "purpose": [p.value for p in model.spec.purpose],
@@ -456,9 +460,12 @@ async def admin_models(
                         "name": e.name,
                         "server_type": e.server_type.value,
                         "base_url": e.normalized_base_url,
+                        "upstream_model": e.upstream_model,
+                        "api_key_env": e.api_key_env,
                         "priority": e.priority,
                         "weight": e.weight,
                         "max_concurrency": e.max_concurrency,
+                        "health_path": e.health_path,
                         "protocols": e.protocols.model_dump(),
                         "modalities": e.modalities.model_dump(),
                         "enabled": e.enabled,

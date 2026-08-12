@@ -233,3 +233,85 @@ def test_test_run_on_unknown_model_is_404(client):
 def test_test_run_is_admin_only(client, student_key):
     response = client.post("/admin/models/coding/test", headers=auth(student_key))
     assert response.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Per-endpoint upstream override (failover across heterogeneous backends)
+# ---------------------------------------------------------------------------
+def test_endpoint_upstream_override_is_accepted(client):
+    """Two backends serving the same weights under different names."""
+    spec = definition()["spec"]
+    spec["endpoints"] = [
+        {
+            "name": "direct",
+            "server_type": "llama.cpp",
+            "base_url": "http://direct:8000",
+            "priority": 100,
+            "protocols": {"openai": True, "anthropic": False},
+            "modalities": {"text": True, "image": False},
+        },
+        {
+            "name": "router",
+            "server_type": "openai_compatible",
+            "base_url": "http://router:8081",
+            "upstream_model": "Ai1/org-Some-Model",
+            "priority": 50,
+            "protocols": {"openai": True, "anthropic": False},
+            "modalities": {"text": True, "image": False},
+        },
+    ]
+    payload = definition()
+    payload["spec"] = spec
+
+    response = client.post(
+        "/admin/models/preview", json=payload, headers=auth(client.admin_key)
+    )
+    assert response.status_code == 200
+    parsed = yaml.safe_load(response.json()["yaml"])
+    endpoints = parsed["spec"]["endpoints"]
+    assert endpoints[0].get("upstream_model", "") == ""
+    assert endpoints[1]["upstream_model"] == "Ai1/org-Some-Model"
+
+
+@respx.mock
+def test_request_uses_the_endpoints_own_model_name(client, student_key):
+    """The name sent upstream must be the one that backend knows."""
+    from app.registry.schema import Endpoint
+    from tests.conftest import REPO_ROOT  # noqa: F401
+
+    reply = {
+        "id": "c1",
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": "hi"},
+             "finish_reason": "stop"}
+        ],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+    }
+    route = respx.post("http://router:8081/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json=reply)
+    )
+
+    # Point the live 'coding' model at a router that renames the model.
+    snapshot = client.app.state.services.registry.snapshot
+    model = snapshot.models["coding"]
+    model.spec.endpoints[:] = [
+        Endpoint(
+            name="router",
+            server_type="openai_compatible",
+            base_url="http://router:8081",
+            upstream_model="Ai1/Qwen3-Coder-30B-A3B-Instruct",
+            protocols={"openai": True, "anthropic": False},
+            modalities={"text": True, "image": False},
+        )
+    ]
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers=auth(student_key),
+        json={"model": "coding", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.status_code == 200
+    sent = __import__("json").loads(route.calls[0].request.content)
+    assert sent["model"] == "Ai1/Qwen3-Coder-30B-A3B-Instruct"
+    # The student still only ever sees the alias.
+    assert response.json()["model"] == "coding"

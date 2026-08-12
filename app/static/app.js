@@ -1,10 +1,25 @@
 /* EduLLM Gateway console.
-   Plain ES modules-free JS: the page must run from a static mount with no build
-   step and no network access beyond the gateway itself. */
+   Plain browser JS: the page must run from a static mount with no build step
+   and no network access beyond the gateway itself. */
 
 const KEY_STORE = 'edullm_key';
+const THEME_STORE = 'edullm_theme';
 const $ = (id) => document.getElementById(id);
 const state = { key: sessionStorage.getItem(KEY_STORE) || '', me: null, cache: {} };
+
+/* ---------------------------------------------------------------- theme */
+(function initTheme() {
+  const saved = localStorage.getItem(THEME_STORE);
+  if (saved) document.documentElement.setAttribute('data-theme', saved);
+})();
+$('theme').onclick = () => {
+  const root = document.documentElement;
+  const current = root.getAttribute('data-theme')
+    || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  const next = current === 'dark' ? 'light' : 'dark';
+  root.setAttribute('data-theme', next);
+  localStorage.setItem(THEME_STORE, next);
+};
 
 /* ---------------------------------------------------------------- utils */
 function esc(value) {
@@ -15,16 +30,15 @@ function esc(value) {
 const num = (v) => (v || 0).toLocaleString();
 
 function banner(target, kind, message) {
-  $(target).innerHTML = message
-    ? `<div class="banner ${kind}">${esc(message)}</div>` : '';
+  $(target).innerHTML = message ? `<div class="banner ${kind}">${esc(message)}</div>` : '';
 }
 const showError = (m) => banner('error', 'err', m);
 
-function flash(target, kind, message) {
-  const el = $(target);
-  el.className = 'sub';
-  el.style.color = kind === 'err' ? 'var(--err)' : kind === 'ok' ? 'var(--ok)' : 'var(--muted)';
-  el.textContent = message;
+function flash(el, kind, message) {
+  const node = typeof el === 'string' ? $(el) : el;
+  node.className = 'sub';
+  node.style.color = kind === 'err' ? 'var(--bad)' : kind === 'ok' ? 'var(--ok)' : 'var(--fg2)';
+  node.textContent = message;
 }
 
 async function api(path, options = {}) {
@@ -120,7 +134,7 @@ function renderCatalog(data) {
       ${s.models.map((m) => `
         <div class="card">
           <h3>${esc(m.name)}</h3>
-          <div class="sub mono">${esc(m.id)}</div>
+          <div class="mono" style="color:var(--fg3)">${esc(m.id)}</div>
           ${m.description ? `<p class="hint">${esc(m.description)}</p>` : ''}
           <div class="badges">${m.badges.map((b) => `<span class="badge">${esc(b)}</span>`).join('')}</div>
           <div class="sub">${esc(m.context)}
@@ -168,16 +182,16 @@ async function loadModels() {
     api('/admin/models'), api('/admin/registry/status'),
   ]);
   state.cache.models = registry.data;
+  state.cache.writable = status.writable;
 
   if (!status.writable) {
     banner('registry-note', 'warn',
       `The registry at ${status.config_dir} is read-only, so "Save to registry" is unavailable. ` +
       'Use Preview YAML and commit the file to git.');
+  } else if (registry.errors?.length) {
+    banner('registry-note', 'err', 'Registry errors: ' + registry.errors.join(' | '));
   } else {
     banner('registry-note', '', '');
-  }
-  if (registry.errors?.length) {
-    banner('registry-note', 'err', 'Registry errors: ' + registry.errors.join(' | '));
   }
 
   const compat = await Promise.all(
@@ -186,21 +200,23 @@ async function loadModels() {
   );
 
   $('model-table').innerHTML = `
-    <tr><th>Alias</th><th>Upstream / backend</th><th>Capabilities</th>
+    <tr><th>Alias</th><th>Upstream / backends</th><th>Capabilities</th>
         <th>Health</th><th>Test status</th><th></th></tr>
     ${registry.data.map((m, i) => {
-      const ep = m.endpoints[0] || {};
-      const healthy = m.endpoints.every((e) => e.health?.healthy);
+      const healthy = m.endpoints.filter((e) => e.health?.healthy).length;
+      const total = m.endpoints.length;
+      const cls = healthy === total ? 'ok' : healthy ? 'warn' : 'err';
       const c = compat[i];
-      const cls = c.status === 'READY' ? 'ok' : c.status === 'DEGRADED' ? 'err' : 'mute';
+      const ccls = c.status === 'READY' ? 'ok' : c.status === 'DEGRADED' ? 'err' : 'mute';
       return `<tr>
-        <td><code>${esc(m.alias)}</code><div class="sub">${esc(m.display_name)}</div></td>
+        <td><code>${esc(m.alias)}</code><div class="hint">${esc(m.display_name)}</div></td>
         <td><code>${esc(m.upstream_model)}</code>
-            <div class="sub">${esc(ep.server_type || '')} · ${esc(ep.base_url || '')}</div></td>
+            ${m.endpoints.map((e) => `<div class="hint">${esc(e.server_type)} ·
+              ${esc(e.base_url)} ${e.health?.healthy ? '' : '<span class="pill err">down</span>'}</div>`).join('')}</td>
         <td>${m.badges.map((b) => `<span class="badge">${esc(b)}</span>`).join(' ')}</td>
-        <td><span class="pill ${healthy ? 'ok' : 'err'}">${healthy ? 'healthy' : 'down'}</span></td>
-        <td><span class="pill ${cls}">${esc(c.status)}</span>
-            <div class="sub" id="run-${esc(m.alias)}"></div></td>
+        <td><span class="pill ${cls}">${healthy}/${total} up</span></td>
+        <td><span class="pill ${ccls}">${esc(c.status)}</span>
+            <div class="hint" id="run-${esc(m.alias)}"></div></td>
         <td style="white-space:nowrap">
           <button class="ghost small" data-test="${esc(m.alias)}">Run tests</button>
           <button class="ghost small" data-edit="${esc(m.alias)}">Edit</button>
@@ -241,7 +257,7 @@ async function runTests(alias, btn) {
         const rows = run.results.map((r) => `<tr><td><code>${esc(r.test_id)}</code></td>
           <td>${esc(r.feature)}</td>
           <td><span class="pill ${STATUS_PILL[r.status]}">${esc(r.status)}</span></td>
-          <td class="num">${r.latency_ms}</td><td class="empty">${esc(r.notes)}</td></tr>`).join('');
+          <td class="num">${r.latency_ms}</td><td class="hint">${esc(r.notes)}</td></tr>`).join('');
         modal(`Test results — ${alias}`,
           `<div class="scroll"><table><tr><th>Test</th><th>Feature</th><th>Status</th>
            <th class="num">ms</th><th>Notes</th></tr>${rows}</table></div>`);
@@ -256,12 +272,142 @@ async function runTests(alias, btn) {
   }
 }
 
+/* -- endpoint rows ---------------------------------------------------- */
+function addEndpointRow(data = {}) {
+  const node = $('endpoint-template').content.firstElementChild.cloneNode(true);
+  const q = (cls) => node.querySelector('.' + cls);
+
+  q('ep-name').value = data.name || '';
+  q('ep-server').value = data.server_type || 'vllm';
+  q('ep-url').value = data.base_url || '';
+  q('ep-upstream').value = data.upstream_model || '';
+  q('ep-keyenv').value = data.api_key_env || '';
+  q('ep-priority').value = data.priority ?? 100;
+  q('ep-conc').value = data.max_concurrency ?? 8;
+  q('ep-openai').checked = data.protocols ? !!data.protocols.openai : true;
+  q('ep-anthropic').checked = !!data.protocols?.anthropic;
+  q('ep-image').checked = !!data.modalities?.image;
+  q('ep-enabled').checked = data.enabled !== false;
+
+  const retitle = () => {
+    q('ep-title').textContent = q('ep-name').value.trim() || q('ep-url').value.trim() || 'Backend';
+  };
+  q('ep-name').addEventListener('input', retitle);
+  q('ep-url').addEventListener('input', retitle);
+  retitle();
+
+  q('ep-remove').onclick = () => {
+    if ($('endpoints').children.length <= 1) {
+      alert('A model needs at least one backend.');
+      return;
+    }
+    node.remove();
+  };
+
+  q('ep-detect').onclick = () => detectEndpoint(node);
+
+  $('endpoints').appendChild(node);
+  return node;
+}
+
+async function detectEndpoint(node) {
+  const q = (cls) => node.querySelector('.' + cls);
+  const out = q('ep-detect-out');
+  const base_url = q('ep-url').value.trim();
+  if (!base_url) { banner_in(out, 'err', 'Enter a base URL first'); return; }
+
+  q('ep-detect').disabled = true;
+  out.innerHTML = '<p class="hint">probing…</p>';
+  try {
+    const { suggestion } = await post('/admin/models/detect', {
+      base_url,
+      upstream_model: q('ep-upstream').value.trim() || $('m-upstream').value.trim(),
+      api_key_env: q('ep-keyenv').value.trim(),
+    });
+    if (!suggestion.reachable) {
+      banner_in(out, 'err', 'Backend not reachable. ' + suggestion.notes.join(' '));
+      return;
+    }
+
+    // Endpoint-level facts go on this row; model-level ones fill the form only
+    // when it is still empty, so detecting a second backend cannot silently
+    // rewrite what the admin already decided.
+    q('ep-anthropic').checked = !!suggestion.protocols?.anthropic;
+    q('ep-openai').checked = !!suggestion.protocols?.openai;
+    q('ep-image').checked = !!suggestion.capabilities.vision;
+
+    if (!$('m-upstream').value.trim() && suggestion.upstream_model) {
+      $('m-upstream').value = suggestion.upstream_model;
+    } else if (suggestion.upstream_model
+               && suggestion.upstream_model !== $('m-upstream').value.trim()
+               && !q('ep-upstream').value.trim()) {
+      // This backend calls it something else - that is what the override is for.
+      q('ep-upstream').value = suggestion.upstream_model;
+    }
+    if (suggestion.context_tokens && !Number($('m-ctx').value)) {
+      $('m-ctx').value = suggestion.context_tokens;
+    }
+    for (const [cap, on] of Object.entries(suggestion.capabilities)) {
+      if ($(`c-${cap}`)) $(`c-${cap}`).checked = on;
+    }
+    if (suggestion.protocols?.anthropic) $('x-anthropic').checked = true;
+
+    const yes = (v) => (v ? '<span class="pill ok">yes</span>' : '<span class="pill err">no</span>');
+    out.innerHTML = `<div class="banner ok" style="margin:10px 0 0">
+      Detected — confirm the capability boxes before saving.
+      <div style="margin-top:8px">
+        chat ${yes(suggestion.capabilities.chat)} ·
+        streaming ${yes(suggestion.capabilities.streaming)} ·
+        tools ${yes(suggestion.capabilities.tools)} ·
+        vision ${yes(suggestion.capabilities.vision)}
+        ${suggestion.context_tokens ? ` · context ${num(suggestion.context_tokens)}` : ''}
+      </div>
+      ${suggestion.served_models.length
+        ? `<div class="hint">serves: ${suggestion.served_models.map(esc).join(', ')}</div>` : ''}
+      ${suggestion.notes.length
+        ? `<div class="hint">${suggestion.notes.map(esc).join('<br>')}</div>` : ''}
+    </div>`;
+  } catch (e) {
+    banner_in(out, 'err', e.message);
+  } finally {
+    q('ep-detect').disabled = false;
+  }
+}
+
+function banner_in(node, kind, message) {
+  node.innerHTML = message
+    ? `<div class="banner ${kind}" style="margin:10px 0 0">${esc(message)}</div>` : '';
+}
+
+function readEndpoints() {
+  return [...$('endpoints').children].map((node, index) => {
+    const q = (cls) => node.querySelector('.' + cls);
+    const url = q('ep-url').value.trim();
+    const fallback = url.replace(/^https?:\/\//, '').replace(/[^\w.-]/g, '-').slice(0, 40);
+    return {
+      name: q('ep-name').value.trim() || fallback || `backend-${index + 1}`,
+      server_type: q('ep-server').value,
+      base_url: url,
+      upstream_model: q('ep-upstream').value.trim(),
+      api_key_env: q('ep-keyenv').value.trim(),
+      priority: Number(q('ep-priority').value) || 100,
+      weight: 1,
+      max_concurrency: Number(q('ep-conc').value) || 8,
+      health_path: '/health',
+      protocols: { openai: q('ep-openai').checked, anthropic: q('ep-anthropic').checked },
+      modalities: {
+        text: true, image: q('ep-image').checked, audio: false, video: false,
+      },
+      enabled: q('ep-enabled').checked,
+    };
+  });
+}
+
 function editorValues() {
   const checked = (id) => $(id).checked;
   const purposes = ['general', 'coding', 'vision', 'reasoning', 'agent', 'fast']
     .filter((p) => checked(`p-${p}`));
   const vision = checked('c-vision');
-  const anthropic = checked('x-anthropic');
 
   const definition = {
     apiVersion: 'edullm.gateway/v1',
@@ -271,6 +417,7 @@ function editorValues() {
       display_name: $('m-name').value.trim() || $('m-alias').value.trim(),
       description: $('m-desc').value.trim(),
       visibility: $('m-visibility').value,
+      tags: state.cache.editingTags || [],
     },
     spec: {
       upstream_model: $('m-upstream').value.trim(),
@@ -286,19 +433,8 @@ function editorValues() {
         reasoning: checked('c-reasoning'), agentic: checked('c-agentic'),
         audio: false, embedding: false,
       },
-      protocols: { openai: checked('x-openai'), anthropic },
-      endpoints: [{
-        name: ($('m-url').value.replace(/^https?:\/\//, '').replace(/[^\w.-]/g, '-') || 'backend').slice(0, 40),
-        server_type: $('m-server').value,
-        base_url: $('m-url').value.trim(),
-        api_key_env: $('m-keyenv').value.trim(),
-        priority: 100, weight: 1,
-        max_concurrency: Number($('m-conc').value) || 8,
-        health_path: '/health',
-        protocols: { openai: true, anthropic: false },
-        modalities: { text: true, image: vision, audio: false, video: false },
-        enabled: true,
-      }],
+      protocols: { openai: checked('x-openai'), anthropic: checked('x-anthropic') },
+      endpoints: readEndpoints(),
       enabled: true,
     },
   };
@@ -311,92 +447,51 @@ function editorValues() {
 function openEditor(model) {
   $('editor').hidden = false;
   $('editor-title').textContent = model ? `Edit ${model.alias}` : 'Add AI model';
-  banner('detect-out', '', '');
   flash('save-status', '', '');
-  flash('detect-status', '', '');
+  $('endpoints').innerHTML = '';
+  state.cache.editingTags = model?.tags || [];
 
-  const set = (id, v) => { $(id).value = v; };
-  const check = (id, v) => { $(id).checked = !!v; };
+  // Null-safe: the API returns every capability flag, including ones the form
+  // deliberately has no box for (audio, embedding). Without the guard the first
+  // missing id throws and everything after it - including the backend rows -
+  // silently never renders.
+  const set = (id, v) => { const el = $(id); if (el) el.value = v; };
+  const check = (id, v) => { const el = $(id); if (el) el.checked = !!v; };
 
   if (!model) {
-    ['m-alias', 'm-name', 'm-desc', 'm-url', 'm-keyenv', 'm-upstream'].forEach((i) => set(i, ''));
-    set('m-ctx', 131072); set('m-out', 8192); set('m-conc', 16);
+    ['m-alias', 'm-name', 'm-desc', 'm-upstream'].forEach((i) => set(i, ''));
+    set('m-ctx', 131072); set('m-out', 8192); set('m-visibility', 'student');
     ['c-vision', 'c-tools', 'c-coding', 'c-reasoning', 'c-agentic', 'x-anthropic', 'x-claudecode']
       .forEach((i) => check(i, false));
     ['c-chat', 'c-streaming', 'x-openai', 'p-general'].forEach((i) => check(i, true));
     ['p-coding', 'p-vision', 'p-reasoning', 'p-agent', 'p-fast'].forEach((i) => check(i, false));
     $('m-alias').disabled = false;
+    addEndpointRow();
   } else {
-    const ep = model.endpoints[0] || {};
     set('m-alias', model.alias); $('m-alias').disabled = true;
-    set('m-name', model.display_name); set('m-desc', '');
+    set('m-name', model.display_name);
+    set('m-desc', model.description || '');
     set('m-visibility', model.visibility);
     set('m-upstream', model.upstream_model);
-    set('m-server', ep.server_type || 'vllm'); set('m-url', ep.base_url || '');
-    set('m-keyenv', ''); set('m-conc', ep.max_concurrency || 16);
     set('m-ctx', model.limits.context_tokens); set('m-out', model.limits.max_output_tokens);
     for (const [k, v] of Object.entries(model.capabilities)) check(`c-${k}`, v);
     check('x-openai', model.protocols.openai); check('x-anthropic', model.protocols.anthropic);
     check('x-claudecode', !!model.agent_clients?.claude_code?.enabled);
     ['general', 'coding', 'vision', 'reasoning', 'agent', 'fast']
       .forEach((p) => check(`p-${p}`, model.purpose.includes(p)));
+    model.endpoints.forEach((e) => addEndpointRow(e));
   }
+
+  $('save-model').disabled = state.cache.writable === false;
   $('editor').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 $('new-model').onclick = () => openEditor(null);
+$('add-endpoint').onclick = () => addEndpointRow();
 $('editor-close').onclick = () => { $('editor').hidden = true; };
 $('reload-registry').onclick = async () => {
   try { await post('/admin/registry/reload'); await loadModels(); }
   catch (e) { showError(e.message); }
-};
-
-$('detect').onclick = async () => {
-  const base_url = $('m-url').value.trim();
-  if (!base_url) { flash('detect-status', 'err', 'Enter a base URL first'); return; }
-  flash('detect-status', '', 'probing…');
-  $('detect').disabled = true;
-  try {
-    const { suggestion } = await post('/admin/models/detect', {
-      base_url, upstream_model: $('m-upstream').value.trim(),
-      api_key_env: $('m-keyenv').value.trim(),
-    });
-    if (!suggestion.reachable) {
-      banner('detect-out', 'err', 'Backend not reachable. ' + suggestion.notes.join(' '));
-      flash('detect-status', 'err', 'failed');
-      return;
-    }
-    if (!$('m-upstream').value.trim() && suggestion.upstream_model) {
-      $('m-upstream').value = suggestion.upstream_model;
-    }
-    if (suggestion.context_tokens) $('m-ctx').value = suggestion.context_tokens;
-    for (const [cap, on] of Object.entries(suggestion.capabilities)) {
-      if ($(`c-${cap}`)) $(`c-${cap}`).checked = on;
-    }
-    if (suggestion.protocols?.anthropic) $('x-anthropic').checked = true;
-
-    const yes = (v) => (v ? '<span class="pill ok">yes</span>' : '<span class="pill err">no</span>');
-    $('detect-out').innerHTML = `<div class="banner ok">
-      Detected — please confirm before saving. Detection is a suggestion, not a decision.
-      <div style="margin-top:8px">
-        chat ${yes(suggestion.capabilities.chat)} ·
-        streaming ${yes(suggestion.capabilities.streaming)} ·
-        tools ${yes(suggestion.capabilities.tools)} ·
-        vision ${yes(suggestion.capabilities.vision)}
-        ${suggestion.context_tokens ? ` · context ${num(suggestion.context_tokens)}` : ''}
-      </div>
-      ${suggestion.served_models.length
-        ? `<div class="hint">serves: ${suggestion.served_models.map(esc).join(', ')}</div>` : ''}
-      ${suggestion.notes.length
-        ? `<div class="hint">${suggestion.notes.map(esc).join('<br>')}</div>` : ''}
-    </div>`;
-    flash('detect-status', 'ok', 'done');
-  } catch (e) {
-    flash('detect-status', 'err', 'failed');
-    banner('detect-out', 'err', e.message);
-  } finally {
-    $('detect').disabled = false;
-  }
 };
 
 $('preview-yaml').onclick = async () => {
@@ -454,8 +549,8 @@ async function loadAccess() {
         <td>${esc(u ? u.external_id : k.user_id)}</td>
         <td>${esc(course ? course.code : '—')}</td>
         <td>${esc(k.name || '—')}</td>
-        <td class="sub">${k.expires_at ? new Date(k.expires_at).toLocaleDateString() : 'never'}</td>
-        <td class="sub">${k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'never'}</td>
+        <td class="hint">${k.expires_at ? new Date(k.expires_at).toLocaleDateString() : 'never'}</td>
+        <td class="hint">${k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'never'}</td>
         <td><span class="pill ${k.revoked ? 'err' : 'ok'}">${k.revoked ? 'revoked' : 'active'}</span></td>
         <td>${k.revoked ? '' : `<button class="danger small" data-revoke="${esc(k.id)}">Revoke</button>`}</td>
       </tr>`;
@@ -474,9 +569,9 @@ async function loadAccess() {
     <tr><th>Code</th><th>Name</th><th>Term</th><th>Allowed models</th><th></th></tr>
     ${courses.data.map((c) => `<tr>
       <td><code>${esc(c.code)}</code></td><td>${esc(c.name)}</td><td>${esc(c.term)}</td>
-      <td class="checks" id="cm-${esc(c.id)}">${aliases.map((a) => `
+      <td class="checks">${aliases.map((a) => `
         <label><input type="checkbox" data-course="${esc(c.id)}" value="${esc(a)}"> ${esc(a)}</label>
-      `).join('')}</td>
+      `).join('') || '<span class="hint">open the Models tab first</span>'}</td>
       <td><button class="ghost small" data-savecourse="${esc(c.id)}">Save</button></td>
     </tr>`).join('') || '<tr><td class="empty">No courses yet.</td></tr>'}`;
 
@@ -487,8 +582,7 @@ async function loadAccess() {
         .map((i) => i.value);
       try {
         await post(`/admin/courses/${id}/models`, { models });
-        flash('error', 'ok', '');
-        banner('error', 'ok', `Updated allowed models for the course: ${models.join(', ') || 'none'}`);
+        banner('error', 'ok', `Updated allowed models: ${models.join(', ') || 'none'}`);
       } catch (e) { showError(e.message); }
     };
   }

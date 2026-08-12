@@ -4,26 +4,32 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>EduLLM Gateway Console</title>
-<link rel="stylesheet" href="style.css">
+<!-- ?v must be bumped whenever these files change: the HTML
+     revalidates on every load, but a browser will happily keep an old
+     stylesheet against a new page, which looks like a broken console. -->
+<link rel="stylesheet" href="style.css?v=1.3.2">
 </head>
 <body>
 
 <header>
-  <div class="bar">
-    <h1>EduLLM Gateway</h1>
-    <span class="sub" id="whoami">not connected</span>
-    <span class="spacer"></span>
-    <input id="key" type="password" placeholder="API key (edu_sk_...)"
-           autocomplete="off" style="max-width:340px">
-    <button id="connect">Connect</button>
-    <button id="refresh" class="ghost">Refresh</button>
+  <div class="wrap">
+    <div class="bar">
+      <h1>EDULLM GATEWAY</h1>
+      <span class="sub" id="whoami">not connected</span>
+      <span class="spacer"></span>
+      <input id="key" type="password" placeholder="API key (edu_sk_...)"
+             autocomplete="off" style="max-width:320px">
+      <button id="connect" class="primary">Connect</button>
+      <button id="refresh" class="ghost">Refresh</button>
+      <button id="theme" class="ghost" title="Switch theme">◐</button>
+    </div>
+    <nav id="tabs" role="tablist">
+      <button data-tab="dashboard" role="tab" aria-selected="true">Dashboard</button>
+      <button data-tab="models"    role="tab" aria-selected="false" data-admin>Models</button>
+      <button data-tab="access"    role="tab" aria-selected="false" data-staff>Access &amp; Keys</button>
+      <button data-tab="quota"     role="tab" aria-selected="false" data-staff>Quota</button>
+    </nav>
   </div>
-  <nav id="tabs" role="tablist">
-    <button data-tab="dashboard" role="tab" aria-selected="true">Dashboard</button>
-    <button data-tab="models"    role="tab" aria-selected="false" data-admin>Models</button>
-    <button data-tab="access"    role="tab" aria-selected="false" data-staff>Access &amp; Keys</button>
-    <button data-tab="quota"     role="tab" aria-selected="false" data-staff>Quota</button>
-  </nav>
 </header>
 
 <main>
@@ -53,9 +59,8 @@
   <section id="tab-models" class="stack" hidden>
     <div>
       <div class="bar" style="margin-bottom:12px">
-        <h2 style="margin:0">Registered models</h2>
-        <span class="spacer"></span>
-        <button id="new-model">+ Add model</button>
+        <h2 style="margin:0;flex:1">Registered models</h2>
+        <button id="new-model" class="primary">+ Add model</button>
         <button id="reload-registry" class="ghost">Reload registry</button>
       </div>
       <div id="registry-note"></div>
@@ -64,8 +69,7 @@
 
     <div id="editor" class="card" hidden>
       <div class="bar">
-        <h3 id="editor-title">Add AI model</h3>
-        <span class="spacer"></span>
+        <h3 id="editor-title" style="flex:1">Add AI model</h3>
         <button id="editor-close" class="ghost small">Close</button>
       </div>
 
@@ -93,37 +97,22 @@
         <input id="m-desc" placeholder="โมเดลเขียนโค้ด เรียก tool ได้" autocomplete="off">
       </div>
 
-      <div class="row">
-        <div class="field">
-          <label for="m-server">Server type</label>
-          <select id="m-server">
-            <option>vllm</option><option>ollama</option><option>sglang</option>
-            <option>llama.cpp</option><option>openai_compatible</option>
-          </select>
-        </div>
-        <div class="field">
-          <label for="m-url">Base URL</label>
-          <input id="m-url" placeholder="http://10.0.0.23:8000" autocomplete="off">
-        </div>
-        <div class="field">
-          <label for="m-keyenv">API key env var (optional)</label>
-          <input id="m-keyenv" placeholder="DGX03_API_KEY" autocomplete="off">
-        </div>
-      </div>
-
       <div class="field">
-        <label for="m-upstream">Upstream model — must match the backend exactly</label>
+        <label for="m-upstream">Upstream model — must match what the backend serves</label>
         <input id="m-upstream" placeholder="Qwen3-Coder-30B-A3B-Instruct" autocomplete="off">
       </div>
 
-      <div class="bar" style="margin:6px 0 14px">
-        <button id="detect" class="ghost">Detect capabilities</button>
-        <span class="sub" id="detect-status"></span>
-      </div>
-      <div id="detect-out"></div>
+      <h2 style="margin-top:20px">Backends</h2>
+      <p class="hint" style="margin:-6px 0 10px">
+        More than one backend gives this alias failover: the highest priority
+        healthy one wins, and traffic shifts automatically when it goes down.
+      </p>
+      <div id="endpoints"></div>
+      <button id="add-endpoint" class="ghost small">+ Add backend</button>
 
+      <h2 style="margin-top:22px">Capabilities</h2>
       <div class="field">
-        <label>Capabilities — confirm before saving; detection is only a suggestion</label>
+        <label>Confirm before saving — detection is a suggestion, not a decision</label>
         <div class="checks">
           <label><input type="checkbox" id="c-chat" checked> Chat</label>
           <label><input type="checkbox" id="c-vision"> Vision</label>
@@ -156,10 +145,6 @@
           <label for="m-out">Max output tokens</label>
           <input id="m-out" type="number" value="8192">
         </div>
-        <div class="field">
-          <label for="m-conc">Max concurrency</label>
-          <input id="m-conc" type="number" value="16">
-        </div>
       </div>
 
       <div class="field">
@@ -171,13 +156,13 @@
         </div>
         <p class="hint">
           The Anthropic surface works even when the backend only speaks OpenAI —
-          the gateway translates. Tools must be supported for agent clients.
+          the gateway translates. Claude Code additionally needs tool calling.
         </p>
       </div>
 
       <div class="bar" style="margin-top:16px">
         <button id="preview-yaml" class="ghost">Preview YAML</button>
-        <button id="save-model">Save to registry</button>
+        <button id="save-model" class="primary">Save to registry</button>
         <span class="sub" id="save-status"></span>
       </div>
     </div>
@@ -206,7 +191,7 @@
           <input id="k-days" type="number" value="180">
         </div>
       </div>
-      <button id="issue-key">Issue key</button>
+      <button id="issue-key" class="primary">Issue key</button>
       <div id="key-out"></div>
     </div>
 
@@ -307,7 +292,7 @@
         <div class="field"><label for="q-outt">Max output tokens</label><input id="q-outt" type="number" value="500000"></div>
         <div class="field"><label for="q-img">Max images</label><input id="q-img" type="number" value="100"></div>
       </div>
-      <button id="create-quota">Add policy</button>
+      <button id="create-quota" class="primary">Add policy</button>
     </div>
 
     <div>
@@ -328,11 +313,64 @@
     <div id="modal-body"></div>
     <div class="dialog-actions">
       <button id="modal-copy" class="ghost" hidden>Copy</button>
-      <button id="modal-close">Close</button>
+      <button id="modal-close" class="primary">Close</button>
     </div>
   </div>
 </dialog>
 
-<script src="app.js"></script>
+<template id="endpoint-template">
+  <div class="endpoint">
+    <div class="endpoint-head">
+      <strong class="ep-title">Backend</strong>
+      <span class="spacer"></span>
+      <button type="button" class="ghost small ep-detect">Detect</button>
+      <button type="button" class="danger small ep-remove">Remove</button>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Name</label>
+        <input class="ep-name" placeholder="dgx01" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>Server type</label>
+        <select class="ep-server">
+          <option>vllm</option><option>ollama</option><option>sglang</option>
+          <option>llama.cpp</option><option>openai_compatible</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Base URL</label>
+        <input class="ep-url" placeholder="http://10.0.0.23:8000" autocomplete="off">
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Upstream model override (optional)</label>
+        <input class="ep-upstream" placeholder="same as the model's" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>API key env var (optional)</label>
+        <input class="ep-keyenv" placeholder="DGX03_API_KEY" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>Priority (higher wins)</label>
+        <input class="ep-priority" type="number" value="100">
+      </div>
+      <div class="field">
+        <label>Max concurrency</label>
+        <input class="ep-conc" type="number" value="8">
+      </div>
+    </div>
+    <div class="checks">
+      <label><input type="checkbox" class="ep-openai" checked> speaks OpenAI</label>
+      <label><input type="checkbox" class="ep-anthropic"> speaks Anthropic</label>
+      <label><input type="checkbox" class="ep-image"> serves images</label>
+      <label><input type="checkbox" class="ep-enabled" checked> enabled</label>
+    </div>
+    <div class="ep-detect-out"></div>
+  </div>
+</template>
+
+<script src="app.js?v=1.3.2"></script>
 </body>
 </html>

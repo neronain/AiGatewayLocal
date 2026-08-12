@@ -41,6 +41,21 @@ IN_FLIGHT = Gauge("edullm_requests_in_flight", "Requests currently being served"
 ERRORS = Counter("edullm_errors_total", "Gateway errors by code", ["code"])
 
 
+class _RevalidatingStatic(StaticFiles):
+    """Serve the console with `Cache-Control: no-cache`.
+
+    Without this the browser keeps serving an old console after an upgrade -
+    typically a new index.html against a stale stylesheet, which looks like a
+    broken page rather than a caching problem. `no-cache` still allows a 304 via
+    ETag, so this costs a conditional request, not a re-download.
+    """
+
+    def file_response(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN201
+        response = super().file_response(*args, **kwargs)
+        response.headers["cache-control"] = "no-cache"
+        return response
+
+
 def _configure_logging(level: str) -> None:
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
@@ -237,7 +252,9 @@ def create_app() -> FastAPI:
 
     static_dir = settings.config_dir.parent / "app" / "static"
     if static_dir.is_dir():
-        app.mount("/console", StaticFiles(directory=str(static_dir), html=True), name="console")
+        app.mount(
+            "/console", _RevalidatingStatic(directory=str(static_dir), html=True), name="console"
+        )
 
     @app.get("/", include_in_schema=False)
     async def root():

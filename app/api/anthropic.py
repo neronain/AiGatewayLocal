@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.openai import _read_json, _RequestContext, _resolve_model
 from app.core.auth import Principal, assert_model_permitted, authenticate
 from app.core.capability import (
+    upstream_model_for,
     validate_context_budget,
     validate_model_capabilities,
     validate_protocol,
@@ -112,12 +113,12 @@ async def messages(
 
     if native:
         payload = dict(body)
-        payload["model"] = model.spec.upstream_model
+        payload["model"] = upstream_model_for(model, endpoint)
         payload["max_tokens"] = effective_max_tokens
         path = MESSAGES_PATH
         translate = False
     else:
-        payload = anthropic_to_openai_request(body, model.spec.upstream_model)
+        payload = anthropic_to_openai_request(body, upstream_model_for(model, endpoint))
         payload["max_tokens"] = effective_max_tokens
         path = CHAT_PATH
         translate = True

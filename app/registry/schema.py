@@ -140,6 +140,11 @@ class Endpoint(BaseModel):
     name: str
     server_type: ServerType
     base_url: str
+    # Optional override of spec.upstream_model. Needed when two backends serve
+    # the same weights under different names - a router may expose
+    # "Ai1/Qwen3-Coder-30B" for what the direct server calls "Qwen3-Coder-30B".
+    # Without this an alias could not fail over between them.
+    upstream_model: str = ""
     # Name of the env var holding the upstream key. The value is never written
     # to config files, logs, or the admin API.
     api_key_env: str = ""

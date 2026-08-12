@@ -24,6 +24,7 @@ from app.core import usage as usage_mod
 from app.core.auth import Principal, assert_model_permitted, authenticate
 from app.core.capability import (
     compatibility_badges,
+    upstream_model_for,
     validate_context_budget,
     validate_model_capabilities,
     validate_protocol,
@@ -115,7 +116,7 @@ async def chat_completions(
     endpoint = state.router.select(model, profile, "openai")
 
     payload = dict(body)
-    payload["model"] = model.spec.upstream_model
+    payload["model"] = upstream_model_for(model, endpoint)
     if body.get("max_tokens") or body.get("max_completion_tokens"):
         payload.pop("max_completion_tokens", None)
         payload["max_tokens"] = effective_max_tokens
