@@ -299,6 +299,46 @@ endpoints:
 works without it. It only decides whether a finding names a command you can
 paste or one you have to translate.
 
+### Applying a finding instead of pasting it
+
+Verification used to stop one step short. LiteGate works out that vLLM was
+started without `--tool-call-parser`, prints the exact command — and then
+somebody opens a terminal, finds the machine, and pastes it.
+
+Connect the LMDS that deployed a backend (*Assistant → Deploy tool*) and record
+where it came from, and the finding gains a button:
+
+```yaml
+managed_by:
+  tool: lmds
+  node: ops@10.0.0.6                    # ssh target, for humans
+  controller: ~/bundles/coder/coder-single.sh
+  lmds_node: msi-6                      # the machine's name in LMDS
+  lmds_slug: coder-next                 # the bundle LMDS knows it by
+```
+
+```
+[warning] tools_flag_missing
+  vLLM rejected the tool request: it was started without
+  --enable-auto-tool-choice and a --tool-call-parser.
+  → ssh ops@10.0.0.6 '~/bundles/coder/coder-single.sh restart --tool-parser qwen3_coder'
+  [ Apply via LMDS ]  qwen3_coder
+```
+
+Pressing it asks LMDS to restart that bundle with the parser set. Then re-run
+verification — whether it worked is a question only a fresh probe answers, so
+the button reports what it sent, not that it succeeded.
+
+`lmds_node` and `lmds_slug` are separate from `node` because LMDS addresses
+machines by the name in its own registry, which is usually not the ssh target.
+Guessing one from the other would restart the wrong machine.
+
+Only findings on a short list can be applied — currently the tool and reasoning
+parsers. This is not a remote shell with a friendly name: the payload is a
+parser name matched against a pattern, sent to one bundle on one node. Every
+other finding still shows the command to run yourself, and a gateway with no
+deploy tool connected behaves exactly as before.
+
 ### LMDS — the deploy side of the pair
 
 **[LMDS (Local Model Deploy Studio)](https://github.com/neronain/AutoDeployDGXProject)**

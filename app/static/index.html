@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.7.2">
+<link rel="stylesheet" href="style.css?v=1.8.0">
 </head>
 <body>
 
@@ -339,6 +339,28 @@
     </div>
 
     <div class="card">
+      <h2>Deploy tool</h2>
+      <p class="hint">
+        Optional. Connect the LMDS that deployed these backends and verification
+        findings gain an <b>Apply via LMDS</b> button, instead of a command you
+        paste somewhere else. Leave it empty and everything works as before.
+        <span class="th">ไม่บังคับ — ต่อ LMDS แล้วผลตรวจจะมีปุ่มสั่งแก้ให้เลย ไม่ต้องไปพิมพ์คำสั่งเอง</span>
+      </p>
+      <div class="row" style="margin-top:14px;align-items:flex-end">
+        <div class="field" style="flex:2">
+          <label for="lm-url">Base URL</label>
+          <input id="lm-url" placeholder="http://192.168.1.92:8600" autocomplete="off">
+        </div>
+        <div class="field" style="flex:1">
+          <label for="lm-token">Token</label>
+          <input id="lm-token" type="password" placeholder="leave blank to keep" autocomplete="off">
+        </div>
+        <button id="lm-save" class="primary" style="flex:none">Save</button>
+      </div>
+      <p id="lm-state" class="hint" style="margin-top:10px"></p>
+    </div>
+
+    <div class="card">
       <h2>Suitability</h2>
       <p class="hint">
         Judged from the registry and the test suite, not from model names. The
@@ -496,6 +518,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.7.2"></script>
+<script src="app.js?v=1.8.0"></script>
 </body>
 </html>

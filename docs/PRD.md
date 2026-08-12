@@ -773,6 +773,7 @@ as every other caller.
 | FR-52 | Assistant requests go through the normal pipeline: capability gate, quota, routing, usage |
 | FR-53 | The assistant is hidden, not broken, when no chat model is available to the caller |
 | FR-54 | An administrator can change the assistant's model, and see why each candidate does or does not suit the role |
+| FR-55 | A finding can be applied through the deploy tool that produced the backend, when one is connected |
 
 ### 15.2 Why it is not a side door
 
@@ -911,7 +912,7 @@ FR-38 Multimodal usage dashboard · FR-12 Uploaded image · FR-14 PDF input
 
 **P3** — FR-40 Automatic model selection (`model=auto`) · FR-29 Video
 
-**Console assistant** — FR-50 Grounded in live state · FR-51 Role-scoped context · FR-52 Same pipeline as any caller · FR-53 Hidden when no model is available · FR-54 Administrator-selectable model with a suitability check
+**Console assistant** — FR-50 Grounded in live state · FR-51 Role-scoped context · FR-52 Same pipeline as any caller · FR-53 Hidden when no model is available · FR-54 Administrator-selectable model with a suitability check · FR-55 Findings applied through the deploy tool
 
 ---
 

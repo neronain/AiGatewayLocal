@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -13,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import assistant_fit
+from app.core import assistant_fit, lmds
 from app.core.auth import (
     Principal,
     extract_bearer_token,
@@ -23,7 +24,12 @@ from app.core.auth import (
 )
 from app.core.capability import compatibility_badges, upstream_model_for
 from app.core.errors import ErrorCode, GatewayError
-from app.core.modeltest import ModelTestSuite, probe_backend, resolve_commands
+from app.core.modeltest import (
+    ModelTestSuite,
+    probe_backend,
+    resolve_commands,
+    suggest_tool_parser,
+)
 from app.db.models import (
     ASSISTANT_MODEL_KEY,
     ApiKey,
@@ -52,6 +58,11 @@ from app.state import AppState, get_state
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+# Parser names travel into a command on another machine. The pattern is as
+# narrow as it can be while still covering every real name.
+_PARSER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+TOKEN_KEY_SETTING = lmds.TOKEN_KEY
 
 
 async def audit(
@@ -788,6 +799,155 @@ async def _compatibility_by_alias(session: AsyncSession) -> dict[str, dict[str, 
     return by_alias
 
 
+# ---------------------------------------------------------------------------
+# Deploy-tool integration
+# ---------------------------------------------------------------------------
+class LmdsConnectionIn(BaseModel):
+    base_url: str = Field(default="", max_length=200)
+    # Write-only. Absent means "keep what is stored"; empty string clears it.
+    token: str | None = Field(default=None, max_length=200)
+
+
+async def _lmds_connection(session: AsyncSession) -> lmds.Connection:
+    base = await session.get(GatewaySetting, lmds.BASE_URL_KEY)
+    token = await session.get(GatewaySetting, TOKEN_KEY_SETTING)
+    return lmds.Connection(
+        base_url=base.value if base else "", token=token.value if token else ""
+    )
+
+
+@router.get("/integrations/lmds")
+async def lmds_settings(
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    connection = await _lmds_connection(session)
+    return {
+        "base_url": connection.base_url,
+        "configured": connection.configured,
+        # Never returned, not even to an admin: a console that can display a
+        # token is a console that leaks it into a screenshot.
+        "has_token": bool(connection.token),
+        "appliable_issues": sorted(lmds.APPLIABLE),
+    }
+
+
+@router.put("/integrations/lmds")
+async def set_lmds_settings(
+    payload: LmdsConnectionIn,
+    request: Request,
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Connect a deploy tool, or clear the connection with an empty base_url."""
+    base_url = payload.base_url.strip().rstrip("/")
+    if base_url and not base_url.startswith(("http://", "https://")):
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST, "base_url must start with http:// or https://"
+        )
+
+    await _store(session, lmds.BASE_URL_KEY, base_url, actor)
+    if payload.token is not None:
+        await _store(session, TOKEN_KEY_SETTING, payload.token.strip(), actor)
+    await audit(
+        session, request, actor, "integration.lmds", "setting", lmds.BASE_URL_KEY,
+        {"base_url": base_url or "(cleared)"},
+    )
+    await session.commit()
+    return await lmds_settings(actor=actor, session=session)
+
+
+class ApplyFixIn(BaseModel):
+    issue: str = Field(min_length=1, max_length=64)
+    endpoint: str = Field(default="", max_length=64)
+    # The console sends back the parser the advice suggested, so what gets
+    # applied is what the operator read - not something re-derived here that
+    # might differ from what the screen said.
+    parser: str = Field(default="", max_length=64)
+
+
+@router.post("/models/{alias}/apply-fix")
+async def apply_fix(
+    alias: str,
+    payload: ApplyFixIn,
+    request: Request,
+    actor: Principal = Depends(require_admin),
+    state: AppState = Depends(get_state),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Send one finding to the deploy tool that can fix it.
+
+    Deliberately not "apply everything": each call names one finding, on one
+    endpoint, and the console re-probes afterwards. Whether it worked is a
+    question only the probe can answer, and answering it any other way would be
+    reporting our own intent back as a result.
+    """
+    model = state.registry.snapshot.models.get(alias)
+    if model is None:
+        raise GatewayError(ErrorCode.MODEL_NOT_FOUND, f"No model with alias '{alias}'.")
+
+    endpoints = model.spec.endpoints
+    if payload.endpoint:
+        endpoint = next((e for e in endpoints if e.name == payload.endpoint), None)
+        if endpoint is None:
+            raise GatewayError(
+                ErrorCode.INVALID_REQUEST,
+                f"'{alias}' has no endpoint named '{payload.endpoint}'.",
+            )
+    elif len(endpoints) == 1:
+        endpoint = endpoints[0]
+    else:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            f"'{alias}' has {len(endpoints)} endpoints - say which one to fix.",
+        )
+
+    parser = payload.parser.strip()
+    if not parser:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST, "No parser given - nothing to apply."
+        )
+    if not _PARSER_NAME.fullmatch(parser):
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            "A parser name is letters, digits, underscore and hyphen only.",
+        )
+
+    if endpoint.managed_by is None:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            f"Endpoint '{endpoint.name}' does not record which tool deployed it, "
+            "so there is nothing to send the fix to. Run the command yourself, or "
+            "add `managed_by` to the model file.",
+        )
+
+    connection = await _lmds_connection(session)
+    result = await lmds.apply_fix(connection, endpoint.managed_by, payload.issue, parser)
+
+    await audit(
+        session, request, actor, "model.apply_fix", "model", alias,
+        {"issue": payload.issue, "endpoint": endpoint.name, **result["applied"]},
+    )
+    await session.commit()
+    return {
+        "alias": alias,
+        "endpoint": endpoint.name,
+        "issue": payload.issue,
+        **result,
+        "next": f"Re-run verification on '{alias}' to confirm the finding is gone.",
+    }
+
+
+async def _store(session: AsyncSession, key: str, value: str, actor: Principal) -> None:
+    row = await session.get(GatewaySetting, key)
+    if row is None:
+        row = GatewaySetting(key=key)
+        session.add(row)
+    row.value = value
+    row.updated_at = utcnow()
+    row.updated_by = actor.user_id
+
+
 @router.post("/models/preview")
 async def preview_model(
     payload: ModelDefinitionIn,
@@ -877,6 +1037,47 @@ async def detect_capabilities(
     return {"suggestion": result.to_dict(), "confirmed": False}
 
 
+def _with_apply(finding: dict[str, Any], probe, endpoint) -> dict[str, Any]:
+    """Attach what the console needs to offer "apply this" instead of "paste this".
+
+    The parser travels with the finding rather than being re-derived when the
+    button is pressed: what gets applied should be what the operator read, and
+    a probe run in between could suggest something else.
+
+    `confident` is carried through honestly. A wrong parser does not error - it
+    quietly fails to parse anything - so a guess presented as a certainty is a
+    fix that looks applied and is not.
+    """
+    issue = finding.get("issue")
+    option = lmds.APPLIABLE.get(issue)
+    if option is None:
+        return finding
+
+    served = probe.upstream_model or (probe.served_models[0] if probe.served_models else "")
+    parser, confident = (
+        suggest_tool_parser(served)
+        if option == "tool_parser"
+        else lmds.suggest_reasoning_parser(served)
+    )
+    managed = endpoint.managed_by
+    # The reasoning advice is written with a `<parser>` placeholder because
+    # build_advice() has no served-model name to work from. Here we do, so the
+    # printed command matches what the button would send - two different answers
+    # on one screen is how people end up applying the wrong one.
+    command = finding.get("command", "").replace("<parser>", parser)
+    return {
+        **finding,
+        "command": command,
+        "parser": parser,
+        "parser_confident": confident,
+        # Whether *this endpoint* can be fixed remotely. A gateway can have one
+        # LMDS-managed backend and three that nobody manages.
+        "appliable": bool(
+            managed and managed.tool == "lmds" and managed.lmds_node and managed.lmds_slug
+        ),
+    }
+
+
 @router.get("/models/{alias}/advice")
 async def model_advice(
     alias: str,
@@ -926,7 +1127,7 @@ async def model_advice(
         if model.spec.protocols.anthropic:
             suppressed.add("anthropic_via_translation")  # already exposed
         relevant = [
-            a.to_dict()
+            _with_apply(a.to_dict(), probe, endpoint)
             for a in resolve_commands(probe.advice, endpoint.managed_by)
             if a.issue not in suppressed
         ]

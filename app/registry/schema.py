@@ -147,17 +147,26 @@ class EndpointModalities(BaseModel):
 class ManagedBy(BaseModel):
     """Where this backend came from, when a deploy tool produced it.
 
-    Optional and inert: the gateway never calls out to the deploy tool, and
-    everything works with this absent. It exists so that a finding can name the
-    exact command to run instead of `./<controller>.sh`, which is the difference
-    between advice someone can paste and advice they have to translate.
+    Optional: everything works with this absent, and the gateway contacts the
+    deploy tool only when an administrator has connected one *and* an operator
+    presses the button. Its first job is still to let a finding name the exact
+    command to run instead of `./<controller>.sh` - the difference between
+    advice someone can paste and advice they have to translate.
+
+    `node` and `controller` describe the machine for a human. `lmds_node` and
+    `lmds_slug` are what LMDS's own API needs, and they are separate fields on
+    purpose: `node` is an ssh target, while LMDS addresses machines by the name
+    in its registry, and the two are often not the same string. Guessing one
+    from the other would send a restart to the wrong machine.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     tool: str = "lmds"
-    node: str = ""       # ssh target, e.g. neronain@100.80.132.102
+    node: str = ""        # ssh target, e.g. neronain@100.80.132.102
     controller: str = ""  # path to the controller script on that node
+    lmds_node: str = ""   # the machine's name in the LMDS node registry
+    lmds_slug: str = ""   # the bundle slug LMDS knows this model by
 
 
 class Endpoint(BaseModel):

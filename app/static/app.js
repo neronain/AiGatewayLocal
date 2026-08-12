@@ -187,6 +187,11 @@ function renderUsage(summary) {
 const STATUS_PILL = { pass: 'ok', fail: 'err', degraded: 'warn', not_tested: 'mute' };
 
 async function loadModels() {
+  // Cheap, and the answer decides whether findings can offer a button at all.
+  // Failure is not an error: no deploy tool is the normal case.
+  try { state.lmds = await api('/admin/integrations/lmds'); }
+  catch { state.lmds = { configured: false }; }
+
   const [registry, status] = await Promise.all([
     api('/admin/models'), api('/admin/registry/status'),
   ]);
@@ -558,6 +563,7 @@ async function verifyModel(alias, btn) {
           <div style="margin-top:5px">${esc(a.detail)}</div>
           <div style="margin-top:5px">${esc(a.fix)}</div>
           ${a.command ? `<pre style="margin-top:8px">${esc(a.command)}</pre>` : ''}
+          ${applyButton(alias, b.endpoint, a)}
         </div>`).join('')
         : '<div class="banner ok">Nothing to fix on this backend.</div>'}`).join('');
 
@@ -599,11 +605,56 @@ $('verify-all').onclick = async () => {
         <td><code>${esc(f.alias)}</code></td><td>${esc(f.endpoint)}</td>
         <td><span class="pill ${f.severity === 'blocker' ? 'err' : f.severity === 'warning' ? 'warn' : 'mute'}">${esc(f.severity)}</span></td>
         <td>${esc(f.issue)}<div class="hint">${esc(f.detail)}</div></td>
-        <td>${esc(f.fix)}${f.command ? `<pre style="margin-top:6px">${esc(f.command)}</pre>` : ''}</td>
+        <td>${esc(f.fix)}${f.command ? `<pre style="margin-top:6px">${esc(f.command)}</pre>` : ''}
+          ${applyButton(f.alias, f.endpoint, f)}</td>
       </tr>`).join('')}
     </table></div>`
     : '<div class="banner ok">Every backend matches what the registry declares.</div>');
 };
+
+// ---------------------------------------------------------------------------
+// Applying a finding through the deploy tool
+// ---------------------------------------------------------------------------
+// Verification used to stop at a command you had to go and paste. When a deploy
+// tool is connected *and* the endpoint records which machine and bundle it came
+// from, the same finding gets a button. Both conditions matter: a gateway can
+// have one managed backend and three that nobody manages.
+function applyButton(alias, endpoint, finding) {
+  if (!finding.appliable || !state.lmds?.configured) return '';
+  const guess = finding.parser_confident ? '' :
+    `<span class="hint"> — ${esc(finding.parser)} is a guess for this model family;
+      a wrong parser fails quietly, so check the result.</span>`;
+  return `<div style="margin-top:8px">
+    <button class="ghost small" data-fix="${esc(alias)}" data-fix-endpoint="${esc(endpoint)}"
+      data-fix-issue="${esc(finding.issue)}" data-fix-parser="${esc(finding.parser)}">
+      Apply via LMDS</button>
+    <code style="margin-left:6px">${esc(finding.parser)}</code>${guess}
+  </div>`;
+}
+
+document.addEventListener('click', async (event) => {
+  const btn = event.target.closest('[data-fix]');
+  if (!btn) return;
+  const { fix: alias, fixEndpoint, fixIssue, fixParser } = btn.dataset;
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = 'restarting…';
+  try {
+    const done = await post(`/admin/models/${encodeURIComponent(alias)}/apply-fix`, {
+      issue: fixIssue, endpoint: fixEndpoint, parser: fixParser,
+    });
+    // Deliberately not "fixed": the model server is restarting, and whether the
+    // finding is gone is a question only a fresh probe can answer.
+    btn.replaceWith(Object.assign(document.createElement('span'), {
+      className: 'hint',
+      textContent: `Sent to ${done.node}/${done.slug}. ${done.next}`,
+    }));
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = original;
+    showError(e.message);
+  }
+});
 
 /* --------------------------------------------------------- access & keys */
 // ---------------------------------------------------------------------------
@@ -616,6 +667,7 @@ function fitTag(fit) {
 }
 
 async function loadAssistant() {
+  await loadLmds();
   const data = await api('/admin/assistant');
 
   // The dropdown lists only what can actually be chosen. The cards below list
@@ -650,6 +702,29 @@ async function loadAssistant() {
       <ul>${fit.reasons.map((r) => `<li class="${r.kind}">${esc(r.detail)}</li>`).join('')}</ul>
     </div>`).join('');
 }
+
+async function loadLmds() {
+  state.lmds = await api('/admin/integrations/lmds');
+  $('lm-url').value = state.lmds.base_url || '';
+  $('lm-state').textContent = state.lmds.configured
+    ? `Connected${state.lmds.has_token ? ' with a token' : ' without a token'}. ` +
+      `Findings that can be applied: ${state.lmds.appliable_issues.join(', ')}.`
+    : 'Not connected — findings show the command to run yourself.';
+}
+
+$('lm-save').onclick = async () => {
+  try {
+    // An empty token field means "keep the stored one", not "clear it": editing
+    // the URL should not silently disconnect the tool.
+    const token = $('lm-token').value;
+    await api('/admin/integrations/lmds', {
+      method: 'PUT',
+      body: JSON.stringify({ base_url: $('lm-url').value.trim(), ...(token ? { token } : {}) }),
+    });
+    $('lm-token').value = '';
+    await loadLmds();
+  } catch (e) { showError(e.message); }
+};
 
 $('as-save').onclick = async () => {
   try {

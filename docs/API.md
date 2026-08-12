@@ -328,6 +328,57 @@ test the suite could not pass. `404` for an unknown alias.
 
 ---
 
+### `GET /admin/integrations/lmds`
+
+```json
+{
+  "base_url": "http://192.168.1.92:8600",
+  "configured": true,
+  "has_token": true,
+  "appliable_issues": ["reasoning_not_separated", "tools_flag_missing"]
+}
+```
+
+The token is never returned, not even to an admin — a console that can display
+a token is a console that leaks it into a screenshot.
+
+### `PUT /admin/integrations/lmds`
+
+```json
+{ "base_url": "http://192.168.1.92:8600", "token": "..." }
+```
+
+Omitting `token` keeps the stored one; sending `""` clears it. An empty
+`base_url` disconnects the tool. Returns the same body as `GET`.
+
+### `POST /admin/models/{alias}/apply-fix`
+
+```json
+{ "issue": "tools_flag_missing", "endpoint": "msi-6", "parser": "qwen3_coder" }
+```
+
+Asks the connected deploy tool to restart that backend's bundle with the parser
+set. `endpoint` may be omitted when the model has exactly one.
+
+```json
+{
+  "alias": "coder-next", "endpoint": "msi-6", "issue": "tools_flag_missing",
+  "applied": { "tool_parser": "qwen3_coder" },
+  "node": "msi-6", "slug": "coder-next", "job": { "id": "..." },
+  "next": "Re-run verification on 'coder-next' to confirm the finding is gone."
+}
+```
+
+Reports what it sent, not that it worked: the model server is restarting, and
+whether the finding is gone is a question only a fresh probe answers.
+
+`400` when no deploy tool is connected, when the endpoint has no `managed_by`
+naming an `lmds_node` and `lmds_slug`, when the finding is not one of
+`appliable_issues`, or when the parser name is not letters, digits, underscore
+and hyphen. Errors from the deploy tool are passed through verbatim.
+
+---
+
 ### `POST /admin/api-keys`
 
 ```json
