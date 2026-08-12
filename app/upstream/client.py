@@ -184,7 +184,7 @@ def upstream_error(endpoint: Endpoint, status_code: int, body: str) -> GatewayEr
         details={
             "endpoint": endpoint.name,
             "upstream_status": status_code,
-            # Truncated backend text: useful for the admin console, harmless to students.
+            # Truncated backend text: useful for the admin console, harmless to members.
             "upstream_detail": body[:500],
         },
     )

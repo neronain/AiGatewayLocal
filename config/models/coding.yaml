@@ -1,4 +1,4 @@
-apiVersion: edullm.gateway/v1
+apiVersion: litegate.dev/v1
 kind: Model
 
 metadata:
@@ -7,7 +7,7 @@ metadata:
   description: >-
     Agentic coding model with tool calling and long context.
     Validated for Claude Code and Qwen Code.
-  visibility: student
+  visibility: member
   tags: [coding, agent, claude-code]
 
 spec:

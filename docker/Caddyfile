@@ -1,4 +1,4 @@
-# TLS termination for the EduLLM Gateway.
+# TLS termination for the LiteGate.
 #
 # Public domain  -> Caddy gets a Let's Encrypt certificate automatically.
 # Internal only  -> replace the site address with the internal name and add
@@ -7,7 +7,7 @@
 {$GATEWAY_DOMAIN} {
 	encode zstd gzip
 
-	# Streaming responses must not be buffered or the student sees nothing
+	# Streaming responses must not be buffered or the member sees nothing
 	# until generation finishes.
 	reverse_proxy gateway:8080 {
 		flush_interval -1
@@ -38,7 +38,7 @@
 			roll_size 50MiB
 			roll_keep 10
 		}
-		# Never log request bodies: they contain student prompts (PRD §11).
+		# Never log request bodies: they contain member prompts (PRD §11).
 		format json
 	}
 }

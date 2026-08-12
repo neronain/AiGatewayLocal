@@ -1,7 +1,7 @@
 [project]
-name = "edullm-gateway"
+name = "litegate"
 version = "1.3.0"
-description = "EduLLM Gateway - capability-aware, multimodal AI gateway for education"
+description = "LiteGate - capability-aware, multimodal AI gateway for education"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -38,7 +38,7 @@ Homepage = "https://github.com/neronain/AiGatewayLocal"
 Author = "https://www.facebook.com/neronain.minidev"
 
 [project.scripts]
-edullm-gateway = "app.main:run"
+litegate = "app.main:run"
 
 [build-system]
 requires = ["setuptools>=68"]

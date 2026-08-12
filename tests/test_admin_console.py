@@ -33,9 +33,9 @@ def definition(alias: str = "newmodel", **overrides) -> dict:
     }
     spec.update(overrides)
     return {
-        "apiVersion": "edullm.gateway/v1",
+        "apiVersion": "litegate.dev/v1",
         "kind": "Model",
-        "metadata": {"alias": alias, "display_name": "New Model", "visibility": "student"},
+        "metadata": {"alias": alias, "display_name": "New Model", "visibility": "member"},
         "spec": spec,
     }
 
@@ -79,12 +79,12 @@ def test_preview_rejects_bad_alias(client):
     assert response.status_code == 400
 
 
-def test_model_authoring_is_admin_only(client, student_key):
+def test_model_authoring_is_admin_only(client, member_key):
     assert client.post(
-        "/admin/models/preview", json=definition(), headers=auth(student_key)
+        "/admin/models/preview", json=definition(), headers=auth(member_key)
     ).status_code == 403
     assert client.post(
-        "/admin/models", json=definition(), headers=auth(student_key)
+        "/admin/models", json=definition(), headers=auth(member_key)
     ).status_code == 403
 
 
@@ -230,8 +230,8 @@ def test_test_run_on_unknown_model_is_404(client):
     assert response.status_code == 404
 
 
-def test_test_run_is_admin_only(client, student_key):
-    response = client.post("/admin/models/coding/test", headers=auth(student_key))
+def test_test_run_is_admin_only(client, member_key):
+    response = client.post("/admin/models/coding/test", headers=auth(member_key))
     assert response.status_code == 403
 
 
@@ -274,7 +274,7 @@ def test_endpoint_upstream_override_is_accepted(client):
 
 
 @respx.mock
-def test_request_uses_the_endpoints_own_model_name(client, student_key):
+def test_request_uses_the_endpoints_own_model_name(client, member_key):
     """The name sent upstream must be the one that backend knows."""
     from app.registry.schema import Endpoint
     from tests.conftest import REPO_ROOT  # noqa: F401
@@ -307,13 +307,13 @@ def test_request_uses_the_endpoints_own_model_name(client, student_key):
 
     response = client.post(
         "/v1/chat/completions",
-        headers=auth(student_key),
+        headers=auth(member_key),
         json={"model": "coding", "messages": [{"role": "user", "content": "hi"}]},
     )
     assert response.status_code == 200
     sent = __import__("json").loads(route.calls[0].request.content)
     assert sent["model"] == "Ai1/Qwen3-Coder-30B-A3B-Instruct"
-    # The student still only ever sees the alias.
+    # The member still only ever sees the alias.
     assert response.json()["model"] == "coding"
 
 
@@ -400,9 +400,9 @@ def test_advice_reports_a_missing_projector(client):
     assert "projector_missing" in issues
 
 
-def test_advice_is_admin_only(client, student_key):
+def test_advice_is_admin_only(client, member_key):
     assert client.get(
-        "/admin/models/coding/advice", headers=auth(student_key)
+        "/admin/models/coding/advice", headers=auth(member_key)
     ).status_code == 403
 
 
@@ -410,3 +410,123 @@ def test_advice_on_unknown_model_is_404(client):
     assert client.get(
         "/admin/models/ghost/advice", headers=auth(client.admin_key)
     ).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Rename compatibility
+# ---------------------------------------------------------------------------
+def test_registry_written_before_the_rename_still_loads(client):
+    """A model file with the old apiVersion must not need editing."""
+    legacy = definition()
+    legacy["apiVersion"] = "edullm.gateway/v1"
+    response = client.post(
+        "/admin/models/preview", json=legacy, headers=auth(client.admin_key)
+    )
+    assert response.status_code == 200
+
+
+def test_keys_issued_before_the_rename_still_authenticate(client):
+    """Verification is HMAC over the whole key, so the prefix is only a label."""
+    import asyncio
+
+    from app.core.auth import hash_api_key
+    from app.db.models import ApiKey, User
+    from app.db.session import session_scope
+
+    legacy_key = "edu_sk_" + "L" * 32
+
+    async def seed() -> None:
+        async with session_scope() as session:
+            user = User(external_id="legacy-user", display_name="Legacy", role="member")
+            session.add(user)
+            await session.flush()
+            session.add(
+                ApiKey(
+                    user_id=user.id,
+                    name="issued before the rename",
+                    key_prefix=legacy_key[:12],
+                    key_hash=hash_api_key(legacy_key),
+                    scopes=[],
+                )
+            )
+
+    asyncio.run(seed())
+
+    response = client.get("/v1/me", headers=auth(legacy_key))
+    assert response.status_code == 200
+    assert response.json()["external_id"] == "legacy-user"
+
+
+def test_new_keys_use_the_new_prefix(client):
+    users = client.get("/admin/users", headers=auth(client.admin_key)).json()["data"]
+    target = users[0]["id"]
+    issued = client.post(
+        "/admin/api-keys", json={"user_id": target}, headers=auth(client.admin_key)
+    ).json()
+    assert issued["api_key"].startswith("lg_sk_")
+
+
+@respx.mock
+def test_responses_carry_both_header_names_for_one_release(client, member_key):
+    respx.post("http://dgx03:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "c1",
+                "choices": [
+                    {"index": 0, "message": {"role": "assistant", "content": "hi"},
+                     "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+            },
+        )
+    )
+    response = client.post(
+        "/v1/chat/completions",
+        headers=auth(member_key),
+        json={"model": "coding", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.headers["x-litegate-model"] == "coding"
+    assert response.headers["x-edullm-model"] == "coding"
+
+
+def test_registry_with_pre_rename_vocabulary_still_loads(client):
+    """`visibility: student` must not empty the registry on upgrade."""
+    from app.registry.schema import ModelDefinition, Visibility
+
+    legacy = definition()
+    legacy["metadata"]["visibility"] = "student"
+    parsed = ModelDefinition.model_validate(legacy)
+    assert parsed.metadata.visibility is Visibility.MEMBER
+
+    response = client.post(
+        "/admin/models/preview", json=legacy, headers=auth(client.admin_key)
+    )
+    assert response.status_code == 200
+
+
+def test_a_manager_stored_as_instructor_keeps_their_rights(client):
+    """Roles in the database are not rewritten on upgrade."""
+    import asyncio
+
+    from app.core.auth import generate_api_key
+    from app.db.models import ApiKey, User
+    from app.db.session import session_scope
+
+    async def seed() -> str:
+        plaintext, prefix, digest = generate_api_key()
+        async with session_scope() as session:
+            user = User(external_id="old-staff", display_name="Ajarn", role="instructor")
+            session.add(user)
+            await session.flush()
+            session.add(
+                ApiKey(user_id=user.id, name="legacy", key_prefix=prefix,
+                       key_hash=digest, scopes=[])
+            )
+        return plaintext
+
+    key = asyncio.run(seed())
+    me = client.get("/v1/me", headers=auth(key)).json()
+    assert me["role"] == "manager"
+    # And the manager-only surface is reachable.
+    assert client.get("/admin/users", headers=auth(key)).status_code == 200

@@ -121,7 +121,7 @@ def upstream_model_for(model: ModelDefinition, endpoint: Endpoint) -> str:
 
 
 def compatibility_badges(model: ModelDefinition) -> list[str]:
-    """Short capability labels for the student catalogue (PRD §6)."""
+    """Short capability labels for the member catalogue (PRD §6)."""
     caps = model.spec.capabilities
     badges: list[str] = []
     if Modality.TEXT in model.spec.modalities.input:

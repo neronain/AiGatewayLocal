@@ -54,14 +54,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build image
-        run: docker build -f docker/Dockerfile -t edullm-gateway:ci .
+        run: docker build -f docker/Dockerfile -t litegate:ci .
 
       - name: Boot the container and check health
         run: |
           docker run -d --name gw \
             -e GW_API_KEY_PEPPER=ci-test-pepper-not-secret \
             -e GW_DATABASE_URL=sqlite+aiosqlite:///./data/ci.db \
-            -p 8080:8080 edullm-gateway:ci
+            -p 8080:8080 litegate:ci
           for i in $(seq 1 30); do
             if curl -fsS http://localhost:8080/healthz; then
               echo "healthy"; exit 0

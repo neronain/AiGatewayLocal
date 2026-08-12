@@ -142,7 +142,7 @@ cd AiGatewayLocal
 sudo ./scripts/bootstrap.sh
 ```
 
-It creates the `edullm` system user, installs to `/opt/edullm-gateway`, builds a
+It creates the `litegate` system user, installs to `/opt/litegate`, builds a
 venv, generates `.env` with a fresh pepper, installs the systemd unit, starts the
 service, and prints the bootstrap admin key.
 
@@ -157,22 +157,22 @@ service, and prints the bootstrap admin key.
 Custom install location:
 
 ```bash
-sudo INSTALL_DIR=/srv/edullm ./scripts/bootstrap.sh
+sudo INSTALL_DIR=/srv/litegate ./scripts/bootstrap.sh
 ```
 
 Operating it:
 
 ```bash
-sudo systemctl status  edullm-gateway
-sudo systemctl restart edullm-gateway
-sudo journalctl -u edullm-gateway -f
+sudo systemctl status  litegate
+sudo systemctl restart litegate
+sudo journalctl -u litegate -f
 ```
 
-By default this path uses SQLite, which is fine up to a few hundred students.
-For more, switch `GW_DATABASE_URL` in `/opt/edullm-gateway/.env` to PostgreSQL
+By default this path uses SQLite, which is fine up to a few hundred members.
+For more, switch `GW_DATABASE_URL` in `/opt/litegate/.env` to PostgreSQL
 and restart (see §5).
 
-Put nginx in front for TLS — `deploy/nginx/edullm-gateway.conf` is ready to use
+Put nginx in front for TLS — `deploy/nginx/litegate.conf` is ready to use
 and already has the SSE-critical settings (`proxy_buffering off`, 900 s timeouts).
 
 ---
@@ -191,10 +191,10 @@ Start a mock model server inside the VM and point an alias at it:
 
 ```bash
 orb -m <machine> bash -lc '
-  sudo -u edullm bash -c "cd /opt/edullm-gateway && \
+  sudo -u litegate bash -c "cd /opt/litegate && \
     nohup .venv/bin/python scripts/mock_backend.py --port 8000 > /tmp/mock.log 2>&1 &"
   sudo sed -i "s#base_url: http://dgx03:8000#base_url: http://127.0.0.1:8000#" \
-    /opt/edullm-gateway/config/models/coding.yaml'
+    /opt/litegate/config/models/coding.yaml'
 ```
 
 Within `GW_REGISTRY_RELOAD_SECONDS` (30 s default) every worker picks up the
@@ -202,8 +202,8 @@ change. Then run the full suite:
 
 ```bash
 orb -m <machine> bash -lc '
-  sudo -u edullm /opt/edullm-gateway/.venv/bin/python \
-    /opt/edullm-gateway/scripts/model_test_suite.py \
+  sudo -u litegate /opt/litegate/.venv/bin/python \
+    /opt/litegate/scripts/model_test_suite.py \
     --base-url http://127.0.0.1:8080 --admin-key edu_sk_... --model coding'
 ```
 
@@ -223,7 +223,7 @@ Expected:
 ```
 
 > **Never leave `mock_backend.py` running on a real deployment.** It returns
-> canned text, not inference, and a student cannot tell the difference from the
+> canned text, not inference, and a member cannot tell the difference from the
 > response shape.
 
 ---
@@ -251,16 +251,16 @@ curl -s -X POST $GW/admin/api-keys -H "Authorization: Bearer $ADMIN_KEY" \
 
 Then revoke the bootstrap key with `DELETE /admin/api-keys/{id}`.
 
-### 2.2 Create a course and issue student keys
+### 2.2 Create a workspace and issue member keys
 
 ```bash
 python scripts/seed.py \
-  --course CS101 --name "Intro to Programming" --term 1/2569 \
-  --students 6412345678,6412345679,6412345680 \
+  --workspace CS101 --name "Intro to Programming" --term 1/2569 \
+  --members 6412345678,6412345679,6412345680 \
   --models coding,gemma-vision
 ```
 
-Keys are printed once. Distribute them over a channel students already trust
+Keys are printed once. Distribute them over a channel members already trust
 (LMS message, not a shared spreadsheet).
 
 ### 2.3 Set quota
@@ -268,7 +268,7 @@ Keys are printed once. Distribute them over a channel students already trust
 ```bash
 curl -s -X POST $GW/admin/quota-policies -H "Authorization: Bearer $ADMIN_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"scope":"course","course_id":"<course id>","window":"day",
+  -d '{"scope":"workspace","workspace_id":"<workspace id>","window":"day",
        "max_requests":300,"max_input_tokens":1000000,
        "max_output_tokens":200000,"max_images":50}'
 ```
@@ -284,7 +284,7 @@ Results post back automatically; the console shows `READY` / `DEGRADED`.
 
 ---
 
-## 3. Student setup
+## 3. Member setup
 
 **Python (OpenAI SDK)**
 
@@ -324,7 +324,7 @@ Only aliases whose `agent_clients.claude_code.enabled` is true will work well;
 1. Write `config/models/<alias>.yaml`.
 2. Wait for the reload interval, or `POST /admin/registry/reload`.
 3. Run the test suite against the new alias.
-4. Enable it for a course.
+4. Enable it for a workspace.
 
 > **With multiple uvicorn workers, `POST /admin/registry/reload` only reloads the
 > worker that served that request.** The file-watcher is what reloads every
@@ -333,7 +333,7 @@ Only aliases whose `agent_clients.claude_code.enabled` is true will work well;
 
 ### 4.2 Swapping the model behind an alias
 
-Change `upstream_model` and `base_url`, keep the alias. No student changes
+Change `upstream_model` and `base_url`, keep the alias. No member changes
 anything. Avoid doing this mid-term while assignments are in flight (PRD §18).
 
 ### 4.3 Health
@@ -349,15 +349,15 @@ curl -s -X POST $GW/v1/health/probe -H "Authorization: Bearer $ADMIN_KEY" | jq  
 ## 5. Moving from SQLite to PostgreSQL
 
 SQLite is the default for Path B and is adequate for a pilot. Switch when you
-have more than a few hundred active students, or more than one gateway instance.
+have more than a few hundred active members, or more than one gateway instance.
 
 ```bash
-sudo -u postgres createuser edullm --pwprompt
-sudo -u postgres createdb edullm --owner edullm
+sudo -u postgres createuser litegate --pwprompt
+sudo -u postgres createdb litegate --owner litegate
 ```
 
 ```ini
-GW_DATABASE_URL=postgresql+asyncpg://edullm:PASSWORD@localhost:5432/edullm
+GW_DATABASE_URL=postgresql+asyncpg://litegate:PASSWORD@localhost:5432/litegate
 ```
 
 Restart. Tables are created automatically. **Existing SQLite data is not
@@ -377,10 +377,10 @@ carrying over; users and keys should be re-issued).
 ```bash
 # PostgreSQL
 docker compose -f docker/docker-compose.yml exec -T postgres \
-  pg_dump -U edullm edullm | gzip > backup-$(date +%F).sql.gz
+  pg_dump -U litegate litegate | gzip > backup-$(date +%F).sql.gz
 
 # SQLite
-sudo sqlite3 /opt/edullm-gateway/data/gateway.db ".backup '/backup/gateway-$(date +%F).db'"
+sudo sqlite3 /opt/litegate/data/gateway.db ".backup '/backup/gateway-$(date +%F).db'"
 ```
 
 ---
@@ -392,10 +392,10 @@ sudo sqlite3 /opt/edullm-gateway/data/gateway.db ".backup '/backup/gateway-$(dat
 
 | Metric | Meaning |
 |---|---|
-| `edullm_requests_total{path,method,status,model}` | Request counts |
-| `edullm_request_duration_seconds{path,model}` | Latency histogram |
-| `edullm_requests_in_flight` | Concurrency |
-| `edullm_errors_total{code}` | Errors by gateway error code |
+| `litegate_requests_total{path,method,status,model}` | Request counts |
+| `litegate_request_duration_seconds{path,model}` | Latency histogram |
+| `litegate_requests_in_flight` | Concurrency |
+| `litegate_errors_total{code}` | Errors by gateway error code |
 
 Alerts worth having from day one:
 
@@ -403,7 +403,7 @@ Alerts worth having from day one:
 |---|---|
 | Gateway down | `/readyz` != 200 for 2 min |
 | Backend ejected | `endpoints_healthy < endpoints_total` for 5 min |
-| Error surge | `rate(edullm_errors_total{code="UPSTREAM_ERROR"}[5m]) > 0.1` |
+| Error surge | `rate(litegate_errors_total{code="UPSTREAM_ERROR"}[5m]) > 0.1` |
 | Quota pressure | `QUOTA_EXCEEDED` rate rising near an assignment deadline |
 | Estimation drift | share of usage rows with `token_accounting='estimated'` > 20% |
 
@@ -425,7 +425,7 @@ Alerts worth having from day one:
 Diagnostics:
 
 ```bash
-sudo journalctl -u edullm-gateway -n 100 --no-pager     # native
+sudo journalctl -u litegate -n 100 --no-pager     # native
 docker compose -f docker/docker-compose.yml logs --tail 100 gateway
 ```
 
@@ -434,6 +434,26 @@ Every error response carries `request_id`; grep the logs for it.
 ---
 
 ## 9. Upgrading
+
+### Upgrading from EduLLM Gateway (pre-1.4)
+
+The product was renamed to LiteGate and the vocabulary was made
+sector-neutral. Nothing in a running deployment has to change on upgrade day:
+
+| Was | Is | On upgrade |
+|---|---|---|
+| `edu_sk_...` API keys | `lg_sk_...` for newly issued keys | Existing keys keep working — a key is verified by HMAC over the whole string, so the prefix is only a label |
+| `apiVersion: edullm.gateway/v1` | `litegate.dev/v1` | Both accepted; no model file needs editing |
+| `visibility: student` / role `instructor` | `member` / `manager` | Both accepted; rows are not rewritten |
+| `x-edullm-model` response header | `x-litegate-model` | Both sent for one release, then the old one is removed |
+| systemd unit `edullm-gateway` | `litegate` | Rename at your convenience; the old unit keeps running |
+| Prometheus `edullm_*` metrics | `litegate_*` | **Not aliased** — update dashboards, this is the one thing that changes immediately |
+
+Database table and column names are unchanged. They are not part of the product
+surface, and renaming them would force a migration for nothing a user can see.
+
+### Routine upgrade
+
 
 ```bash
 cd AiGatewayLocal && git pull

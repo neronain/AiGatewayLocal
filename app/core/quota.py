@@ -7,7 +7,7 @@ Two enforcement points per request:
   * `record()` after completion  - increments counters with actual usage.
 
 This is check-then-record, not reserve-then-settle: under a concurrent burst a
-student can overshoot by at most (in-flight requests x per-request cost). That
+member can overshoot by at most (in-flight requests x per-request cost). That
 is accepted deliberately (NFR-Q1) because reserving would require holding a
 lock across a multi-minute generation. Overrun self-corrects on the next check.
 
@@ -53,27 +53,46 @@ class ResolvedLimits:
     max_input_tokens: int
     max_output_tokens: int
     max_images: int
-    source: str  # user | course | global | default
+    source: str  # user | workspace | global | default
 
 
-def window_bounds(window: str, now: datetime | None = None) -> tuple[datetime, datetime]:
+# Months a "term" starts on. The default is a Thai academic year, because that
+# is where this ran first; any organisation with its own calendar - fiscal
+# quarters, semesters, sprints - sets its own in gateway.yaml. Nothing else in
+# the gateway assumes a sector.
+DEFAULT_TERM_START_MONTHS = (1, 6, 8)
+
+
+def _term_bounds(now: datetime, starts: tuple[int, ...]) -> tuple[datetime, datetime]:
+    """The term containing `now`, given the months terms begin on."""
+    months = sorted({m for m in starts if 1 <= m <= 12}) or [1]
+    begins = [m for m in months if m <= now.month]
+    start_month = begins[-1] if begins else months[-1]
+    start_year = now.year if begins else now.year - 1
+
+    later = [m for m in months if m > start_month]
+    if later:
+        end_month, end_year = later[0], start_year
+    else:
+        end_month, end_year = months[0], start_year + 1
+
+    start = datetime(start_year, start_month, 1, tzinfo=now.tzinfo)
+    end = datetime(end_year, end_month, 1, tzinfo=now.tzinfo)
+    return start, end
+
+
+def window_bounds(
+    window: str,
+    now: datetime | None = None,
+    term_start_months: tuple[int, ...] | None = None,
+) -> tuple[datetime, datetime]:
     now = now or datetime.now(UTC)
     if window == "month":
         start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         last_day = monthrange(now.year, now.month)[1]
         return start, start + timedelta(days=last_day)
     if window == "term":
-        # Thai academic terms: Aug-Dec, Jan-May, Jun-Jul (summer).
-        if now.month >= 8:
-            start = now.replace(month=8, day=1, hour=0, minute=0, second=0, microsecond=0)
-            end = start.replace(year=now.year + 1, month=1)
-        elif now.month <= 5:
-            start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-            end = start.replace(month=6)
-        else:
-            start = now.replace(month=6, day=1, hour=0, minute=0, second=0, microsecond=0)
-            end = start.replace(month=8)
-        return start, end
+        return _term_bounds(now, term_start_months or DEFAULT_TERM_START_MONTHS)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     return start, start + timedelta(days=1)
 
@@ -193,10 +212,10 @@ class QuotaService:
         self,
         session: AsyncSession,
         user_id: str,
-        course_id: str | None,
+        workspace_id: str | None,
         model_alias: str,
     ) -> ResolvedLimits:
-        """Most specific policy wins: user+model > user > course+model > course > global."""
+        """Most specific policy wins: user+model > user > workspace+model > workspace > global."""
         result = await session.execute(
             select(QuotaPolicy).where(QuotaPolicy.enabled.is_(True))
         )
@@ -205,14 +224,14 @@ class QuotaService:
         def score(policy: QuotaPolicy) -> int:
             if policy.user_id and policy.user_id != user_id:
                 return -1
-            if policy.course_id and policy.course_id != course_id:
+            if policy.workspace_id and policy.workspace_id != workspace_id:
                 return -1
             if policy.model_alias and policy.model_alias != model_alias:
                 return -1
             value = 0
             if policy.user_id:
                 value += 4
-            if policy.course_id:
+            if policy.workspace_id:
                 value += 2
             if policy.model_alias:
                 value += 1

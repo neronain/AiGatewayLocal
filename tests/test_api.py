@@ -47,16 +47,16 @@ def test_invalid_key_is_401(client):
     assert response.json()["error"]["code"] == "INVALID_API_KEY"
 
 
-def test_x_api_key_header_is_accepted(client, student_key):
-    response = client.get("/v1/models", headers={"x-api-key": student_key})
+def test_x_api_key_header_is_accepted(client, member_key):
+    response = client.get("/v1/models", headers={"x-api-key": member_key})
     assert response.status_code == 200
 
 
-def test_revoked_key_is_rejected(client, student_key):
+def test_revoked_key_is_rejected(client, member_key):
     keys = client.get("/admin/api-keys", headers=auth(client.admin_key)).json()["data"]
     key_id = next(k["id"] for k in keys if not k["revoked"])
     client.delete(f"/admin/api-keys/{key_id}", headers=auth(client.admin_key))
-    response = client.get("/v1/models", headers=auth(student_key))
+    response = client.get("/v1/models", headers=auth(member_key))
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "API_KEY_REVOKED"
 
@@ -64,8 +64,8 @@ def test_revoked_key_is_rejected(client, student_key):
 # ---------------------------------------------------------------------------
 # Catalogue / model naming (PRD §6)
 # ---------------------------------------------------------------------------
-def test_student_never_sees_upstream_model_name(client, student_key):
-    payload = client.get("/v1/models", headers=auth(student_key)).json()
+def test_member_never_sees_upstream_model_name(client, member_key):
+    payload = client.get("/v1/models", headers=auth(member_key)).json()
     body = json.dumps(payload)
     assert "Qwen3-Coder" not in body
     assert "gemma-4-31B" not in body
@@ -79,8 +79,8 @@ def test_admin_sees_upstream_model_name(client):
     assert entry["upstream_model"] == "ucbye/Qwen3-Coder-Next-NVFP4-GB10"
 
 
-def test_catalog_groups_by_purpose(client, student_key):
-    payload = client.get("/v1/catalog", headers=auth(student_key)).json()
+def test_catalog_groups_by_purpose(client, member_key):
+    payload = client.get("/v1/catalog", headers=auth(member_key)).json()
     titles = {s["title"] for s in payload["sections"]}
     assert {"General AI", "Vision AI", "Coding AI"} <= titles
 
@@ -98,10 +98,10 @@ def test_catalog_groups_by_purpose(client, student_key):
 # ---------------------------------------------------------------------------
 # Capability validation (PRD §4)
 # ---------------------------------------------------------------------------
-def test_image_to_text_only_model_returns_400(client, student_key):
+def test_image_to_text_only_model_returns_400(client, member_key):
     response = client.post(
         "/v1/chat/completions",
-        headers=auth(student_key),
+        headers=auth(member_key),
         json={
             "model": "coding",
             "messages": [
@@ -121,10 +121,10 @@ def test_image_to_text_only_model_returns_400(client, student_key):
     assert "does not support image input" in error["message"]
 
 
-def test_unknown_model_returns_404_with_alternatives(client, student_key):
+def test_unknown_model_returns_404_with_alternatives(client, member_key):
     response = client.post(
         "/v1/chat/completions",
-        headers=auth(student_key),
+        headers=auth(member_key),
         json={"model": "gpt-9", "messages": [{"role": "user", "content": "hi"}]},
     )
     assert response.status_code == 404
@@ -133,11 +133,11 @@ def test_unknown_model_returns_404_with_alternatives(client, student_key):
     assert "coding" in error["details"]["available_models"]
 
 
-def test_anthropic_surface_rejects_model_without_that_protocol(client, student_key):
+def test_anthropic_surface_rejects_model_without_that_protocol(client, member_key):
     """muse-local declares protocols.anthropic=false, so /v1/messages must 400."""
     response = client.post(
         "/v1/messages",
-        headers=auth(student_key),
+        headers=auth(member_key),
         json={
             "model": "muse-local",
             "max_tokens": 10,
@@ -153,13 +153,13 @@ def test_anthropic_surface_rejects_model_without_that_protocol(client, student_k
 # Forwarding
 # ---------------------------------------------------------------------------
 @respx.mock
-def test_chat_completion_is_forwarded_and_alias_is_restored(client, student_key):
+def test_chat_completion_is_forwarded_and_alias_is_restored(client, member_key):
     route = respx.post(UPSTREAM_CHAT).mock(
         return_value=httpx.Response(200, json=OPENAI_REPLY)
     )
     response = client.post(
         "/v1/chat/completions",
-        headers=auth(student_key),
+        headers=auth(member_key),
         json={"model": "coding", "messages": [{"role": "user", "content": "hello"}]},
     )
     assert response.status_code == 200
@@ -167,23 +167,23 @@ def test_chat_completion_is_forwarded_and_alias_is_restored(client, student_key)
     # The response must name the alias, not the upstream repository.
     assert body["model"] == "coding"
     assert body["choices"][0]["message"]["content"] == "print('hello')"
-    assert body["usage"]["edullm"]["accounting"] == "upstream"
+    assert body["usage"]["litegate"]["accounting"] == "upstream"
 
     # The upstream received the real model name.
     sent = json.loads(route.calls[0].request.content)
     assert sent["model"] == "ucbye/Qwen3-Coder-Next-NVFP4-GB10"
-    # The student's gateway key must never be forwarded upstream.
-    assert student_key not in route.calls[0].request.headers.get("authorization", "")
+    # The member's gateway key must never be forwarded upstream.
+    assert member_key not in route.calls[0].request.headers.get("authorization", "")
 
 
 @respx.mock
-def test_vision_request_reaches_vision_backend(client, student_key):
+def test_vision_request_reaches_vision_backend(client, member_key):
     route = respx.post(UPSTREAM_VISION).mock(
         return_value=httpx.Response(200, json={**OPENAI_REPLY, "model": "google/gemma-4-31B-it"})
     )
     response = client.post(
         "/v1/chat/completions",
-        headers=auth(student_key),
+        headers=auth(member_key),
         json={
             "model": "gemma-vision",
             "messages": [
@@ -199,7 +199,7 @@ def test_vision_request_reaches_vision_backend(client, student_key):
     )
     assert response.status_code == 200
     assert response.json()["model"] == "gemma-vision"
-    assert response.json()["usage"]["edullm"]["visual_input_tokens"] > 0
+    assert response.json()["usage"]["litegate"]["visual_input_tokens"] > 0
 
     # PRD §13: content blocks are forwarded untouched, not flattened or re-encoded.
     sent = json.loads(route.calls[0].request.content)
@@ -209,13 +209,13 @@ def test_vision_request_reaches_vision_backend(client, student_key):
 
 
 @respx.mock
-def test_upstream_500_becomes_502_with_gateway_envelope(client, student_key):
+def test_upstream_500_becomes_502_with_gateway_envelope(client, member_key):
     respx.post(UPSTREAM_CHAT).mock(
         return_value=httpx.Response(500, text="CUDA out of memory")
     )
     response = client.post(
         "/v1/chat/completions",
-        headers=auth(student_key),
+        headers=auth(member_key),
         json={"model": "coding", "messages": [{"role": "user", "content": "hi"}]},
     )
     assert response.status_code == 502
@@ -225,7 +225,7 @@ def test_upstream_500_becomes_502_with_gateway_envelope(client, student_key):
 
 
 @respx.mock
-def test_streaming_passthrough(client, student_key):
+def test_streaming_passthrough(client, member_key):
     chunks = [
         'data: {"id":"1","choices":[{"delta":{"content":"he"},"index":0}]}\n\n',
         'data: {"id":"1","choices":[{"delta":{"content":"llo"},"index":0}]}\n\n',
@@ -241,7 +241,7 @@ def test_streaming_passthrough(client, student_key):
     with client.stream(
         "POST",
         "/v1/chat/completions",
-        headers=auth(student_key),
+        headers=auth(member_key),
         json={
             "model": "coding",
             "messages": [{"role": "user", "content": "hi"}],
@@ -261,7 +261,7 @@ def test_streaming_passthrough(client, student_key):
 
 
 @respx.mock
-def test_streaming_usage_is_kept_when_client_requests_it(client, student_key):
+def test_streaming_usage_is_kept_when_client_requests_it(client, member_key):
     chunks = [
         'data: {"id":"1","choices":[{"delta":{"content":"hi"},"index":0}]}\n\n',
         'data: {"id":"1","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\n',
@@ -275,7 +275,7 @@ def test_streaming_usage_is_kept_when_client_requests_it(client, student_key):
     with client.stream(
         "POST",
         "/v1/chat/completions",
-        headers=auth(student_key),
+        headers=auth(member_key),
         json={
             "model": "coding",
             "messages": [{"role": "user", "content": "hi"}],
@@ -291,13 +291,13 @@ def test_streaming_usage_is_kept_when_client_requests_it(client, student_key):
 # Anthropic surface (Claude Code)
 # ---------------------------------------------------------------------------
 @respx.mock
-def test_anthropic_messages_translated_to_openai(client, student_key):
+def test_anthropic_messages_translated_to_openai(client, member_key):
     route = respx.post(UPSTREAM_CHAT).mock(
         return_value=httpx.Response(200, json=OPENAI_REPLY)
     )
     response = client.post(
         "/v1/messages",
-        headers=auth(student_key),
+        headers=auth(member_key),
         json={
             "model": "coding",
             "max_tokens": 64,
@@ -323,7 +323,7 @@ def test_anthropic_messages_translated_to_openai(client, student_key):
 
 
 @respx.mock
-def test_anthropic_tool_definitions_are_translated(client, student_key):
+def test_anthropic_tool_definitions_are_translated(client, member_key):
     route = respx.post(UPSTREAM_CHAT).mock(
         return_value=httpx.Response(
             200,
@@ -354,7 +354,7 @@ def test_anthropic_tool_definitions_are_translated(client, student_key):
     )
     response = client.post(
         "/v1/messages",
-        headers=auth(student_key),
+        headers=auth(member_key),
         json={
             "model": "coding",
             "max_tokens": 64,
@@ -385,7 +385,7 @@ def test_anthropic_tool_definitions_are_translated(client, student_key):
 
 
 @respx.mock
-def test_anthropic_streaming_event_sequence(client, student_key):
+def test_anthropic_streaming_event_sequence(client, member_key):
     chunks = [
         'data: {"id":"1","choices":[{"delta":{"content":"Hel"},"index":0}]}\n\n',
         'data: {"id":"1","choices":[{"delta":{"content":"lo"},"index":0}]}\n\n',
@@ -401,7 +401,7 @@ def test_anthropic_streaming_event_sequence(client, student_key):
     with client.stream(
         "POST",
         "/v1/messages",
-        headers=auth(student_key),
+        headers=auth(member_key),
         json={
             "model": "coding",
             "max_tokens": 32,
@@ -420,10 +420,10 @@ def test_anthropic_streaming_event_sequence(client, student_key):
     assert "Hel" in payload and "lo" in payload
 
 
-def test_count_tokens_endpoint(client, student_key):
+def test_count_tokens_endpoint(client, member_key):
     response = client.post(
         "/v1/messages/count_tokens",
-        headers=auth(student_key),
+        headers=auth(member_key),
         json={
             "model": "coding",
             "messages": [{"role": "user", "content": "x" * 320}],
@@ -437,17 +437,17 @@ def test_count_tokens_endpoint(client, student_key):
 # Quota (PRD §10)
 # ---------------------------------------------------------------------------
 @respx.mock
-def test_quota_exhaustion_returns_429(client, student_key):
+def test_quota_exhaustion_returns_429(client, member_key):
     respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(200, json=OPENAI_REPLY))
 
     users = client.get("/admin/users", headers=auth(client.admin_key)).json()["data"]
-    student = next(u for u in users if u["external_id"] == "6412345678")
+    member = next(u for u in users if u["external_id"] == "6412345678")
     client.post(
         "/admin/quota-policies",
         headers=auth(client.admin_key),
         json={
             "scope": "user",
-            "user_id": student["id"],
+            "user_id": member["id"],
             "window": "day",
             "max_requests": 1,
         },
@@ -455,14 +455,14 @@ def test_quota_exhaustion_returns_429(client, student_key):
 
     first = client.post(
         "/v1/chat/completions",
-        headers=auth(student_key),
+        headers=auth(member_key),
         json={"model": "coding", "messages": [{"role": "user", "content": "hi"}]},
     )
     assert first.status_code == 200
 
     second = client.post(
         "/v1/chat/completions",
-        headers=auth(student_key),
+        headers=auth(member_key),
         json={"model": "coding", "messages": [{"role": "user", "content": "hi"}]},
     )
     assert second.status_code == 429
@@ -473,12 +473,12 @@ def test_quota_exhaustion_returns_429(client, student_key):
 
 
 @respx.mock
-def test_usage_is_recorded_without_prompt_content(client, student_key):
+def test_usage_is_recorded_without_prompt_content(client, member_key):
     respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(200, json=OPENAI_REPLY))
     secret = "MY SECRET PROMPT 12345"
     client.post(
         "/v1/chat/completions",
-        headers=auth(student_key),
+        headers=auth(member_key),
         json={"model": "coding", "messages": [{"role": "user", "content": secret}]},
     )
     summary = client.get(
@@ -491,28 +491,28 @@ def test_usage_is_recorded_without_prompt_content(client, student_key):
 
 
 # ---------------------------------------------------------------------------
-# Course policy
+# Workspace policy
 # ---------------------------------------------------------------------------
-def test_course_bound_key_cannot_use_unlisted_model(client):
+def test_workspace_bound_key_cannot_use_unlisted_model(client):
     headers = auth(client.admin_key)
-    course = client.post(
-        "/admin/courses",
+    workspace = client.post(
+        "/admin/workspaces",
         json={"code": "CS101", "name": "Intro", "term": "1/2569"},
         headers=headers,
     ).json()
     client.post(
-        f"/admin/courses/{course['id']}/models",
+        f"/admin/workspaces/{workspace['id']}/models",
         json={"models": ["coding"]},
         headers=headers,
     )
     user = client.post(
         "/admin/users",
-        json={"external_id": "6499999999", "display_name": "Ploy", "role": "student"},
+        json={"external_id": "6499999999", "display_name": "Ploy", "role": "member"},
         headers=headers,
     ).json()
     key = client.post(
         "/admin/api-keys",
-        json={"user_id": user["id"], "course_id": course["id"]},
+        json={"user_id": user["id"], "workspace_id": workspace["id"]},
         headers=headers,
     ).json()["api_key"]
 
@@ -525,15 +525,15 @@ def test_course_bound_key_cannot_use_unlisted_model(client):
     assert denied.json()["error"]["code"] == "MODEL_NOT_PERMITTED"
 
 
-def test_setting_unknown_alias_on_a_course_is_rejected(client):
+def test_setting_unknown_alias_on_a_workspace_is_rejected(client):
     headers = auth(client.admin_key)
-    course = client.post(
-        "/admin/courses",
+    workspace = client.post(
+        "/admin/workspaces",
         json={"code": "CS999", "name": "Ghost", "term": "1/2569"},
         headers=headers,
     ).json()
     response = client.post(
-        f"/admin/courses/{course['id']}/models",
+        f"/admin/workspaces/{workspace['id']}/models",
         json={"models": ["does-not-exist"]},
         headers=headers,
     )
@@ -541,13 +541,13 @@ def test_setting_unknown_alias_on_a_course_is_rejected(client):
     assert response.json()["error"]["code"] == "MODEL_NOT_FOUND"
 
 
-def test_student_cannot_reach_admin_plane(client, student_key):
-    assert client.get("/admin/models", headers=auth(student_key)).status_code == 403
-    assert client.get("/admin/users", headers=auth(student_key)).status_code == 403
+def test_member_cannot_reach_admin_plane(client, member_key):
+    assert client.get("/admin/models", headers=auth(member_key)).status_code == 403
+    assert client.get("/admin/users", headers=auth(member_key)).status_code == 403
 
 
-def test_me_reports_quota(client, student_key):
-    payload = client.get("/v1/me", headers=auth(student_key)).json()
+def test_me_reports_quota(client, member_key):
+    payload = client.get("/v1/me", headers=auth(member_key)).json()
     assert payload["external_id"] == "6412345678"
     assert payload["quota"]["window"] == "day"
     assert "max_requests" in payload["quota"]["limits"]
@@ -559,11 +559,11 @@ def test_me_reports_quota(client, student_key):
 def test_metrics_endpoint_exposes_prometheus(client):
     response = client.get("/metrics")
     assert response.status_code == 200
-    assert "edullm_requests_total" in response.text
+    assert "litegate_requests_total" in response.text
 
 
-def test_registry_reload_is_admin_only(client, student_key):
-    assert client.post("/admin/registry/reload", headers=auth(student_key)).status_code == 403
+def test_registry_reload_is_admin_only(client, member_key):
+    assert client.post("/admin/registry/reload", headers=auth(member_key)).status_code == 403
     response = client.post("/admin/registry/reload", headers=auth(client.admin_key))
     assert response.status_code == 200
     assert set(response.json()["models"]) == {"coding", "gemma-vision", "muse-local"}

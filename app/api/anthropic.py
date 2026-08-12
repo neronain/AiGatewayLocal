@@ -79,7 +79,7 @@ async def messages(
     effective_max_tokens = validate_context_budget(model, profile, body.get("max_tokens"))
 
     limits = await state.quota.resolve_limits(
-        session, principal.user_id, principal.course_id, alias
+        session, principal.user_id, principal.workspace_id, alias
     )
     await state.quota.check(principal.user_id, limits)
 
@@ -179,7 +179,7 @@ async def _complete_messages(
     data["usage"] = {
         "input_tokens": usage.input_tokens,
         "output_tokens": usage.output_tokens,
-        "edullm": {
+        "litegate": {
             "text_input_tokens": usage.text_input_tokens,
             "visual_input_tokens": usage.visual_input_tokens,
             "accounting": usage.accounting,
@@ -191,9 +191,12 @@ async def _complete_messages(
         content=data,
         headers={
             "x-request-id": ctx.request_id,
+            "x-litegate-model": alias,
+            # Legacy alias, one release only: scripts and dashboards still
+            # read x-edullm-model.
             "x-edullm-model": alias,
-            "x-edullm-endpoint": endpoint.name,
-            "x-edullm-protocol": "anthropic-native" if not translate else "anthropic-via-openai",
+            "x-litegate-endpoint": endpoint.name,
+            "x-litegate-protocol": "anthropic-native" if not translate else "anthropic-via-openai",
         },
     )
 
@@ -282,6 +285,7 @@ async def _stream_messages(
             "connection": "keep-alive",
             "x-accel-buffering": "no",
             "x-request-id": ctx.request_id,
+            "x-litegate-model": ctx.model.alias,
             "x-edullm-model": ctx.model.alias,
         },
     )
@@ -313,7 +317,7 @@ async def count_tokens(
     usage = resolve_usage(profile, None)
     return {
         "input_tokens": usage.input_tokens,
-        "edullm": {
+        "litegate": {
             "text_input_tokens": usage.text_input_tokens,
             "visual_input_tokens": usage.visual_input_tokens,
             "accounting": "estimated",

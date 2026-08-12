@@ -1,4 +1,4 @@
-"""Student-facing catalogue and self-service usage (PRD §6, FR-38).
+"""Member-facing catalogue and self-service usage (PRD §6, FR-38).
 
 Models are grouped by purpose and described with plain-language badges. The
 upstream repository name is never present in any response on this router.
@@ -19,7 +19,7 @@ from app.state import AppState, get_state
 
 router = APIRouter(prefix="/v1", tags=["catalog"])
 
-# Section headings for the student catalogue, in display order.
+# Section headings for the member catalogue, in display order.
 _PURPOSE_LABELS: dict[Purpose, str] = {
     Purpose.GENERAL: "General AI",
     Purpose.VISION: "Vision AI",
@@ -37,7 +37,7 @@ def _format_context(tokens: int) -> str:
     return f"{tokens} Context"
 
 
-def _student_entry(model: ModelDefinition) -> dict[str, Any]:
+def _member_entry(model: ModelDefinition) -> dict[str, Any]:
     claude_code = model.spec.agent_clients.get("claude_code")
     return {
         "id": model.alias,
@@ -72,7 +72,7 @@ async def catalog(
             {
                 "purpose": purpose.value,
                 "title": label,
-                "models": [_student_entry(m) for m in sorted(models, key=lambda m: m.alias)],
+                "models": [_member_entry(m) for m in sorted(models, key=lambda m: m.alias)],
             }
         )
     return {
@@ -89,7 +89,7 @@ async def me(
 ) -> dict[str, Any]:
     """Who am I, and how much of my quota is left."""
     limits = await state.quota.resolve_limits(
-        session, principal.user_id, principal.course_id, ""
+        session, principal.user_id, principal.workspace_id, ""
     )
     usage = await state.quota.usage_snapshot(principal.user_id, limits)
     return {
@@ -97,6 +97,6 @@ async def me(
         "external_id": principal.external_id,
         "display_name": principal.display_name,
         "role": principal.role,
-        "course_id": principal.course_id,
+        "workspace_id": principal.workspace_id,
         "quota": usage,
     }

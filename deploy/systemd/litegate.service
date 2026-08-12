@@ -1,19 +1,19 @@
 [Unit]
-Description=EduLLM Gateway
+Description=LiteGate
 Documentation=https://github.com/neronain/AiGatewayLocal
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=exec
-User=edullm
-Group=edullm
-WorkingDirectory=/opt/edullm-gateway
+User=litegate
+Group=litegate
+WorkingDirectory=/opt/litegate
 
 # Secrets live here, readable only by the service user (chmod 600).
-EnvironmentFile=/opt/edullm-gateway/.env
+EnvironmentFile=/opt/litegate/.env
 
-ExecStart=/opt/edullm-gateway/.venv/bin/uvicorn app.main:app \
+ExecStart=/opt/litegate/.venv/bin/uvicorn app.main:app \
     --host 0.0.0.0 \
     --port 8080 \
     --workers 4 \
@@ -41,7 +41,7 @@ RestrictRealtime=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
 # The only writable paths the service needs.
-ReadWritePaths=/opt/edullm-gateway/data /opt/edullm-gateway/logs
+ReadWritePaths=/opt/litegate/data /opt/litegate/logs
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 # --- Limits ----------------------------------------------------------------
@@ -50,7 +50,7 @@ MemoryMax=4G
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=edullm-gateway
+SyslogIdentifier=litegate
 
 [Install]
 WantedBy=multi-user.target

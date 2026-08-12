@@ -36,7 +36,7 @@ POST /v1/chat/completions
    ┌────▼──────────────────┐
    │ authenticate          │ HMAC-SHA256 key lookup            → 401
    ├───────────────────────┤
-   │ course policy         │ course_models allow-list          → 403
+   │ workspace policy         │ workspace_models allow-list          → 403
    ├───────────────────────┤
    │ resolve alias         │ registry snapshot + visibility    → 404
    ├───────────────────────┤
@@ -77,7 +77,7 @@ app/
 │   └── store.py          snapshot loading, atomic hot reload
 │
 ├── core/
-│   ├── auth.py           API keys, Principal, course permission
+│   ├── auth.py           API keys, Principal, workspace permission
 │   ├── multimodal.py     content-block parsing, image policy
 │   ├── capability.py     the two capability gates
 │   ├── tokens.py         token estimation + the visual/text split
@@ -127,7 +127,7 @@ Multi-worker deployments rely on the file-watcher. Documented in DEPLOYMENT §4.
 A model declaring `vision: true` is necessary but not sufficient — the specific
 endpoint chosen must also serve images. Checking only the model would let a
 vision request route to a text-only backend and fail with a backend-shaped 500
-that the student cannot act on.
+that the member cannot act on.
 
 ### Check-then-record quota, not reserve-then-settle
 
@@ -141,7 +141,7 @@ NFR-Q1 rather than hidden.
 
 A usage row is bookkeeping; an inference response is the product. Writes are
 buffered and flushed every 2 seconds so a slow or briefly unavailable database
-adds no latency to a student's request. The trade is losing at most one flush
+adds no latency to a member's request. The trade is losing at most one flush
 window of rows on an unclean shutdown — acceptable for capacity planning data,
 and the buffer is drained on graceful shutdown.
 

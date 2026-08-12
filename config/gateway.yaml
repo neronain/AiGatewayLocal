@@ -1,4 +1,4 @@
-apiVersion: edullm.gateway/v1
+apiVersion: litegate.dev/v1
 kind: GatewayConfig
 
 # ---------------------------------------------------------------------------
@@ -13,7 +13,7 @@ vision_policy:
     - image/webp
   remote_image_url:
     # Keep false on an internal deployment: with it on, the gateway becomes a
-    # URL fetcher that can be pointed at internal hosts. Students send base64.
+    # URL fetcher that can be pointed at internal hosts. Members send base64.
     enabled: false
     allowed_hosts: []
 

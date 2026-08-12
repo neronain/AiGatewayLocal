@@ -1,21 +1,34 @@
-# EduLLM Gateway
+# LiteGate
 
-**Capability-aware, multimodal AI gateway for education.**
-Give students and instructors access to university-owned GPU inference through
-the standard OpenAI and Anthropic APIs — under institutional identity, policy and
-quota, without ever exposing a raw model server.
+**Capability-aware, multimodal AI gateway for teams that run their own GPUs.**
+Put your own model servers behind the standard OpenAI and Anthropic APIs, with
+identity, policy, quota and usage accounting in front of them — and without
+exposing a raw model server to anyone.
+
+Built for the case where a handful of people share a handful of GPUs: a small
+company, a school or university department, a research group, an agency running
+inference for its own clients. Nothing in it assumes a particular sector.
 
 [![CI](https://github.com/neronain/AiGatewayLocal/actions/workflows/ci.yml/badge.svg)](https://github.com/neronain/AiGatewayLocal/actions/workflows/ci.yml)
 
 ```
-   Students                      EduLLM Gateway                  DGX nodes
-┌─────────────┐            ┌──────────────────────┐         ┌──────────────┐
-│ Python SDK  │            │ Auth · Course policy │         │ vLLM  Muse   │
-│ Claude Code │ ──HTTPS──▶ │ Capability · Quota   │ ──────▶ │ vLLM  Gemma  │
-│ Web / App   │            │ Routing · Usage      │         │ vLLM  Qwen   │
-└─────────────┘            └──────────────────────┘         └──────────────┘
-      alias only              policy + accounting              inference
+    Members                       LiteGate                    Your GPUs
+┌─────────────┐          ┌────────────────────────┐        ┌──────────────┐
+│ Python SDK  │          │ Auth · Workspace policy│        │ vLLM         │
+│ Claude Code │ ─HTTPS─▶ │ Capability · Quota     │ ─────▶ │ llama.cpp    │
+│ Web / App   │          │ Routing · Usage        │        │ Ollama/SGLang│
+└─────────────┘          └────────────────────────┘        └──────────────┘
+      alias only            policy + accounting               inference
 ```
+
+### Who it is for
+
+| You have | LiteGate gives you |
+|---|---|
+| One GPU box shared by a small team | Per-person keys and quota instead of an open port |
+| Several nodes with different models | One alias per job (`coding`, `vision`) that survives model swaps |
+| A class, a department, or client projects | Workspaces, each with its own allowed models and limits |
+| Claude Code users and OpenAI-SDK users | Both, against the same backend, without changing the backend |
 
 ---
 
@@ -26,8 +39,8 @@ quota, without ever exposing a raw model server.
 | **Capability registry** | Models declare what they *can do* (`vision`, `tools`, `agentic`), not what they *are*. Adding a model is one YAML file — no code change. |
 | **Fails fast, not downstream** | Send an image to a text-only model and you get a `400` with an actionable message. The backend never sees the request. |
 | **Multimodal from day one** | Text + image content blocks, streaming, on both the OpenAI and Anthropic surfaces. |
-| **Stable aliases** | Students use `coding`. Admins can repoint it from Qwen to something else with zero student-side change. Repository names are never student-visible. |
-| **Real quota** | Per student, course and model, over requests / text tokens / **visual tokens** / output tokens / images. |
+| **Stable aliases** | Members use `coding`. Admins can repoint it from Qwen to something else with zero member-side change. Repository names are never member-visible. |
+| **Real quota** | Per member, workspace and model, over requests / text tokens / **visual tokens** / output tokens / images. |
 | **Claude Code works** | `/v1/messages` is served even when the backend only speaks OpenAI — the gateway translates both directions, streaming included. |
 | **Private by default** | No prompt, no response, no image is ever written to disk. The schema has no column for them. |
 
@@ -66,7 +79,7 @@ Compose, native systemd, and a no-GPU staging path.
 
 ---
 
-## For students
+## For members
 
 **Python**
 
@@ -109,12 +122,12 @@ claude
 Write `config/models/<alias>.yaml` — that is the whole job:
 
 ```yaml
-apiVersion: edullm.gateway/v1
+apiVersion: litegate.dev/v1
 kind: Model
 metadata:
   alias: my-model
   display_name: My Model
-  visibility: student
+  visibility: member
 spec:
   upstream_model: org/Model-Name-On-The-Backend
   purpose: [general]
@@ -177,7 +190,7 @@ make mock     # mock backend on :8000
 Tests cover the capability contract, vision policy enforcement (including a GIF
 mislabelled as PNG, and the SSRF guard on remote URLs), quota exhaustion,
 streaming on both protocols, Anthropic translation, and the guarantee that no
-repository name reaches a student-visible response.
+repository name reaches a member-visible response.
 
 ---
 
@@ -187,7 +200,7 @@ repository name reaches a student-visible response.
 |---|---|
 | M1 — Core: registry, capability validation, OpenAI surface, quota, routing | done |
 | M2 — Agent: Anthropic surface, translation, test suite | done |
-| M3 — Pilot: one real DGX, one course | next |
+| M3 — Pilot: one real DGX, one workspace | next |
 | M4 — Production: Postgres + Redis, TLS, monitoring | planned |
 | M5 — P1: image upload, PDF, richer dashboard | planned |
 

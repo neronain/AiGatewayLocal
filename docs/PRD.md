@@ -1,10 +1,10 @@
-# EduLLM Gateway — Product Requirements Document
+# LiteGate — Product Requirements Document
 
 | | |
 |---|---|
-| **Version** | 1.3 (consolidated, build-ready) |
+| **Version** | 1.4 (LiteGate — sector-neutral) |
 | **Status** | Approved for implementation |
-| **Supersedes** | PRD v1.0, v1.1, v1.2 + "PRD v1.2 Addendum" |
+| **Supersedes** | PRD v1.0–v1.3 (published as "EduLLM Gateway") |
 | **Last updated** | 2026-08-12 |
 | **Reference implementation** | this repository |
 | **Author** | neronain — [facebook.com/neronain.minidev](https://www.facebook.com/neronain.minidev) |
@@ -20,10 +20,17 @@
 
 ## 1. Summary
 
-EduLLM Gateway is a self-hosted API gateway that lets students and instructors
-use university-owned GPU inference (vLLM / Ollama / SGLang on DGX nodes) through
-the standard OpenAI and Anthropic APIs, under institutional identity, policy and
-quota — without ever exposing a raw model server to the campus network.
+LiteGate is a self-hosted API gateway that puts an organisation's own GPU
+inference (vLLM / llama.cpp / Ollama / SGLang) behind the standard OpenAI and
+Anthropic APIs, under its own identity, policy and quota — without exposing a
+raw model server to the network.
+
+**Who it is for.** Any group sharing GPUs they control: a small company, a
+school or university department, a research group, an agency serving its own
+clients. Education was the first deployment and remains a first-class use case,
+but nothing in the design is specific to it — the vocabulary is *member*,
+*workspace* and *manager*, which a class, a team and a client project all map
+onto without translation.
 
 **The one-sentence architecture:** the gateway owns *identity, permission,
 capability, quota, routing, usage and protocol*; the model server owns
@@ -37,19 +44,19 @@ added.
 | Problem | Consequence today |
 |---|---|
 | Model servers have no concept of a user | Cannot attribute cost, cannot enforce fair use |
-| Repository names leak into student-facing config | Swapping a model breaks every student's setup |
-| Capability differences are invisible | A student sends an image to a text-only model and gets an opaque backend 500 |
+| Repository names leak into member-facing config | Swapping a model breaks every member's setup |
+| Capability differences are invisible | A member sends an image to a text-only model and gets an opaque backend 500 |
 | No quota | One runaway script starves a whole class |
 | No usage record | No basis for capacity planning or grant reporting |
 | Every client speaks a different API | Claude Code cannot use an OpenAI-only backend |
 
 ### 1.2 Goals
 
-- **G1** — One stable endpoint and one API key per student for every model.
-- **G2** — Students address models by **purpose alias** (`coding`, `vision`), never by repository name; admins can re-point an alias with zero student-side change.
+- **G1** — One stable endpoint and one API key per member for every model.
+- **G2** — Members address models by **purpose alias** (`coding`, `vision`), never by repository name; admins can re-point an alias with zero member-side change.
 - **G3** — Capability-aware validation: an unsupported request fails fast at the gateway with an actionable message, never at the backend.
 - **G4** — Multimodal (text + image) as a first-class P0 path, not a retrofit.
-- **G5** — Enforceable per-student, per-course quota covering text, visual and output tokens.
+- **G5** — Enforceable per-member, per-workspace quota covering text, visual and output tokens.
 - **G6** — Works unmodified with Claude Code, the OpenAI SDK, and plain `curl`.
 - **G7** — Privacy by default: no prompt, response, or image is ever written to disk.
 
@@ -68,10 +75,10 @@ added.
 
 | Persona | Needs | Success looks like |
 |---|---|---|
-| **Student** (undergraduate, 1st programming course) | Something that "just works" in Python or Claude Code | Pastes a base URL + key, and it runs. Never sees a repository name. |
-| **Instructor** | Class-wide control and visibility | Enables 2 models for CS101, sets a quota, sees who is near the limit |
+| **Member** — the person doing the work (developer, student, analyst) | Something that "just works" in Python or Claude Code | Pastes a base URL + key, and it runs. Never sees a repository name. |
+| **Manager** — owns a workspace (team lead, instructor, project owner) | Control and visibility for their group | Enables 2 models for the workspace, sets a quota, sees who is near the limit |
 | **Administrator / GPU ops** | Add and swap models safely | Adds a model by writing one YAML file, runs the test suite, sees READY |
-| **Researcher / TA** | Higher limits, agentic workloads | Same API, different quota policy |
+| **Power user** (researcher, senior engineer) | Higher limits, agentic workloads | Same API, different quota policy |
 
 ---
 
@@ -87,10 +94,10 @@ added.
                                 │  HTTPS
                                 ▼
              ┌────────────────────────────────────────┐
-             │            EduLLM Gateway              │
+             │            LiteGate              │
              │                                        │
              │  1. Authentication      (§7)           │
-             │  2. Course policy       (§7)           │
+             │  2. Workspace policy       (§7)           │
              │  3. Capability registry (§4)           │
              │  4. Modality validation (§5, §6)       │
              │  5. Quota               (§8)           │
@@ -127,7 +134,7 @@ side. This is the test that keeps the gateway small.
 
 | Term | Meaning |
 |---|---|
-| **Alias** | The public model identifier a student uses (`coding`). Stable across model swaps. |
+| **Alias** | The public model identifier a member uses (`coding`). Stable across model swaps. |
 | **Upstream model** | The real repository path (`ucbye/Qwen3-Coder-Next-NVFP4-GB10`). Admin-visible only. |
 | **Capability** | A boolean feature flag on a model (`vision`, `tools`, `agentic`). |
 | **Modality** | A content type (`text`, `image`, `audio`, `video`). |
@@ -160,14 +167,14 @@ One YAML file per model in `config/models/<alias>.yaml`. This is the **single
 canonical form** — v1.2 showed three mutually inconsistent shapes (§21 D1).
 
 ```yaml
-apiVersion: edullm.gateway/v1
+apiVersion: litegate.dev/v1
 kind: Model
 
 metadata:
   alias: coding                    # public id; ^[a-z0-9][a-z0-9._-]{1,62}$
   display_name: Local Coder        # shown in the catalogue
   description: Agentic coding model with tool calling and long context.
-  visibility: student              # student | instructor | admin
+  visibility: member              # member | manager | admin
   tags: [coding, agent]
 
 spec:
@@ -288,7 +295,7 @@ they arrive; no buffering of a complete response.
 Per v1.2 §13, in MVP the gateway must **not** resize, re-encode, OCR, run vision
 encoding, convert formats, or perform object detection. Original bytes are
 forwarded untouched. Verified by test: the base64 payload the backend receives is
-byte-identical to what the student sent.
+byte-identical to what the member sent.
 
 ```
 Client ──original multimodal request──▶ Gateway ──unchanged──▶ vLLM ──▶ Vision model
@@ -352,11 +359,11 @@ Enforcement rules:
 
 `remote_image_url.enabled: false` is the default and the recommendation for an
 internal deployment. With it enabled the gateway becomes a URL fetcher that an
-authenticated student could aim at internal addresses (cloud metadata endpoints,
+authenticated member could aim at internal addresses (cloud metadata endpoints,
 internal admin panels) — a server-side request forgery primitive. When a site
 must enable it, `allowed_hosts` is mandatory.
 
-Students send base64 or (P1) upload.
+Members send base64 or (P1) upload.
 
 ---
 
@@ -374,20 +381,20 @@ Format `edu_sk_<43 url-safe base64 chars>` (256 bits of entropy).
   invalidates every key by design.
 - Accepted as `Authorization: Bearer <key>` (OpenAI) **or** `x-api-key: <key>`
   (Anthropic), so both SDKs work unmodified.
-- A key may be bound to a course; unknown vs. malformed keys return the identical
+- A key may be bound to a workspace; unknown vs. malformed keys return the identical
   message, giving no oracle for key probing.
 
 ### 7.2 Roles
 
 | Role | Sees | Can |
 |---|---|---|
-| `student` | `visibility: student` models | Call permitted models; read own quota |
-| `instructor` | `student` + `instructor` | The above, plus manage own course, issue student keys, read usage |
+| `member` | `visibility: member` models | Call permitted models; read own quota |
+| `manager` | `member` + `manager` | The above, plus manage own workspace, issue member keys, read usage |
 | `admin` | everything, including `upstream_model` | Everything, plus registry reload and quota policy |
 
-### FR-19 — Course-scoped model permission · **P0**
+### FR-19 — Workspace-scoped model permission · **P0**
 
-A key bound to a course may only call aliases that course enables. An unlisted
+A key bound to a workspace may only call aliases that workspace enables. An unlisted
 alias returns **403 `MODEL_NOT_PERMITTED`**; the message names the alias but
 never reveals whether it exists elsewhere.
 
@@ -406,7 +413,7 @@ requests · text_input_tokens · visual_input_tokens · output_tokens · images
 **Policy resolution** — most specific match wins:
 
 ```
-user + model  >  user  >  course + model  >  course  >  global  >  gateway.yaml default
+user + model  >  user  >  workspace + model  >  workspace  >  global  >  gateway.yaml default
 ```
 
 **Windows:** `day` | `month` | `term`. The `term` window follows the Thai
@@ -420,7 +427,7 @@ check(counters vs limits) ──▶ forward ──▶ record(actual usage)
 
 This is deliberately *not* reserve-then-settle. Reserving would require holding a
 reservation across a multi-minute generation, and refunding on every failure
-path. The cost is a bounded overrun: under a concurrent burst a student can
+path. The cost is a bounded overrun: under a concurrent burst a member can
 exceed the limit by at most (in-flight requests × per-request cost), which
 self-corrects on the next check. Accepted as **NFR-Q1**.
 
@@ -453,7 +460,7 @@ Unknown geometry (e.g. WEBP) → 850. Remote URL (never fetched) → 1105.
 One row per completed request, **metadata only**:
 
 ```
-request_id · ts · user_id · course_id · api_key_id
+request_id · ts · user_id · workspace_id · api_key_id
 model_alias · endpoint_name · protocol · request_modality · stream
 text_input_tokens · visual_input_tokens · output_tokens · total_tokens
 image_count · token_accounting
@@ -475,7 +482,7 @@ Routing is not `alias → endpoint`. It is:
 ```
 Request
   ├─▶ Authenticate                      → 401
-  ├─▶ Course policy                     → 403
+  ├─▶ Workspace policy                     → 403
   ├─▶ Resolve alias                     → 404
   ├─▶ Parse content blocks              → 400
   ├─▶ Model capability gate             → 400  ← never reaches the backend
@@ -534,24 +541,24 @@ compatibility comes from `agent_clients` — which is populated by the test suit
 ### FR-40 — Automatic model selection · **P3 — not in MVP**
 
 `model=auto` with a prompt classifier is explicitly deferred. It adds a
-classification step, an unpredictable cost profile, and a failure mode students
-cannot diagnose. Students choose an alias.
+classification step, an unpredictable cost profile, and a failure mode members
+cannot diagnose. Members choose an alias.
 
 ---
 
-## 10. Student-facing model UX
+## 10. Member-facing model UX
 
-### FR-27 — Repository names are never student-visible · **P0**
+### FR-27 — Repository names are never member-visible · **P0**
 
-| Student sees | Admin also sees |
+| Member sees | Admin also sees |
 |---|---|
 | `coding` | `ucbye/Qwen3-Coder-Next-NVFP4-GB10` |
 | `gemma-vision` | `google/gemma-4-31B-it` |
 | `muse-local` | `meta-models/Muse-Glimmer-30B` |
 
-This is enforced by a test asserting that no student-visible response body
+This is enforced by a test asserting that no member-visible response body
 contains any configured `upstream_model` string. It is what makes G2 real: an
-admin can re-point `coding` at a new model and no student changes anything.
+admin can re-point `coding` at a new model and no member changes anything.
 
 The catalogue groups by purpose with plain-language badges:
 
@@ -593,7 +600,7 @@ ends. **Nothing is written to disk.** This is enforced structurally: the schema
 has no column capable of holding this content, so enabling storage requires a
 schema change and a review, not a config flip.
 
-Relevant to Thailand's PDPA: student prompts may contain personal data, and the
+Relevant to Thailand's PDPA: member prompts may contain personal data, and the
 lawful basis for retaining them has not been established. The default is
 therefore no-collection.
 
@@ -603,11 +610,11 @@ therefore no-collection.
 |---|---|
 | SEC-1 | TLS terminated at the reverse proxy; the gateway never binds to a public interface directly |
 | SEC-2 | API keys stored as HMAC-SHA256 with a server-side pepper; never logged |
-| SEC-3 | The student's gateway key is stripped before forwarding; the backend receives its own credential |
+| SEC-3 | The member's gateway key is stripped before forwarding; the backend receives its own credential |
 | SEC-4 | Backend credentials come from env vars named in YAML — never the values in YAML |
 | SEC-5 | `/admin/*` and `/metrics` restricted to the management network at the proxy |
 | SEC-6 | Remote image fetch off by default (§6.3, SSRF) |
-| SEC-7 | Upstream error text is truncated and wrapped; backend internals are not relayed verbatim to students |
+| SEC-7 | Upstream error text is truncated and wrapped; backend internals are not relayed verbatim to members |
 | SEC-8 | Container runs as non-root, read-only rootfs, all capabilities dropped |
 | SEC-9 | Every admin mutation writes an `audit_logs` row (actor, action, target, IP) |
 | SEC-10 | Registry mounted read-only into the container |
@@ -618,10 +625,10 @@ therefore no-collection.
 
 ```sql
 users(id, external_id UNIQUE, email, display_name, role, status, created_at, updated_at)
-courses(id, code UNIQUE, name, term, status, …)
-enrollments(id, user_id→users, course_id→courses, role, UNIQUE(user_id,course_id))
+workspaces(id, code UNIQUE, name, term, status, …)
+memberships(id, user_id→users, workspace_id→workspaces, role, UNIQUE(user_id,workspace_id))
 
-api_keys(id, user_id→users, course_id→courses NULL, name,
+api_keys(id, user_id→users, workspace_id→workspaces NULL, name,
          key_prefix, key_hash UNIQUE, scopes JSON,
          expires_at, revoked_at, last_used_at, …)
 
@@ -633,14 +640,14 @@ models(id, alias UNIQUE, display_name, upstream_model, purpose JSON,
        supports_openai, supports_anthropic, claude_code_compatible,
        visibility, enabled, …)
 
-course_models(id, course_id→courses, model_alias, enabled,
-              UNIQUE(course_id, model_alias))
+workspace_models(id, workspace_id→workspaces, model_alias, enabled,
+              UNIQUE(workspace_id, model_alias))
 
 model_compatibility(id, model_id→models, feature, status, tested_at,
                     test_version, latency_ms, notes,
                     UNIQUE(model_id, feature))
 
-quota_policies(id, scope, course_id, user_id, model_alias, window,
+quota_policies(id, scope, workspace_id, user_id, model_alias, window,
                max_requests, max_input_tokens, max_output_tokens, max_images, enabled)
 
 quota_counters(id, subject_key, window_start, window_end,
@@ -648,7 +655,7 @@ quota_counters(id, subject_key, window_start, window_end,
                output_tokens, images, updated_at,
                UNIQUE(subject_key, window_start))
 
-usage_logs(id, request_id UNIQUE, ts, user_id, course_id, api_key_id,
+usage_logs(id, request_id UNIQUE, ts, user_id, workspace_id, api_key_id,
            model_alias, endpoint_name, protocol, request_modality, stream,
            text_input_tokens, visual_input_tokens, output_tokens, total_tokens,
            image_count, token_accounting,
@@ -659,7 +666,7 @@ usage_logs(id, request_id UNIQUE, ts, user_id, course_id, api_key_id,
 audit_logs(id, ts, actor_user_id, action, target_type, target_id, payload JSON, ip)
 ```
 
-Indexes: `usage_logs(ts,user_id)`, `(ts,course_id)`, `(ts,model_alias)`,
+Indexes: `usage_logs(ts,user_id)`, `(ts,workspace_id)`, `(ts,model_alias)`,
 `(error_code)`; `quota_counters(window_start,window_end)`.
 
 **Retention:** `usage_logs` 24 months (capacity planning and grant reporting);
@@ -673,18 +680,18 @@ Full request/response detail in [API.md](API.md). Summary:
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/v1/models` | any | OpenAI-shaped catalogue (alias only for students) |
-| GET | `/v1/catalog` | any | Student catalogue grouped by purpose |
+| GET | `/v1/models` | any | OpenAI-shaped catalogue (alias only for members) |
+| GET | `/v1/catalog` | any | Member catalogue grouped by purpose |
 | GET | `/v1/me` | any | Identity + remaining quota |
 | POST | `/v1/chat/completions` | any | OpenAI chat, streaming and multimodal |
 | POST | `/v1/messages` | any | Anthropic Messages (Claude Code) |
 | POST | `/v1/messages/count_tokens` | any | Pre-flight estimate |
 | GET | `/healthz` `/readyz` `/metrics` | none / none / network-restricted | Ops |
-| GET/POST | `/admin/users` `/courses` `/api-keys` `/quota-policies` | instructor / admin | Admin plane |
+| GET/POST | `/admin/users` `/workspaces` `/api-keys` `/quota-policies` | manager / admin | Admin plane |
 | GET | `/admin/models` | admin | Registry incl. upstream names + health |
 | POST | `/admin/registry/reload` | admin | Hot reload |
 | GET/POST | `/admin/models/{alias}/compatibility` | admin | Test-suite results |
-| GET | `/admin/usage/summary` `/usage/top-users` | instructor | Reporting |
+| GET | `/admin/usage/summary` `/usage/top-users` | manager | Reporting |
 
 ### 13.1 Error taxonomy
 
@@ -771,16 +778,16 @@ Gemma Vision
 | ID | Requirement |
 |---|---|
 | FR-01 | API-key authentication (Bearer + `x-api-key`) |
-| FR-02 | Roles: student / instructor / admin |
-| FR-10 | User, course, enrollment management |
+| FR-02 | Roles: member / manager / admin |
+| FR-10 | User, workspace, membership management |
 | FR-11 | API key issue / list / revoke |
 | FR-15 | Capability-aware routing |
 | FR-16 | Backend health with hysteresis |
-| FR-19 | Course-scoped model permission |
+| FR-19 | Workspace-scoped model permission |
 | FR-20..24 | Quota policy, resolution, enforcement, windows, reporting |
 | FR-25 | Anthropic ⇄ OpenAI protocol translation |
 | FR-26 | Compatibility from testing, never from model names |
-| FR-27 | Repository names never student-visible |
+| FR-27 | Repository names never member-visible |
 | FR-28 | No-store privacy default |
 | **FR-30** | **Text + image request** |
 | **FR-31** | **Model capability registry** |
@@ -805,9 +812,9 @@ FR-38 Multimodal usage dashboard · FR-12 Uploaded image · FR-14 PDF input
 |---|---|---|
 | **M1 — Core** (done) | Registry, capability validation, OpenAI surface, auth, quota, usage, routing, health | 48 tests green; FR-30..35 demonstrable |
 | **M2 — Agent** (done) | Anthropic surface, protocol translation, Claude Code profile, test suite | MODEL-001..010 runnable end-to-end |
-| **M3 — Pilot** | Deploy to staging, connect one real DGX, one course, ~30 students | 2 weeks with no P1 incident |
+| **M3 — Pilot** | Deploy to staging, connect one real DGX, one workspace, ~30 members | 2 weeks with no P1 incident |
 | **M4 — Production** | Postgres + Redis, TLS, monitoring, backups, runbook | NFR-A1 met for one full term |
-| **M5 — P1 features** | Upload endpoint, PDF, richer dashboard, capability probe | Instructor sign-off |
+| **M5 — P1 features** | Upload endpoint, PDF, richer dashboard, capability probe | Manager sign-off |
 
 ### 17.1 Task index (from v1.2 §22, with status)
 
@@ -823,7 +830,7 @@ FR-38 Multimodal usage dashboard · FR-12 Uploaded image · FR-14 PDF input
 | GW-107 | OpenAI vision passthrough | done |
 | GW-108 | Vision compatibility test (MODEL-006/007) | done |
 | GW-109 | Visual token usage | done |
-| GW-110 | Capability UI (badges, student + admin) | done |
+| GW-110 | Capability UI (badges, member + admin) | done |
 | GW-111 | Backend capability matrix | done |
 | GW-112 | Multimodal load test (MODEL-010) | done |
 | GW-113 | Image upload endpoint (multipart) | P1 |
@@ -849,11 +856,11 @@ FR-38 Multimodal usage dashboard · FR-12 Uploaded image · FR-14 PDF input
 
 | # | Question | Owner | Needed by |
 |---|---|---|---|
-| Q1 | Does the university IdP (SSO) integrate at M3, or do instructors issue keys manually for the pilot? | Ops | M3 |
-| Q2 | Term quota values — is 2M input tokens/day/student right for a 60-student class? | Instructor | M3 |
+| Q1 | Does the university IdP (SSO) integrate at M3, or do managers issue keys manually for the pilot? | Ops | M3 |
+| Q2 | Term quota values — is 2M input tokens/day/member right for a 60-member class? | Manager | M3 |
 | Q3 | Is per-model cost weighting (`cost_units`) required for internal chargeback? | Finance | M4 |
 | Q4 | Retention: is 24 months of usage metadata acceptable to the privacy officer? | DPO | M4 |
-| Q5 | Should instructors see per-student *prompt counts* only, or is any content view needed for academic-integrity cases? (Would reverse §11.) | Faculty + DPO | M5 |
+| Q5 | Should managers see per-member *prompt counts* only, or is any content view needed for academic-integrity cases? (Would reverse §11.) | Faculty + DPO | M5 |
 
 ---
 
@@ -881,7 +888,7 @@ Conflicts in v1.2 + addendum, and how v1.3 resolves them.
 
 The release is accepted when all of the following hold:
 
-1. A student with only an alias and a key can complete a text chat, a streaming
+1. A member with only an alias and a key can complete a text chat, a streaming
    chat, and a text+image chat, using the stock OpenAI SDK, with no gateway-specific code.
 2. Claude Code connects via `ANTHROPIC_BASE_URL` and completes a tool-using
    session against an OpenAI-only backend.
@@ -889,9 +896,9 @@ The release is accepted when all of the following hold:
    and the backend access log shows **zero** corresponding requests.
 4. An 11 MB image is rejected 413; a GIF labelled `image/png` is rejected 415.
 5. Exhausting a quota returns 429 with `Retry-After` and correct `details`.
-6. No student-visible response contains any configured `upstream_model` string.
+6. No member-visible response contains any configured `upstream_model` string.
 7. No prompt, response, or image appears anywhere in the database or logs.
 8. Adding a model = adding one YAML file + `/admin/registry/reload`, no restart.
-9. Killing one backend shifts traffic within 45 s with no student-visible error.
+9. Killing one backend shifts traffic within 45 s with no member-visible error.
 10. `MODEL-001..010` run against each registered model and results appear in the console.
 11. Full deployment from a clean host completes in under 10 minutes (§NFR-O2).

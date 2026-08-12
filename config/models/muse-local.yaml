@@ -1,15 +1,15 @@
-apiVersion: edullm.gateway/v1
+apiVersion: litegate.dev/v1
 kind: Model
 
 metadata:
   alias: muse-local
   display_name: Muse Local
   description: General-purpose assistant with image understanding and tool use.
-  visibility: student
+  visibility: member
   tags: [general, multimodal]
 
 spec:
-  # Admin-only. Students never see this string (PRD §6).
+  # Admin-only. Members never see this string (PRD §6).
   upstream_model: meta-models/Muse-Glimmer-30B
 
   purpose:

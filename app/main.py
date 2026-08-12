@@ -27,18 +27,18 @@ from app.state import build_state
 log = logging.getLogger(__name__)
 
 REQUESTS = Counter(
-    "edullm_requests_total",
+    "litegate_requests_total",
     "Gateway requests",
     ["path", "method", "status", "model"],
 )
 LATENCY = Histogram(
-    "edullm_request_duration_seconds",
+    "litegate_request_duration_seconds",
     "Request duration",
     ["path", "model"],
     buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300),
 )
-IN_FLIGHT = Gauge("edullm_requests_in_flight", "Requests currently being served")
-ERRORS = Counter("edullm_errors_total", "Gateway errors by code", ["code"])
+IN_FLIGHT = Gauge("litegate_requests_in_flight", "Requests currently being served")
+ERRORS = Counter("litegate_errors_total", "Gateway errors by code", ["code"])
 
 
 class _RevalidatingStatic(StaticFiles):
@@ -124,7 +124,7 @@ async def _bootstrap_admin(app: FastAPI) -> None:
 async def lifespan(app: FastAPI):
     settings = get_settings()
     _configure_logging(settings.log_level)
-    log.info("starting EduLLM Gateway (env=%s)", settings.env)
+    log.info("starting LiteGate (env=%s)", settings.env)
 
     if settings.is_production and settings.api_key_pepper == "dev-only-insecure-pepper":
         raise RuntimeError(
@@ -161,7 +161,7 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
-        title="EduLLM Gateway",
+        title="LiteGate",
         version="1.3.0",
         description=(
             "Capability-aware, multimodal AI gateway for education. "
@@ -179,7 +179,7 @@ def create_app() -> FastAPI:
             allow_credentials=True,
             allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
             allow_headers=["*"],
-            expose_headers=["x-request-id", "x-edullm-model", "x-edullm-endpoint"],
+            expose_headers=["x-request-id", "x-litegate-model", "x-litegate-endpoint"],
         )
 
     @app.middleware("http")
@@ -195,7 +195,7 @@ def create_app() -> FastAPI:
         duration = time.perf_counter() - started
 
         path = request.scope.get("route").path if request.scope.get("route") else "unmatched"
-        model = response.headers.get("x-edullm-model", "-")
+        model = response.headers.get("x-litegate-model", "-")
         REQUESTS.labels(path, request.method, str(response.status_code), model).inc()
         LATENCY.labels(path, model).observe(duration)
         response.headers["x-request-id"] = request_id
@@ -259,7 +259,7 @@ def create_app() -> FastAPI:
     @app.get("/", include_in_schema=False)
     async def root():
         return {
-            "service": "EduLLM Gateway",
+            "service": "LiteGate",
             "version": "1.3.0",
             "docs": "/docs",
             "console": "/console",
@@ -273,7 +273,7 @@ app = create_app()
 
 
 def run() -> None:
-    """Console-script entrypoint (`edullm-gateway`)."""
+    """Console-script entrypoint (`litegate`)."""
     import uvicorn
 
     settings = get_settings()

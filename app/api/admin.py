@@ -1,4 +1,4 @@
-"""Admin plane: users, courses, keys, quota, registry, usage (FR-10..FR-19)."""
+"""Admin plane: users, workspaces, keys, quota, registry, usage (FR-10..FR-19)."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from app.core.auth import (
     extract_bearer_token,
     generate_api_key,
     require_admin,
-    require_instructor,
+    require_manager,
 )
 from app.core.capability import compatibility_badges, upstream_model_for
 from app.core.errors import ErrorCode, GatewayError
@@ -26,15 +26,15 @@ from app.core.modeltest import ModelTestSuite, probe_backend
 from app.db.models import (
     ApiKey,
     AuditLog,
-    Course,
-    CourseModel,
-    Enrollment,
+    Membership,
     ModelCompatibility,
     ModelRecord,
     ModelTestRun,
     QuotaPolicy,
     UsageLog,
     User,
+    Workspace,
+    WorkspaceModel,
     utcnow,
 )
 from app.db.session import get_session, session_scope
@@ -79,7 +79,7 @@ class UserIn(BaseModel):
     external_id: str = Field(min_length=1, max_length=128)
     display_name: str = ""
     email: str | None = None
-    role: str = "student"
+    role: str = "member"
     status: str = "active"
 
 
@@ -90,7 +90,7 @@ async def create_user(
     actor: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    if payload.role not in {"student", "instructor", "admin"}:
+    if payload.role not in {"member", "manager", "admin"}:
         raise GatewayError(ErrorCode.INVALID_REQUEST, f"Unknown role '{payload.role}'.")
     existing = await session.execute(
         select(User).where(User.external_id == payload.external_id)
@@ -111,7 +111,7 @@ async def create_user(
 async def list_users(
     role: str | None = None,
     limit: int = Query(100, le=1000),
-    actor: Principal = Depends(require_instructor),
+    actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     stmt = select(User).order_by(User.created_at.desc()).limit(limit)
@@ -153,39 +153,44 @@ def _user_dict(user: User) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Courses
+# Workspaces
 # ---------------------------------------------------------------------------
-class CourseIn(BaseModel):
+class WorkspaceIn(BaseModel):
     code: str = Field(min_length=1, max_length=64)
     name: str
     term: str = ""
 
 
-@router.post("/courses", status_code=201)
-async def create_course(
-    payload: CourseIn,
+@router.post("/workspaces", status_code=201)
+async def create_workspace(
+    payload: WorkspaceIn,
     request: Request,
     actor: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    existing = await session.execute(select(Course).where(Course.code == payload.code))
+    existing = await session.execute(select(Workspace).where(Workspace.code == payload.code))
     if existing.scalar_one_or_none():
         raise GatewayError(
-            ErrorCode.INVALID_REQUEST, f"Course '{payload.code}' already exists."
+            ErrorCode.INVALID_REQUEST, f"Workspace '{payload.code}' already exists."
         )
-    course = Course(**payload.model_dump())
-    session.add(course)
-    await audit(session, request, actor, "course.create", "course", payload.code)
+    workspace = Workspace(**payload.model_dump())
+    session.add(workspace)
+    await audit(session, request, actor, "workspace.create", "workspace", payload.code)
     await session.commit()
-    return {"id": course.id, "code": course.code, "name": course.name, "term": course.term}
+    return {
+        "id": workspace.id,
+        "code": workspace.code,
+        "name": workspace.name,
+        "term": workspace.term,
+    }
 
 
-@router.get("/courses")
-async def list_courses(
-    actor: Principal = Depends(require_instructor),
+@router.get("/workspaces")
+async def list_workspaces(
+    actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    result = await session.execute(select(Course).order_by(Course.code))
+    result = await session.execute(select(Workspace).order_by(Workspace.code))
     return {
         "data": [
             {
@@ -200,19 +205,19 @@ async def list_courses(
     }
 
 
-@router.post("/courses/{course_id}/models")
-async def set_course_models(
-    course_id: str,
+@router.post("/workspaces/{workspace_id}/models")
+async def set_workspace_models(
+    workspace_id: str,
     payload: dict[str, list[str]],
     request: Request,
-    actor: Principal = Depends(require_instructor),
+    actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
     state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
-    """Replace the allow-list of aliases for a course."""
-    course = await session.get(Course, course_id)
-    if course is None:
-        raise GatewayError(ErrorCode.INVALID_REQUEST, "Course not found.")
+    """Replace the allow-list of aliases for a workspace."""
+    workspace = await session.get(Workspace, workspace_id)
+    if workspace is None:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "Workspace not found.")
 
     aliases = payload.get("models", [])
     known = set(state.registry.snapshot.models)
@@ -224,44 +229,50 @@ async def set_course_models(
             details={"known_models": sorted(known)},
         )
 
-    await session.execute(delete(CourseModel).where(CourseModel.course_id == course_id))
+    await session.execute(delete(WorkspaceModel).where(WorkspaceModel.workspace_id == workspace_id))
     for alias in aliases:
-        session.add(CourseModel(course_id=course_id, model_alias=alias, enabled=True))
+        session.add(WorkspaceModel(workspace_id=workspace_id, model_alias=alias, enabled=True))
     await audit(
-        session, request, actor, "course.models.set", "course", course_id, {"models": aliases}
+        session,
+        request,
+        actor,
+        "workspace.models.set",
+        "workspace",
+        workspace_id,
+        {"models": aliases},
     )
     await session.commit()
-    return {"course_id": course_id, "models": aliases}
+    return {"workspace_id": workspace_id, "models": aliases}
 
 
-@router.post("/courses/{course_id}/enroll")
-async def enroll(
-    course_id: str,
+@router.post("/workspaces/{workspace_id}/join")
+async def join(
+    workspace_id: str,
     payload: dict[str, Any],
     request: Request,
-    actor: Principal = Depends(require_instructor),
+    actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     user_id = payload.get("user_id")
     if not user_id or await session.get(User, user_id) is None:
         raise GatewayError(ErrorCode.INVALID_REQUEST, "Unknown user_id.")
-    if await session.get(Course, course_id) is None:
-        raise GatewayError(ErrorCode.INVALID_REQUEST, "Course not found.")
+    if await session.get(Workspace, workspace_id) is None:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "Workspace not found.")
     existing = await session.execute(
-        select(Enrollment).where(
-            Enrollment.course_id == course_id, Enrollment.user_id == user_id
+        select(Membership).where(
+            Membership.workspace_id == workspace_id, Membership.user_id == user_id
         )
     )
     if existing.scalar_one_or_none():
-        return {"course_id": course_id, "user_id": user_id, "status": "already_enrolled"}
+        return {"workspace_id": workspace_id, "user_id": user_id, "status": "already_joined"}
     session.add(
-        Enrollment(
-            course_id=course_id, user_id=user_id, role=payload.get("role", "student")
+        Membership(
+            workspace_id=workspace_id, user_id=user_id, role=payload.get("role", "member")
         )
     )
-    await audit(session, request, actor, "course.enroll", "course", course_id, payload)
+    await audit(session, request, actor, "workspace.join", "workspace", workspace_id, payload)
     await session.commit()
-    return {"course_id": course_id, "user_id": user_id, "status": "enrolled"}
+    return {"workspace_id": workspace_id, "user_id": user_id, "status": "joined"}
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +280,7 @@ async def enroll(
 # ---------------------------------------------------------------------------
 class ApiKeyIn(BaseModel):
     user_id: str
-    course_id: str | None = None
+    workspace_id: str | None = None
     name: str = ""
     expires_in_days: int | None = 180
     scopes: list[str] = Field(default_factory=list)
@@ -279,7 +290,7 @@ class ApiKeyIn(BaseModel):
 async def create_api_key(
     payload: ApiKeyIn,
     request: Request,
-    actor: Principal = Depends(require_instructor),
+    actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """The plaintext key is returned exactly once and never stored."""
@@ -299,7 +310,7 @@ async def create_api_key(
     )
     api_key = ApiKey(
         user_id=payload.user_id,
-        course_id=payload.course_id,
+        workspace_id=payload.workspace_id,
         name=payload.name,
         key_prefix=prefix,
         key_hash=digest,
@@ -314,7 +325,7 @@ async def create_api_key(
         "api_key": plaintext,
         "key_prefix": prefix,
         "user_id": payload.user_id,
-        "course_id": payload.course_id,
+        "workspace_id": payload.workspace_id,
         "expires_at": expires_at.isoformat() if expires_at else None,
         "warning": "Store this key now. It cannot be retrieved again.",
     }
@@ -323,7 +334,7 @@ async def create_api_key(
 @router.get("/api-keys")
 async def list_api_keys(
     user_id: str | None = None,
-    actor: Principal = Depends(require_instructor),
+    actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     stmt = select(ApiKey).order_by(ApiKey.created_at.desc()).limit(500)
@@ -335,7 +346,7 @@ async def list_api_keys(
             {
                 "id": k.id,
                 "user_id": k.user_id,
-                "course_id": k.course_id,
+                "workspace_id": k.workspace_id,
                 "name": k.name,
                 "key_prefix": k.key_prefix,
                 "revoked": k.revoked_at is not None,
@@ -351,7 +362,7 @@ async def list_api_keys(
 async def revoke_api_key(
     key_id: str,
     request: Request,
-    actor: Principal = Depends(require_instructor),
+    actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     api_key = await session.get(ApiKey, key_id)
@@ -368,7 +379,7 @@ async def revoke_api_key(
 # ---------------------------------------------------------------------------
 class QuotaPolicyIn(BaseModel):
     scope: str = "global"
-    course_id: str | None = None
+    workspace_id: str | None = None
     user_id: str | None = None
     model_alias: str | None = None
     window: str = "day"
@@ -396,7 +407,7 @@ async def create_quota_policy(
 
 @router.get("/quota-policies")
 async def list_quota_policies(
-    actor: Principal = Depends(require_instructor),
+    actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     result = await session.execute(select(QuotaPolicy).where(QuotaPolicy.enabled.is_(True)))
@@ -405,7 +416,7 @@ async def list_quota_policies(
             {
                 "id": p.id,
                 "scope": p.scope,
-                "course_id": p.course_id,
+                "workspace_id": p.workspace_id,
                 "user_id": p.user_id,
                 "model_alias": p.model_alias,
                 "window": p.window,
@@ -589,7 +600,7 @@ async def record_compatibility(
 @router.get("/models/{alias}/compatibility")
 async def get_compatibility(
     alias: str,
-    actor: Principal = Depends(require_instructor),
+    actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     result = await session.execute(select(ModelRecord).where(ModelRecord.alias == alias))
@@ -631,7 +642,7 @@ class ModelDefinitionIn(BaseModel):
 
     metadata: dict[str, Any]
     spec: dict[str, Any]
-    apiVersion: str = "edullm.gateway/v1"
+    apiVersion: str = "litegate.dev/v1"
     kind: str = "Model"
 
 
@@ -767,7 +778,7 @@ async def model_advice(
             api_key,
         )
         # What the registry claims versus what the backend just did. A mismatch
-        # here is the thing that silently breaks students.
+        # here is the thing that silently breaks members.
         declared = model.spec.capabilities.model_dump()
         drift = [
             {
@@ -908,7 +919,7 @@ async def _execute_test_run(
 @router.get("/test-runs/{run_id}")
 async def get_test_run(
     run_id: str,
-    actor: Principal = Depends(require_instructor),
+    actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     run = await session.get(ModelTestRun, run_id)
@@ -930,8 +941,8 @@ async def get_test_run(
 @router.get("/usage/summary")
 async def usage_summary(
     days: int = Query(7, ge=1, le=365),
-    course_id: str | None = None,
-    actor: Principal = Depends(require_instructor),
+    workspace_id: str | None = None,
+    actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
     state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
@@ -952,8 +963,8 @@ async def usage_summary(
         .where(UsageLog.ts >= since)
         .group_by(UsageLog.model_alias)
     )
-    if course_id:
-        stmt = stmt.where(UsageLog.course_id == course_id)
+    if workspace_id:
+        stmt = stmt.where(UsageLog.workspace_id == workspace_id)
     rows = (await session.execute(stmt)).all()
 
     errors = (
@@ -987,7 +998,7 @@ async def usage_summary(
 async def top_users(
     days: int = Query(7, ge=1, le=365),
     limit: int = Query(20, le=200),
-    actor: Principal = Depends(require_instructor),
+    actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     since = datetime.now(UTC) - timedelta(days=days)
