@@ -264,3 +264,42 @@ dialog {
 dialog::backdrop { background: color-mix(in srgb, #000 45%, transparent); backdrop-filter: blur(3px); }
 .dialog-body { padding: 20px 22px; }
 .dialog-actions { display: flex; gap: 9px; justify-content: flex-end; margin-top: 16px; }
+
+
+/* ── assistant ───────────────────────────────────────────────────────── */
+/* Bottom-right so it never covers the tables people read left-to-right,
+   and hidden entirely when no model can answer - a chat box that always
+   replies "no backend" is worse than no chat box. */
+.chat-fab {
+  position: fixed; right: 20px; bottom: 20px; z-index: 40;
+  width: 48px; height: 48px; border-radius: 50%; padding: 0;
+  font-size: 20px; line-height: 1; border-color: transparent;
+  background: var(--g-mix); color: #fff; box-shadow: var(--shadow-lg);
+}
+.chat-fab:hover:not(:disabled) { filter: brightness(1.08); background: var(--g-mix); }
+
+.chat-panel {
+  position: fixed; right: 20px; bottom: 20px; z-index: 41;
+  width: min(420px, calc(100vw - 40px));
+  height: min(560px, calc(100vh - 40px));
+  display: flex; flex-direction: column;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--r-lg); box-shadow: var(--shadow-lg); overflow: hidden;
+}
+.chat-panel::before {
+  content: ""; position: absolute; inset: 0 0 auto; height: 2px;
+  background: var(--g-mix); opacity: .6;
+}
+.chat-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 14px; border-bottom: 1px solid var(--line);
+}
+.chat-log { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.chat-msg { max-width: 88%; padding: 9px 12px; border-radius: var(--r); font-size: 13.5px; line-height: 1.55; }
+.chat-msg.user { align-self: flex-end; background: var(--accent-bg); color: var(--fg); }
+.chat-msg.bot { align-self: flex-start; background: var(--sunken); border: 1px solid var(--line); }
+.chat-msg.err { align-self: stretch; background: var(--bad-bg); color: var(--bad); }
+.chat-msg pre { margin: 8px 0 0; font-size: 12px; }
+.chat-input { display: flex; gap: 8px; padding: 12px 14px 6px; border-top: 1px solid var(--line); }
+.chat-input textarea { resize: none; font-family: var(--sans); font-size: 13.5px; }
+.chat-foot { padding: 0 14px 12px; margin: 0; }

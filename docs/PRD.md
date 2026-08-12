@@ -752,7 +752,75 @@ Gemma Vision
 
 ---
 
-## 15. Non-functional requirements
+## 15. Console assistant
+
+A chat box wired to an LLM is a weekend project and it helps nobody: it answers
+about HTTP 400 in general, not about *your* 400. What makes one worth shipping
+is that it answers from this deployment's own state — the caller's quota, the
+models they may actually use, what the backends were last measured to do. None
+of that is knowable to a general model, and all of it is already in the gateway.
+
+The assistant is therefore not a feature bolted on the side. It is a reader of
+the same state the console renders, speaking through the same request pipeline
+as every other caller.
+
+### 15.1 Requirements
+
+| ID | Requirement |
+|---|---|
+| FR-50 | Console assistant answers from this deployment's live state, not general knowledge |
+| FR-51 | Assistant context is scoped to the caller's role — a member's assistant sees only their own quota and permitted models |
+| FR-52 | Assistant requests go through the normal pipeline: capability gate, quota, routing, usage |
+| FR-53 | The assistant is hidden, not broken, when no chat model is available to the caller |
+
+### 15.2 Why it is not a side door
+
+The assistant reaches models through `run_chat()` — the same function that
+serves `POST /v1/chat/completions`. It cannot use a model its caller could not
+use directly, it spends the caller's quota rather than a hidden pool, and its
+requests appear in usage like any other. An assistant that quietly bypassed the
+gateway would be a hole in every guarantee in §7 and §8.
+
+Context is built per request and scoped by role:
+
+| Included | member | manager | admin |
+|---|---|---|---|
+| Own quota and usage | ✅ | ✅ | ✅ |
+| Models the caller may use | ✅ | ✅ | ✅ |
+| Backend health, last errors | — | — | ✅ |
+| Registry load errors | — | — | ✅ |
+| Upstream repository names | — | — | ✅ |
+
+The last row matters: FR-27 keeps repository names away from members, and an
+assistant that would recite them on request defeats it.
+
+### 15.3 State is data, not instructions
+
+The state block carries text from outside this system — model names from public
+repositories, error strings from backend servers. Any of it could be written to
+read like an instruction. The system prompt labels the block as data and says
+that content inside it is to be reported, never obeyed.
+
+### 15.4 Nothing is stored
+
+Conversation history lives in the browser's `sessionStorage` and is gone when
+the tab closes. Server-side the assistant keeps nothing, which is what §11's
+no-store default requires. The cost is that history does not follow a user
+between devices — the right trade for a tool whose whole subject is the state
+of the machine in front of you.
+
+### 15.5 Reasoning models
+
+A model started without vLLM's `--reasoning-parser` puts its chain of thought in
+`content` instead of `reasoning_content`, so the narration arrives mixed into
+the answer. The console strips what it recognises, but stripping is guesswork:
+the fix is the launch flag. The probe (§14) therefore detects the condition and
+`build_advice()` reports it as `reasoning_not_separated` with the command to
+correct it — the same treatment as a missing tool parser.
+
+---
+
+## 16. Non-functional requirements
 
 | ID | Requirement | Target | How verified |
 |---|---|---|---|
@@ -771,7 +839,7 @@ Gemma Vision
 
 ---
 
-## 16. Functional requirement index
+## 17. Functional requirement index
 
 **P0 — MVP, must ship together**
 
@@ -804,9 +872,11 @@ FR-38 Multimodal usage dashboard · FR-12 Uploaded image · FR-14 PDF input
 
 **P3** — FR-40 Automatic model selection (`model=auto`) · FR-29 Video
 
+**Console assistant** — FR-50 Grounded in live state · FR-51 Role-scoped context · FR-52 Same pipeline as any caller · FR-53 Hidden when no model is available
+
 ---
 
-## 17. Delivery plan
+## 18. Delivery plan
 
 | Milestone | Contents | Exit criteria |
 |---|---|---|
@@ -839,7 +909,7 @@ FR-38 Multimodal usage dashboard · FR-12 Uploaded image · FR-14 PDF input
 
 ---
 
-## 18. Risks
+## 19. Risks
 
 | Risk | Impact | Mitigation |
 |---|---|---|
@@ -852,7 +922,7 @@ FR-38 Multimodal usage dashboard · FR-12 Uploaded image · FR-14 PDF input
 
 ---
 
-## 19. Open questions
+## 20. Open questions
 
 | # | Question | Owner | Needed by |
 |---|---|---|---|
@@ -864,7 +934,7 @@ FR-38 Multimodal usage dashboard · FR-12 Uploaded image · FR-14 PDF input
 
 ---
 
-## 20. Decision log
+## 21. Decision log
 
 Conflicts in v1.2 + addendum, and how v1.3 resolves them.
 
@@ -884,7 +954,7 @@ Conflicts in v1.2 + addendum, and how v1.3 resolves them.
 
 ---
 
-## 21. Acceptance criteria (v1.3 sign-off)
+## 22. Acceptance criteria (v1.3 sign-off)
 
 The release is accepted when all of the following hold:
 

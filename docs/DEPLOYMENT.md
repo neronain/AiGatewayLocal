@@ -366,6 +366,34 @@ carrying over; users and keys should be re-issued).
 
 ---
 
+## 5b. The console assistant
+
+Nothing to install: the assistant uses the models already in the registry, so it
+starts working as soon as one chat model is reachable. If none is, the console
+hides the chat box instead of showing one that cannot answer.
+
+```ini
+# Optional. Empty = pick the best general chat model the caller may use.
+GW_ASSISTANT_MODEL=general
+```
+
+Pin an alias when the automatic choice is not the one you want — typically to
+send assistant traffic to a small fast model rather than the largest one, since
+its answers are short and its prompt is not.
+
+Two things to know before promising it to anyone:
+
+* **It spends the caller's quota.** Assistant requests are ordinary requests. A
+  member out of quota gets the same rejection from the chat box as from the API,
+  which is intentional — a chat box exempt from quota is a quota bypass.
+* **Reasoning models narrate.** Unless the backend was started with vLLM's
+  `--reasoning-parser`, the chain of thought arrives inside the answer. The
+  console strips what it recognises; the real fix is the flag. Run
+  `litegate model-test <alias>` and look for `reasoning_not_separated`, which
+  carries the command.
+
+---
+
 ## 6. Backup
 
 | What | Why | How |

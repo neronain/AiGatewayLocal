@@ -729,6 +729,20 @@ def build_advice(result: ProbeResult) -> list[Advice]:
             )
         )
 
+    if any("--reasoning-parser" in note for note in result.notes):
+        advice.append(
+            Advice(
+                issue="reasoning_not_separated",
+                severity="info",
+                detail="The model narrates its reasoning inside the answer: the "
+                "server was started without a --reasoning-parser.",
+                fix="Restart with the parser for this model family, so the chain "
+                "of thought arrives in reasoning_content and the answer stays "
+                "clean. Chat surfaces otherwise have to strip it by guesswork.",
+                command="./<controller>.sh restart --reasoning-parser <parser>",
+            )
+        )
+
     if result.context_tokens is None:
         advice.append(
             Advice(
@@ -841,6 +855,28 @@ async def probe_backend(
         except Exception:
             pass
         result.capabilities["streaming"] = streaming
+
+        # 3b. A reasoning model started without --reasoning-parser puts its
+        #     chain of thought in `content`. Whatever consumes the answer then
+        #     has to strip it by guesswork, which is as fragile as it sounds -
+        #     the gateway's own chat panel hit exactly this. Cheap to notice
+        #     here: reuse the chat reply, look at where the thinking went.
+        if response is not None and response.status_code == 200:
+            try:
+                message = response.json()["choices"][0]["message"]
+                separated = message.get("reasoning_content") is not None
+                text = (message.get("content") or "")[:400]
+                narrates = any(
+                    marker.lower() in text.lower()
+                    # `</think>` alone is the common case: Qwen3 and DeepSeek-R1
+                    # templates prefill the opening tag, so only the close leaks.
+                    for marker in ("</think>", "Thinking Process", "Let me think", "Final Answer:")
+                )
+                result.capabilities["reasoning_separated"] = separated
+                if narrates and not separated:
+                    result.notes.append("reasoning inside content: no --reasoning-parser")
+            except Exception:  # a backend that answers 200 with something else
+                pass
 
         # 4. tools - 200 alone is not enough; the backend must emit tool_calls.
         response = await try_chat(

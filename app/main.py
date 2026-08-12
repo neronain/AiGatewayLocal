@@ -17,7 +17,7 @@ from prometheus_client import Counter, Gauge, Histogram
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.api import admin, anthropic, auth, catalog, health, openai
+from app.api import admin, anthropic, assistant, auth, catalog, health, openai
 from app.config import get_settings
 from app.core.auth import generate_api_key
 from app.core.errors import ErrorCode, GatewayError
@@ -266,6 +266,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(openai.router)
     app.include_router(anthropic.router)
+    app.include_router(assistant.router)
     app.include_router(catalog.router)
     app.include_router(admin.router)
 

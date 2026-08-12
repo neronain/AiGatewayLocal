@@ -849,6 +849,8 @@ function showSignIn(needsSetup) {
   document.querySelector('#tabs').hidden = true;
   $('signout').hidden = true;
   $('whoami').textContent = needsSetup ? 'first-run setup' : 'not signed in';
+  $('chat-open').hidden = true;
+  $('chat').hidden = true;
   $('signin-title').textContent = needsSetup ? 'Create the first administrator' : 'Sign in';
   $('signin-hint').textContent = needsSetup
     ? 'This instance has no accounts yet. The account you create here is the administrator.'
@@ -886,6 +888,182 @@ $('signout').onclick = async () => {
   showSignIn(false);
 };
 
+
+/* -------------------------------------------------------- assistant */
+/* History lives in this tab and nowhere else. The gateway stores no prompts
+   (PRD 11), and the assistant must not be the exception that quietly starts. */
+const CHAT_STORE = 'litegate_chat';
+
+function chatHistory() {
+  try { return JSON.parse(sessionStorage.getItem(CHAT_STORE) || '[]'); }
+  catch { return []; }
+}
+
+function saveChat(messages) {
+  try { sessionStorage.setItem(CHAT_STORE, JSON.stringify(messages.slice(-24))); }
+  catch { /* private mode: the conversation just does not survive a reload */ }
+}
+
+function renderChat() {
+  const log = $('chat-log');
+  const messages = chatHistory();
+  log.innerHTML = messages.length ? messages.map((m) => `
+    <div class="chat-msg ${m.role === 'user' ? 'user' : 'bot'}">${formatReply(m.content)}</div>
+  `).join('') : `<div class="hint">
+      Ask about the models you can use, your quota, or an error you just hit.
+      Answers come from this deployment's current state.
+    </div>`;
+  log.scrollTop = log.scrollHeight;
+}
+
+function stripThinking(text) {
+  // Some models narrate before answering even when told not to. The real fix is
+  // server-side - vLLM's --reasoning-parser puts the chain of thought in
+  // reasoning_content instead of content, and the probe now reports when it is
+  // missing. Until an operator acts on that, salvage what we can here.
+  //
+  // Never strip to nothing: an earlier version allowed "to the end of the text"
+  // as a terminator and a numbered thinking list swallowed the whole reply,
+  // leaving an empty bubble. Every branch falls back to the raw text.
+  const raw = String(text);
+
+  // The closing tag is the reliable one. Qwen3 and DeepSeek-R1 chat templates
+  // prefill `<think>` themselves, so it is already in the prompt and never
+  // reaches the reply - content starts mid-thought and ends with `</think>`.
+  // Match on the last close tag and ignore whether an opening tag exists.
+  const closed = raw.lastIndexOf('</think>');
+  if (closed !== -1) {
+    const after = raw.slice(closed + '</think>'.length).trim();
+    if (after) return after;
+  }
+
+  // "Final Answer:" is the model announcing the end of its own deliberation.
+  // Take the last one - it often rehearses several candidates first.
+  const finals = [...raw.matchAll(/(?:^|\n)\s*(?:\*\*)?Final Answer:?(?:\*\*)?\s*/gi)];
+  if (finals.length) {
+    const last = finals[finals.length - 1];
+    const answer = raw.slice(last.index + last[0].length).trim()
+      // The announced answer usually arrives quoted; the quotes are punctuation
+      // from the narration, not part of what the model means to say.
+      .replace(/^["'\u201c\u2018]|["'\u201d\u2019]$/g, '')
+      .trim();
+    if (answer) return answer;
+  }
+
+  // Greedy on purpose: the answer is after the *last* blank line, not the
+  // first, because the narration itself contains blank lines between steps.
+  const narrated = raw.match(/^\s*Thinking Process:[\s\S]*\n\s*\n([\s\S]*)$/i);
+  if (narrated) return narrated[1].trimStart() || raw;
+
+  return raw;
+}
+
+function formatReply(text) {
+  text = stripThinking(text);
+  // Fenced code becomes a block; everything else is escaped text. No markdown
+  // renderer: the assistant's output is untrusted input to this page.
+  const parts = String(text).split(/```(?:[a-z]*)\n?/);
+  return parts.map((part, index) => (index % 2
+    ? `<pre>${esc(part.replace(/\n$/, ''))}</pre>`
+    : esc(part).replace(/\n/g, '<br>'))).join('');
+}
+
+async function sendChat() {
+  const input = $('chat-text');
+  const question = input.value.trim();
+  if (!question) return;
+
+  const messages = chatHistory();
+  messages.push({ role: 'user', content: question });
+  saveChat(messages);
+  input.value = '';
+  renderChat();
+
+  const log = $('chat-log');
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-msg bot';
+  bubble.textContent = '…';
+  log.appendChild(bubble);
+  log.scrollTop = log.scrollHeight;
+  $('chat-send').disabled = true;
+
+  try {
+    const response = await fetch('/v1/assistant/chat', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error((body.error || {}).message || `request failed (${response.status})`);
+    }
+
+    // Stream the reply so a slow local model still feels responsive.
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let reply = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+        try {
+          const chunk = JSON.parse(payload);
+          if (chunk.error) throw new Error(chunk.error.message || 'stream failed');
+          const piece = chunk.choices?.[0]?.delta?.content;
+          if (piece) {
+            reply += piece;
+            const shown = formatReply(reply);
+            // While the model is still narrating, show that it is working
+            // rather than an empty bubble.
+            bubble.innerHTML = shown.trim() ? shown : '<span class="hint">thinking…</span>';
+            log.scrollTop = log.scrollHeight;
+          }
+        } catch (err) {
+          if (err instanceof Error && err.message !== 'Unexpected end of JSON input') throw err;
+        }
+      }
+    }
+
+    messages.push({ role: 'assistant', content: reply || '(no answer)' });
+    saveChat(messages);
+    renderChat();
+  } catch (e) {
+    bubble.className = 'chat-msg err';
+    bubble.textContent = e.message;
+  } finally {
+    $('chat-send').disabled = false;
+    input.focus();
+  }
+}
+
+async function initAssistant() {
+  try {
+    const status = await api('/v1/assistant/status');
+    // Hidden, not disabled: an assistant with no model to answer with is not a
+    // feature people should be looking at.
+    $('chat-open').hidden = !status.available;
+    if (status.available) $('chat-model').textContent = status.display_name || status.model;
+  } catch {
+    $('chat-open').hidden = true;
+  }
+}
+
+$('chat-open').onclick = () => { $('chat').hidden = false; $('chat-open').hidden = true; renderChat(); $('chat-text').focus(); };
+$('chat-close').onclick = () => { $('chat').hidden = true; $('chat-open').hidden = false; };
+$('chat-clear').onclick = () => { saveChat([]); renderChat(); };
+$('chat-send').onclick = sendChat;
+$('chat-text').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+});
+
 /* ----------------------------------------------------------------- boot */
 async function load() {
   showError('');
@@ -894,6 +1072,7 @@ async function load() {
   $('whoami').textContent = `${me.display_name || me.external_id} · ${me.role}`;
   $('signout').hidden = false;
   applyRole(me.role);
+  await initAssistant();
   renderQuota(me);
   renderCatalog(await api('/v1/catalog'));
   if (me.role === 'admin') renderHealth((await api('/v1/health/endpoints')).data);

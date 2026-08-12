@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.5.1">
+<link rel="stylesheet" href="style.css?v=1.6.3">
 </head>
 <body>
 
@@ -441,6 +441,29 @@
   </div>
 </template>
 
-<script src="app.js?v=1.5.1"></script>
+
+<!-- ================= Assistant ================= -->
+<button id="chat-open" class="chat-fab" hidden title="Ask the assistant">💬</button>
+
+<aside id="chat" class="chat-panel" hidden>
+  <div class="chat-head">
+    <strong>Assistant</strong>
+    <span class="sub" id="chat-model"></span>
+    <span class="spacer"></span>
+    <button id="chat-clear" class="ghost small" title="Clear this conversation">Clear</button>
+    <button id="chat-close" class="ghost small">✕</button>
+  </div>
+  <div class="chat-log" id="chat-log"></div>
+  <div class="chat-input">
+    <textarea id="chat-text" rows="2" placeholder="Ask about your models, quota or an error…"></textarea>
+    <button id="chat-send" class="primary">Send</button>
+  </div>
+  <p class="hint chat-foot">
+    Answers come from this deployment's own state and your own model — nothing
+    leaves your network. History stays in this browser tab only.
+  </p>
+</aside>
+
+<script src="app.js?v=1.6.3"></script>
 </body>
 </html>

@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # Keys a member may hold at once. Keys are what nobody cleans up; a list
     # that grows without bound is one nobody can audit.
     max_keys_per_member: int = 5
+    # Alias the console assistant talks to. Empty = pick the best chat model the
+    # caller is already allowed to use, so a fresh install needs no setting.
+    assistant_model: str = ""
 
     # Storage
     database_url: str = "sqlite+aiosqlite:///./data/gateway.db"

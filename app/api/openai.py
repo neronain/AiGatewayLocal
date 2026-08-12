@@ -86,9 +86,25 @@ async def chat_completions(
     state: AppState = Depends(get_state),
     session: AsyncSession = Depends(get_session),
 ):
+    return await run_chat(request, await _read_json(request), principal, state, session)
+
+
+async def run_chat(
+    request: Request,
+    body: dict[str, Any],
+    principal: Principal,
+    state: AppState,
+    session: AsyncSession,
+):
+    """The chat pipeline, callable with a body from anywhere.
+
+    The assistant builds its own request and needs the identical treatment -
+    capability gate, vision policy, context budget, quota, routing, usage. Going
+    through this rather than reimplementing it is what stops the assistant from
+    becoming a way around the rules that apply to everyone else.
+    """
     request_id = getattr(request.state, "request_id", uuid.uuid4().hex)
     started = time.perf_counter()
-    body = await _read_json(request)
 
     alias = body.get("model")
     if not isinstance(alias, str) or not alias:

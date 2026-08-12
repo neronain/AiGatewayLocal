@@ -150,6 +150,42 @@ claude
 
 ---
 
+## The console assistant
+
+Bottom right of the console there is a chat box. It is not a general chatbot —
+it answers from *this* deployment's state, which is the only thing a general
+model cannot tell you:
+
+> **"ทำไม request ของฉันโดน 400"**
+> Your key is on the `default` quota policy and you have 0 requests left in this
+> window. It resets on 1 Sep.
+
+> **"which model reads images"**
+> `vision` (Vision AI (MSI-5)) — it is the only one in your catalogue with the
+> vision capability.
+
+What it can see depends on who is asking. A member's assistant sees their own
+quota and the models they may use, and nothing else — not other people's usage,
+not backend hostnames, not repository names. An admin's additionally sees
+backend health, registry errors and upstream model names.
+
+It is not a way around the rules either: its requests go through the same
+capability gate, quota and routing as any other caller, spend the caller's own
+quota, and show up in usage. Conversation history stays in the browser tab and
+is never written server-side.
+
+The box hides itself when no chat model is available to you — a chat box that
+always answers "no backend" is worse than no chat box. Set `GW_ASSISTANT_MODEL`
+to pin a specific alias; by default it picks the best general chat model the
+caller is allowed to use.
+
+> **Reasoning models** narrate unless the backend was started with vLLM's
+> `--reasoning-parser`. The console strips what it recognises, but the real fix
+> is the flag — `litegate model-test` reports it as `reasoning_not_separated`
+> along with the command to correct it.
+
+---
+
 ## Adding a model
 
 Write `config/models/<alias>.yaml` — that is the whole job:

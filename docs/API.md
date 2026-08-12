@@ -225,6 +225,37 @@ treat it as approximate.
 
 ---
 
+### `GET /v1/assistant/status`
+
+Whether the console assistant has a model to talk to, for this caller.
+
+```json
+{ "available": true, "model": "general", "display_name": "General AI", "reason": null }
+```
+
+`available: false` carries a `reason` and the console hides the chat box rather
+than showing one that cannot answer.
+
+### `POST /v1/assistant/chat`
+
+```json
+{ "messages": [{ "role": "user", "content": "why is my request rejected?" }] }
+```
+
+Streams back an OpenAI-shaped SSE response. The gateway prepends a system prompt
+and a state block describing this deployment as the caller is permitted to see
+it; only the last 12 turns are forwarded.
+
+The request is not privileged. It goes through the same capability gate, quota
+check, routing and usage recording as `POST /v1/chat/completions`, so it can be
+rejected for quota like any other call. Messages over 4000 characters are
+refused with `400`.
+
+Nothing is stored: history is the caller's to keep and the console keeps it in
+`sessionStorage`.
+
+---
+
 ## Admin endpoints
 
 `manager` or `admin` required as noted. Restrict `/admin/*` to the management
