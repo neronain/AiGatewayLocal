@@ -881,6 +881,10 @@ correct it — the same treatment as a missing tool parser.
 
 ### 16.1 What was verified, and how
 
+Neither M3 nor M4 can be *finished* by writing code: both exit on elapsed time
+under real use. What could be built and exercised has been, and the table below
+is what was run rather than what was intended.
+
 An NFR nobody has exercised is a wish. These were run against the staging
 gateway on real Postgres and Redis, not reasoned about:
 
@@ -890,6 +894,11 @@ gateway on real Postgres and Redis, not reasoned about:
 | Quota counters use Redis | Counter key appeared in Redis after one request | Pass |
 | **NFR-A3** — Redis down, no request failures | Stopped Redis mid-traffic, issued chat requests | **Failed first: HTTP 500.** Fixed, now passes |
 | Quota survives Redis restarting empty | `FLUSHALL`, then read the quota back | Pass — restored from the database |
+| TLS with no public DNS | Issued a CA and cert with an IP SAN, put nginx in front | Pass — trusted client 200, untrusted refused, HTTP redirects |
+| Backup captures what matters | Backed up the live gateway | Pass — database, registry and pepper |
+| **Restore actually works** | Restored to a scratch directory, started a gateway on it, authenticated with a key issued *before* the backup | Pass. A wrong pepper correctly gives 401 |
+| Group enrolment | Enrolled four members, then ran it again | Pass — key authenticates under the right quota, is refused by the admin plane, second run a no-op |
+| Alert rules reference real metrics | Parsed the rules, checked each metric against `/metrics` and each runbook link against the file | Pass — after adding the four readiness metrics the rules needed |
 
 The NFR-A3 failure is worth recording because the code looked correct. The
 gateway pinged Redis at startup and installed either the Redis store or the
@@ -949,8 +958,8 @@ FR-38 Multimodal usage dashboard · FR-12 Uploaded image · FR-14 PDF input
 |---|---|---|
 | **M1 — Core** (done) | Registry, capability validation, OpenAI surface, auth, quota, usage, routing, health | 48 tests green; FR-30..35 demonstrable |
 | **M2 — Agent** (done) | Anthropic surface, protocol translation, Claude Code profile, test suite | MODEL-001..010 runnable end-to-end |
-| **M3 — Pilot** | Deploy to staging, connect one real DGX, one workspace, ~30 members | 2 weeks with no P1 incident |
-| **M4 — Production** | Postgres + Redis, TLS, monitoring, backups, runbook | NFR-A1 met for one full term |
+| **M3 — Pilot** (ready) | Deploy to staging, connect one real DGX, one workspace, ~30 members | Staging live against real backends; group enrolment scripted and rehearsed. **Exit criterion is elapsed time — two weeks of real use with no P1** |
+| **M4 — Production** (ready) | Postgres + Redis, TLS, monitoring, backups, runbook | All five built and exercised (§16.1). **Exit criterion is elapsed time — NFR-A1 held for one full term** |
 | **M5 — P1 features** | Upload endpoint, PDF, richer dashboard, capability probe | Manager sign-off |
 
 ### 17.1 Task index (from v1.2 §22, with status)
