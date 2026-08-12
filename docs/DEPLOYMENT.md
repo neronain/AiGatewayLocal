@@ -472,6 +472,70 @@ obtain a real certificate — then none of the CA installation applies.
 
 ## 6. Backup
 
+```bash
+./scripts/backup.sh --out /srv/backups --keep 30
+```
+
+One timestamped `.tar.gz` holding the three things a gateway cannot be rebuilt
+without. Only one of them is the database:
+
+| In the archive | Why it is there |
+|---|---|
+| `database.sqlite` / `database.dump` | Members, keys, quota policies, usage history |
+| `config/` | The registry. Probably in git — but a restore that needs someone to remember which branch is a restore that goes badly at 3am |
+| `.env` | **The pepper.** Every API key is a hash under it |
+
+That last row is the one that matters. Restore a database under a different
+`GW_API_KEY_PEPPER` and every key ever issued stops working, silently, with no
+way to recover them: every member has to be given a new one. The archive is
+therefore a secret — it is written mode 600, and it belongs somewhere with the
+same protection as the live `.env`.
+
+SQLite is copied with `.backup`, not `cp`, so a gateway that is serving traffic
+cannot produce a torn snapshot. PostgreSQL uses `pg_dump --format=custom`.
+
+**Two things the script deliberately does not do:** copy the archive off the
+machine, and prove it restores. Both are yours.
+
+### 6.1 Restoring — rehearse it now
+
+```bash
+./scripts/restore.sh /srv/backups/litegate-20260813-020000.tar.gz --into /tmp/rehearsal
+```
+
+`--into` restores to a scratch directory and touches nothing that is running,
+which is the mode to practise with. `--in-place` overwrites the deployment and
+asks you to type `restore` first.
+
+Before writing anything, `--in-place` compares the pepper in the archive with
+the one this deployment uses and **refuses** if they differ. Discovering that
+mismatch after the data is restored is exactly the failure the script exists to
+prevent.
+
+Then prove it, rather than trusting a file of the right size:
+
+```bash
+cd /tmp/rehearsal
+GW_DATABASE_URL="sqlite+aiosqlite:////tmp/rehearsal/data/gateway.db" GW_API_KEY_PEPPER="$(grep GW_API_KEY_PEPPER .env | cut -d= -f2-)"   uvicorn app.main:app --port 8098
+
+curl -H "Authorization: Bearer <a key that already existed>" http://127.0.0.1:8098/v1/me
+```
+
+A key issued **before** the backup authenticating against the restored copy is
+the only thing that proves the pepper survived. `/healthz` returning 200 does
+not.
+
+Note the four slashes in that SQLite URL. `sqlite:///tmp/x.db` is a *relative*
+path; the gateway will happily create an empty database beside it and report
+itself healthy while every key is rejected.
+
+**Ownership.** A restore run under `sudo` leaves everything owned by root. The
+gateway then reads the database fine and fails on the first write with an error
+that says nothing about permissions. The script sets ownership when it can and
+says so when it cannot.
+
+
+
 | What | Why | How |
 |---|---|---|
 | `.env` | Losing `GW_API_KEY_PEPPER` invalidates every key | Secret manager, offline copy |
