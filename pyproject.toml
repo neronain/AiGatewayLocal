@@ -50,6 +50,10 @@ include = ["app*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# The suite imports shared helpers as `tests.conftest`, so the repo root must be
+# on sys.path. Do not rely on the editable install to put it there - newer
+# setuptools maps only the `app` package, which breaks collection.
+pythonpath = ["."]
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.ruff]
