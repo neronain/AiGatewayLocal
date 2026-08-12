@@ -46,6 +46,16 @@ async def readyz(response: Response, state: AppState = Depends(get_state)) -> di
     ready = bool(snapshot.models) and db_ok and bool(healthy)
     if not ready:
         response.status_code = 503
+
+    # Published from here rather than computed separately, so an alert and a
+    # human hitting /readyz can never disagree about whether it is ready.
+    from app.main import ENDPOINTS_HEALTHY, ENDPOINTS_TOTAL, MODELS_LOADED, READY
+
+    READY.set(1 if ready else 0)
+    ENDPOINTS_HEALTHY.set(len(healthy))
+    ENDPOINTS_TOTAL.set(len(health))
+    MODELS_LOADED.set(len(snapshot.models))
+
     return {
         "ready": ready,
         "database": "ok" if db_ok else "unavailable",

@@ -41,6 +41,15 @@ LATENCY = Histogram(
 IN_FLIGHT = Gauge("litegate_requests_in_flight", "Requests currently being served")
 ERRORS = Counter("litegate_errors_total", "Gateway errors by code", ["code"])
 
+# Readiness as numbers, not just as a status code. `up` catches a process that
+# died; it cannot see a gateway that is running happily with an unreachable
+# database or no healthy backend to route to, which is the outage members
+# actually experience. Set from /readyz, so there is one definition of ready.
+READY = Gauge("litegate_ready", "1 when the gateway is ready to serve")
+ENDPOINTS_HEALTHY = Gauge("litegate_endpoints_healthy", "Backend endpoints passing health checks")
+ENDPOINTS_TOTAL = Gauge("litegate_endpoints_total", "Backend endpoints configured")
+MODELS_LOADED = Gauge("litegate_models_loaded", "Models in the registry")
+
 
 class _RevalidatingStatic(StaticFiles):
     """Serve the console with `Cache-Control: no-cache`.

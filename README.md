@@ -400,6 +400,7 @@ who install both get the parts that only exist between them.
 | **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Pipeline, modules, design decisions and their costs |
 | **[API.md](docs/API.md)** | Full endpoint reference with examples |
 | **[DEPLOYMENT.md](docs/DEPLOYMENT.md)** | Docker / systemd / staging, operations, troubleshooting |
+| **[RUNBOOK.md](docs/RUNBOOK.md)** | What to do when an alert fires, one section per alert |
 | [PRD-v1.2-Addendum.md](docs/PRD-v1.2-Addendum.md) | The original v1.2 addendum, preserved verbatim |
 
 **Related project** — [LMDS · AutoDeployDGXProject](https://github.com/neronain/AutoDeployDGXProject),

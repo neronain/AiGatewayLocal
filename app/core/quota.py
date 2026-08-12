@@ -24,6 +24,7 @@ from calendar import monthrange
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from prometheus_client import Gauge
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +33,19 @@ from app.db.models import QuotaCounter, QuotaPolicy
 from app.registry.schema import QuotaDefaults
 
 log = logging.getLogger(__name__)
+
+# Falling back to database counters is not an outage - requests keep working -
+# so it produces no errors and nothing in the logs anyone is watching. Which is
+# how a gateway ends up running for a week on a Redis that died on Tuesday.
+#
+# Phrased as "degraded", not "redis up", so it reads correctly on the many
+# deployments that never configure Redis at all: those are not degraded, they
+# are small, and an alert that fires on every SQLite install is an alert
+# everybody turns off. It goes to 1 only when a fallback actually happens.
+QUOTA_DEGRADED = Gauge(
+    "litegate_quota_counters_degraded",
+    "1 when quota counting has fallen back from Redis to the database",
+)
 
 
 @dataclass
@@ -254,6 +268,7 @@ class ResilientCounterStore(CounterStore):
         first = self.using_redis
         self._down_until = time.monotonic() + self._retry_seconds
         self._database_has_counts = True
+        QUOTA_DEGRADED.set(1)
         if first:
             # Once per outage, not once per request: a Redis outage under load
             # would otherwise write more log than the outage is worth reading.
@@ -269,6 +284,7 @@ class ResilientCounterStore(CounterStore):
             except Exception as exc:  # redis client raises its own hierarchy
                 self._mark_down(exc)
             else:
+                QUOTA_DEGRADED.set(0)
                 if counted != Consumption() or not self._database_has_counts:
                     return counted
                 # Redis has nothing for this window but an earlier outage may
@@ -288,6 +304,7 @@ class ResilientCounterStore(CounterStore):
         if self.using_redis:
             try:
                 await self._redis.increment(key, window, delta)
+                QUOTA_DEGRADED.set(0)
                 return
             except Exception as exc:
                 self._mark_down(exc)

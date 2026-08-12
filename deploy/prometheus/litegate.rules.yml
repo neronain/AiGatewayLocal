@@ -1,0 +1,172 @@
+# Alerting rules for a LiteGate.
+#
+# Every rule here corresponds to a target in PRD §16 and to a section in
+# docs/RUNBOOK.md. That pairing is the point: an alert with no stated threshold
+# is someone's opinion, and an alert with no written response is a page that
+# wakes somebody who then has to work out what to do.
+#
+# Metric names are the ones the gateway actually exports - checked against a
+# running instance, not against the source:
+#
+#   litegate_requests_total{path,method,status,model}
+#   litegate_request_duration_seconds_bucket{path,model}
+#   litegate_requests_in_flight
+#   litegate_errors_total{code}
+#
+# Install:
+#   scrape /metrics, then
+#   rule_files: [ /etc/prometheus/rules/litegate.rules.yml ]
+#
+# `for:` durations are deliberately long. A gateway in front of model servers
+# is bursty by nature - one class starting an assignment moves every rate - and
+# an alert that fires on a two-minute spike is an alert people learn to ignore.
+
+groups:
+  - name: litegate-availability
+    interval: 30s
+    rules:
+      - alert: LiteGateDown
+        expr: up{job="litegate"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "LiteGate is not answering (NFR-A1)"
+          description: >-
+            Prometheus cannot scrape the gateway. Every member is affected:
+            nothing reaches the models without it.
+          runbook: "docs/RUNBOOK.md#the-gateway-is-down"
+
+      - alert: LiteGateNotReady
+        # /readyz turns false when the database is unreachable or the registry
+        # failed to load. The process is alive, which is why `up` will not
+        # catch this.
+        expr: litegate_ready == 0
+        for: 3m
+        labels:
+          severity: page
+        annotations:
+          summary: "LiteGate is running but not ready"
+          description: "The process is up; the database or the registry is not."
+          runbook: "docs/RUNBOOK.md#running-but-not-ready"
+
+      - alert: LiteGateAllBackendsUnhealthy
+        expr: litegate_endpoints_healthy == 0 and litegate_endpoints_total > 0
+        for: 3m
+        labels:
+          severity: page
+        annotations:
+          summary: "No model backend is healthy"
+          description: >-
+            The gateway is fine and has nowhere to route. Usually the model
+            servers, not the gateway.
+          runbook: "docs/RUNBOOK.md#no-backend-is-healthy"
+
+      - alert: LiteGateBackendDegraded
+        # Losing one of several is a warning: routing shifts and members keep
+        # working (NFR-A2). Losing all of them is the page above.
+        expr: litegate_endpoints_healthy < litegate_endpoints_total
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} backend(s) healthy, fewer than configured"
+          description: "Traffic has shifted to the survivors. Capacity is reduced."
+          runbook: "docs/RUNBOOK.md#a-backend-dropped-out"
+
+  - name: litegate-errors
+    interval: 30s
+    rules:
+      - alert: LiteGateErrorRateHigh
+        # Server-side only. A gateway whose members are sending malformed
+        # requests is not itself broken, and folding 4xx in here trains people
+        # to ignore the alert.
+        expr: |
+          sum(rate(litegate_requests_total{status=~"5.."}[5m]))
+            / clamp_min(sum(rate(litegate_requests_total[5m])), 0.001) > 0.05
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "More than 5% of requests are failing server-side"
+          description: "{{ $value | humanizePercentage }} of requests over 5 minutes."
+          runbook: "docs/RUNBOOK.md#the-error-rate-is-up"
+
+      - alert: LiteGateUpstreamErrors
+        expr: sum(rate(litegate_errors_total{code=~"UPSTREAM.*|MODEL_.*"}[5m])) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sustained upstream errors from the model backends"
+          description: >-
+            The gateway is reaching the backends and not liking the answers.
+            Check what changed on the model servers.
+          runbook: "docs/RUNBOOK.md#upstream-errors"
+
+  - name: litegate-latency
+    interval: 30s
+    rules:
+      - alert: LiteGateSlowNonStreaming
+        # NFR-P1 is about gateway *overhead*, which this cannot see: the
+        # histogram includes the model's own generation time. Set well above any
+        # plausible overhead so it fires on the gateway being in trouble, not on
+        # a large prompt being large.
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(litegate_request_duration_seconds_bucket{path!~"/v1/chat/completions|/v1/messages"}[10m]))
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 above 2s on non-generation endpoints"
+          description: >-
+            Endpoints that do no generation should be fast. This usually means
+            the database, not the models.
+          runbook: "docs/RUNBOOK.md#everything-feels-slow"
+
+      - alert: LiteGateSaturated
+        # NFR-P3 targets 200 concurrent streams per instance. Warn at 80%
+        # rather than at the limit, which is too late to add capacity.
+        expr: litegate_requests_in_flight > 160
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} requests in flight, near the tested ceiling"
+          description: "Sustained load approaching 200 concurrent (NFR-P3)."
+          runbook: "docs/RUNBOOK.md#the-gateway-is-saturated"
+
+  - name: litegate-quota
+    interval: 60s
+    rules:
+      - alert: LiteGateQuotaFallbackActive
+        # Not an outage - the database counters are correct, just slower - but
+        # it means Redis is gone and nobody noticed, and quota under-counts
+        # across the failover. Worth knowing the same day, not on the page.
+        #
+        # Reads 0 on a deployment that never configured Redis, which is not
+        # degraded - it is small. Alerting on absence would fire on every
+        # SQLite install and get switched off.
+        expr: litegate_quota_counters_degraded == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Quota counting has fallen back to the database"
+          description: "Redis is unreachable. Requests still succeed (NFR-A3)."
+          runbook: "docs/RUNBOOK.md#redis-is-down"
+
+      - alert: LiteGateManyQuotaRejections
+        # A spike usually means a policy was changed or a script is looping,
+        # not that thirty people independently hit their limit.
+        expr: sum(rate(litegate_errors_total{code="QUOTA_EXCEEDED"}[15m])) > 1
+        for: 15m
+        labels:
+          severity: info
+        annotations:
+          summary: "Members are being refused on quota at an unusual rate"
+          description: "Check whether a policy changed or something is looping."
+          runbook: "docs/RUNBOOK.md#a-lot-of-quota-rejections"

@@ -514,6 +514,42 @@ obtain a real certificate — then none of the CA installation applies.
 
 ---
 
+## 5e. Monitoring
+
+`/metrics` is Prometheus exposition. Scrape it and load the rules:
+
+```yaml
+scrape_configs:
+  - job_name: litegate
+    static_configs: [{ targets: ["gateway:8080"] }]
+
+rule_files:
+  - /etc/prometheus/rules/litegate.rules.yml   # deploy/prometheus/litegate.rules.yml
+```
+
+Ten alerts, each tied to a target in PRD §16 and to a section in
+[RUNBOOK.md](RUNBOOK.md). An alert with no written response is a page that wakes
+somebody who then has to work out what to do.
+
+| Signal | Why it is exported |
+|---|---|
+| `litegate_ready` | `up` catches a dead process. It cannot see a gateway running happily with an unreachable database or no backend to route to, which is the outage members actually feel |
+| `litegate_endpoints_healthy` / `_total` | Losing one of three is a warning; losing all three is a page. The two need different responses |
+| `litegate_quota_counters_degraded` | Redis falling back is invisible — requests keep working, so nothing errors and nothing logs. This is how a gateway runs for a week on a Redis that died on Tuesday |
+| `litegate_requests_in_flight` | Warns at 80% of the tested 200-stream ceiling, while there is still time to add an instance |
+| `litegate_errors_total{code}` | The `code` label usually identifies the cause without opening a log |
+
+Thresholds and `for:` durations are deliberately slack. A gateway in front of
+model servers is bursty — one class starting an assignment moves every rate —
+and an alert that fires on a two-minute spike is one people learn to ignore.
+
+Note what is *not* alerted on: NFR-P1 is about gateway overhead, and the request
+histogram includes the model's own generation time, so a slow model would fire
+it. The latency alert covers only endpoints that do no generation, where slow
+means the gateway or its database.
+
+---
+
 ## 6. Backup
 
 ```bash
