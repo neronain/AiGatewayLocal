@@ -726,6 +726,22 @@ $('lm-save').onclick = async () => {
   } catch (e) { showError(e.message); }
 };
 
+$('lm-test').onclick = async () => {
+  // "Configured" only means somebody typed a URL. This asks the tool who it is,
+  // so nobody discovers they pointed at the staging fleet by restarting a
+  // production model.
+  $('lm-state').textContent = 'asking…';
+  try {
+    const r = await post('/admin/integrations/lmds/test');
+    $('lm-state').innerHTML = r.ok
+      ? `<span class="pill ok">connected</span> ${esc(r.hostname || '?')}
+         <code>${esc(r.ip || '')}</code> · LMDS ${esc(r.version || '?')} ·
+         ${r.nodes} machine(s)${r.node_names.length
+           ? `: ${r.node_names.map(esc).join(', ')}` : ''}`
+      : `<span class="pill err">not connected</span> ${esc(r.reason)}`;
+  } catch (e) { $('lm-state').innerHTML = `<span class="pill err">${esc(e.message)}</span>`; }
+};
+
 $('as-save').onclick = async () => {
   try {
     await api('/admin/assistant', {

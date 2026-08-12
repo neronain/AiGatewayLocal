@@ -80,6 +80,54 @@ def suggest_reasoning_parser(served_name: str) -> tuple[str, bool]:
     return "deepseek_r1", False
 
 
+async def check(connection: Connection) -> dict:
+    """Ask the deploy tool who it is.
+
+    "Configured" only means somebody typed a URL. On a site with a staging and a
+    production LMDS - or a URL typed one digit wrong - a saved setting that is
+    never exercised looks identical to a working one right up until a restart
+    lands on the wrong fleet.
+
+    So this makes a real authenticated call and reports what answered: the
+    machine's own name, its version, how many nodes it manages. That is enough
+    for an operator to recognise their own fleet, which is the actual question
+    behind "is this connected".
+    """
+    if not connection.configured:
+        return {"ok": False, "reason": "No deploy tool is configured."}
+
+    base = connection.base_url.rstrip("/")
+    headers = {"x-lmds-token": connection.token} if connection.token else {}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            host = await client.get(f"{base}/api/host", headers=headers)
+            if host.status_code in (401, 403):
+                # The most common mistake, and worth naming precisely: the URL
+                # is right, the token is not.
+                return {
+                    "ok": False,
+                    "reason": "The deploy tool rejected the token. Copy the one it "
+                    "prints with `lmds web --status`.",
+                }
+            if host.status_code >= 400:
+                return {"ok": False, "reason": f"HTTP {host.status_code}: {_detail(host)}"}
+            nodes = await client.get(f"{base}/api/nodes", headers=headers)
+    except httpx.HTTPError as exc:
+        return {"ok": False, "reason": f"Could not reach it: {exc}"}
+
+    body = _body(host)
+    node_list = _body(nodes).get("nodes") or [] if nodes.status_code < 400 else []
+    return {
+        "ok": True,
+        "hostname": body.get("hostname", ""),
+        "ip": body.get("ip", ""),
+        "version": body.get("lmds_version", ""),
+        "nodes": len(node_list),
+        # Named so an operator can tell one fleet from another at a glance.
+        "node_names": [n.get("name", "") for n in node_list][:12],
+    }
+
+
 async def apply_fix(
     connection: Connection,
     managed: ManagedBy,

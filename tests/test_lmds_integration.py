@@ -214,3 +214,58 @@ def test_applying_to_an_unmanaged_model_says_to_run_it_yourself(client):
     )
     assert response.status_code == 400
     assert "Run the command yourself" in response.json()["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# Knowing which fleet you connected to
+# ---------------------------------------------------------------------------
+@respx.mock
+@pytest.mark.asyncio
+async def test_a_successful_check_names_the_fleet():
+    """"Connected" is not the question - "connected to which one" is."""
+    respx.get(f"{LMDS}/api/host").mock(
+        return_value=httpx.Response(
+            200, json={"hostname": "Autodeploy", "ip": "10.0.0.2", "lmds_version": "0.2.0"}
+        )
+    )
+    respx.get(f"{LMDS}/api/nodes").mock(
+        return_value=httpx.Response(200, json={"nodes": [{"name": "msi-5"}, {"name": "msi-6"}]})
+    )
+
+    result = await lmds.check(_connection())
+    assert result["ok"] is True
+    assert result["hostname"] == "Autodeploy"
+    assert result["nodes"] == 2
+    assert result["node_names"] == ["msi-5", "msi-6"]
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_a_rejected_token_is_named_as_such():
+    """The most common mistake: right URL, wrong token. Say so precisely."""
+    respx.get(f"{LMDS}/api/host").mock(return_value=httpx.Response(401, json={"detail": "no"}))
+
+    result = await lmds.check(_connection("stale"))
+    assert result["ok"] is False
+    assert "rejected the token" in result["reason"]
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_an_unreachable_tool_is_not_reported_as_connected():
+    respx.get(f"{LMDS}/api/host").mock(side_effect=httpx.ConnectError("refused"))
+
+    result = await lmds.check(_connection())
+    assert result["ok"] is False
+    assert "Could not reach" in result["reason"]
+
+
+@pytest.mark.asyncio
+async def test_checking_with_nothing_configured_says_so():
+    assert (await lmds.check(lmds.Connection("", "")))["ok"] is False
+
+
+def test_only_an_admin_can_test_the_connection(client, member_key):
+    assert client.post(
+        "/admin/integrations/lmds/test", headers=auth(member_key)
+    ).status_code == 403

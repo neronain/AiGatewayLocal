@@ -351,6 +351,25 @@ a token is a console that leaks it into a screenshot.
 Omitting `token` keeps the stored one; sending `""` clears it. An empty
 `base_url` disconnects the tool. Returns the same body as `GET`.
 
+### `POST /admin/integrations/lmds/test`
+
+Makes a real authenticated call and reports which fleet answered.
+
+```json
+{
+  "ok": true, "hostname": "Autodeploy", "ip": "192.168.1.92",
+  "version": "0.2.0", "nodes": 6,
+  "node_names": ["spark-head", "msi-5", "msi-6"]
+}
+```
+
+Failure is reported in the body, not as an HTTP error — the request succeeded,
+the connection is what did not:
+
+```json
+{ "ok": false, "reason": "The deploy tool rejected the token. Copy the one it prints with `lmds web --status`." }
+```
+
 ### `POST /admin/models/{alias}/apply-fix`
 
 ```json

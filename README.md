@@ -329,9 +329,32 @@ Pressing it asks LMDS to restart that bundle with the parser set. Then re-run
 verification — whether it worked is a question only a fresh probe answers, so
 the button reports what it sent, not that it succeeded.
 
+**The token is LMDS's own web token** — the one you type to open its console,
+printed by `lmds web --status`. One credential, not a second thing to manage.
+
+**Press Test after saving.** A saved URL and a working connection look identical
+in a settings form, and a site with a staging and a production LMDS has two URLs
+that differ by one character. Test makes a real authenticated call and reports
+which fleet answered:
+
+```
+connected   Autodeploy 192.168.1.92 · LMDS 0.2.0 · 6 machines:
+            spark-head, spark-worker, msi-5, msi-6, dgx-veerasiam, AiTop100
+```
+
+If the token is stale it says so specifically, rather than failing later when a
+restart is already in flight.
+
 `lmds_node` and `lmds_slug` are separate from `node` because LMDS addresses
 machines by the name in its own registry, which is usually not the ssh target.
 Guessing one from the other would restart the wrong machine.
+
+LMDS refuses options it cannot honour. A model it merely *adopted* — a container
+someone started by hand that `lmds ps` picked up later — can be stopped and
+started, but LMDS does not own its launch command, so a parser sent to it would
+be silently ignored. It now answers with a `409` explaining that, because an
+exit code of zero that means "nothing happened" is worse than an error: every
+layer above reports success and nobody finds out until the symptom returns.
 
 Only findings on a short list can be applied — currently the tool and reasoning
 parsers. This is not a remote shell with a friendly name: the payload is a

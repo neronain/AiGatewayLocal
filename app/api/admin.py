@@ -857,6 +857,20 @@ async def set_lmds_settings(
     return await lmds_settings(actor=actor, session=session)
 
 
+@router.post("/integrations/lmds/test")
+async def test_lmds_connection(
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Prove the connection reaches the fleet you think it does.
+
+    A saved URL and a working connection look the same in a settings form. This
+    makes an authenticated call and reports which machine answered, so nobody
+    discovers they configured the staging LMDS by restarting a production model.
+    """
+    return await lmds.check(await _lmds_connection(session))
+
+
 class ApplyFixIn(BaseModel):
     issue: str = Field(min_length=1, max_length=64)
     endpoint: str = Field(default="", max_length=64)
