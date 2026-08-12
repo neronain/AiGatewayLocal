@@ -320,3 +320,19 @@ def test_a_pin_the_caller_may_not_use_is_reported_not_silently_replaced(client, 
         assert model.alias in status["reason"]
     finally:
         model.metadata.visibility = original
+
+
+def test_either_reasoning_field_counts_as_separated():
+    """vLLM calls it `reasoning_content` in older builds and `reasoning` in newer.
+
+    Checking only one name reports a working --reasoning-parser as missing, and
+    sends someone to fix a setting that is already correct.
+    """
+    from app.core.modeltest import ProbeResult, build_advice
+
+    for field in ("reasoning_content", "reasoning"):
+        result = ProbeResult(reachable=True)
+        result.capabilities["reasoning_separated"] = True
+        assert not [
+            a for a in build_advice(result) if a.issue == "reasoning_not_separated"
+        ], f"{field} should count as separated"

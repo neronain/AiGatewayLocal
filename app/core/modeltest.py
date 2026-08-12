@@ -864,7 +864,14 @@ async def probe_backend(
         if response is not None and response.status_code == 200:
             try:
                 message = response.json()["choices"][0]["message"]
-                separated = message.get("reasoning_content") is not None
+                # vLLM has used both names: `reasoning_content` in older builds,
+                # `reasoning` in newer ones. Checking only one reports a working
+                # --reasoning-parser as missing, which sends people to fix
+                # something that is already right.
+                separated = any(
+                    message.get(field) is not None
+                    for field in ("reasoning_content", "reasoning")
+                )
                 text = (message.get("content") or "")[:400]
                 narrates = any(
                     marker.lower() in text.lower()
