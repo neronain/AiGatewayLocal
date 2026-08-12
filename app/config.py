@@ -49,6 +49,20 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
     @property
+    def self_base_url(self) -> str:
+        """How the gateway reaches its own API.
+
+        Used by the console-triggered test suite, which drives the public API.
+        It must NOT be derived from the incoming request: the browser may have
+        arrived via a proxy, a port-forward or a public hostname that the server
+        itself cannot resolve.
+        """
+        host = self.host
+        if host in {"0.0.0.0", "::", ""}:
+            host = "127.0.0.1"
+        return f"http://{host}:{self.port}"
+
+    @property
     def is_production(self) -> bool:
         return self.env.lower() in {"production", "prod"}
 

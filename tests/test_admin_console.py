@@ -1,0 +1,235 @@
+"""Registry authoring, capability probing and console-triggered test runs."""
+
+from __future__ import annotations
+
+import httpx
+import respx
+import yaml
+
+UPSTREAM = "http://newbox:9000"
+
+
+def auth(key: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {key}"}
+
+
+def definition(alias: str = "newmodel", **overrides) -> dict:
+    spec = {
+        "upstream_model": "org/Some-Model",
+        "purpose": ["general"],
+        "limits": {"context_tokens": 32768, "max_output_tokens": 2048},
+        "modalities": {"input": ["text"], "output": ["text"]},
+        "capabilities": {"chat": True, "streaming": True, "tools": True},
+        "protocols": {"openai": True, "anthropic": False},
+        "endpoints": [
+            {
+                "name": "box1",
+                "server_type": "vllm",
+                "base_url": UPSTREAM,
+                "protocols": {"openai": True, "anthropic": False},
+                "modalities": {"text": True, "image": False},
+            }
+        ],
+    }
+    spec.update(overrides)
+    return {
+        "apiVersion": "edullm.gateway/v1",
+        "kind": "Model",
+        "metadata": {"alias": alias, "display_name": "New Model", "visibility": "student"},
+        "spec": spec,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Preview (mode A)
+# ---------------------------------------------------------------------------
+def test_preview_renders_valid_yaml_without_touching_disk(client):
+    response = client.post(
+        "/admin/models/preview", json=definition(), headers=auth(client.admin_key)
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["filename"] == "newmodel.yaml"
+
+    parsed = yaml.safe_load(body["yaml"])
+    assert parsed["metadata"]["alias"] == "newmodel"
+    assert parsed["spec"]["upstream_model"] == "org/Some-Model"
+    # Preview must not register anything.
+    listed = client.get("/admin/models", headers=auth(client.admin_key)).json()
+    assert "newmodel" not in {m["alias"] for m in listed["data"]}
+
+
+def test_preview_rejects_contradictory_capabilities(client):
+    """vision=true with a text-only endpoint must fail before it can be saved."""
+    bad = definition(
+        capabilities={"chat": True, "streaming": True, "vision": True},
+        modalities={"input": ["text", "image"], "output": ["text"]},
+    )
+    response = client.post("/admin/models/preview", json=bad, headers=auth(client.admin_key))
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == "INVALID_REQUEST"
+    assert "problems" in error["details"]
+
+
+def test_preview_rejects_bad_alias(client):
+    response = client.post(
+        "/admin/models/preview", json=definition("../escape"), headers=auth(client.admin_key)
+    )
+    assert response.status_code == 400
+
+
+def test_model_authoring_is_admin_only(client, student_key):
+    assert client.post(
+        "/admin/models/preview", json=definition(), headers=auth(student_key)
+    ).status_code == 403
+    assert client.post(
+        "/admin/models", json=definition(), headers=auth(student_key)
+    ).status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Save / delete (mode B)
+# ---------------------------------------------------------------------------
+def test_save_writes_file_and_registers_model(writable_config, client):
+    response = client.post(
+        "/admin/models", json=definition(), headers=auth(client.admin_key)
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["created"] is True
+
+    written = writable_config / "models" / "newmodel.yaml"
+    assert written.exists()
+    assert yaml.safe_load(written.read_text())["metadata"]["alias"] == "newmodel"
+
+    listed = client.get("/admin/models", headers=auth(client.admin_key)).json()
+    assert "newmodel" in {m["alias"] for m in listed["data"]}
+
+    # And it is immediately usable through the public catalogue.
+    models = client.get("/v1/models", headers=auth(client.admin_key)).json()
+    assert "newmodel" in {m["id"] for m in models["data"]}
+
+
+def test_save_twice_updates_rather_than_duplicates(writable_config, client):
+    client.post("/admin/models", json=definition(), headers=auth(client.admin_key))
+    updated = definition()
+    updated["metadata"]["display_name"] = "Renamed"
+    response = client.post("/admin/models", json=updated, headers=auth(client.admin_key))
+    assert response.status_code == 201
+    assert response.json()["created"] is False
+
+    listed = client.get("/admin/models", headers=auth(client.admin_key)).json()
+    entries = [m for m in listed["data"] if m["alias"] == "newmodel"]
+    assert len(entries) == 1
+    assert entries[0]["display_name"] == "Renamed"
+
+
+def test_delete_removes_file_and_deregisters(writable_config, client):
+    client.post("/admin/models", json=definition(), headers=auth(client.admin_key))
+    response = client.delete("/admin/models/newmodel", headers=auth(client.admin_key))
+    assert response.status_code == 200
+    assert not (writable_config / "models" / "newmodel.yaml").exists()
+
+    listed = client.get("/admin/models", headers=auth(client.admin_key)).json()
+    assert "newmodel" not in {m["alias"] for m in listed["data"]}
+
+
+def test_delete_unknown_model_is_404(writable_config, client):
+    response = client.delete("/admin/models/ghost", headers=auth(client.admin_key))
+    assert response.status_code == 404
+
+
+def test_registry_status_reports_writability(writable_config, client):
+    body = client.get("/admin/registry/status", headers=auth(client.admin_key)).json()
+    assert body["writable"] is True
+    assert body["errors"] == []
+
+
+# ---------------------------------------------------------------------------
+# Capability probe
+# ---------------------------------------------------------------------------
+@respx.mock
+def test_detect_reports_measured_capabilities(client):
+    """A vision-named model served without a projector must come back vision=false."""
+    respx.get(f"{UPSTREAM}/v1/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"id": "org/gemma-vision-31B", "max_model_len": 65536}]},
+        )
+    )
+
+    def chat_router(request: httpx.Request) -> httpx.Response:
+        payload = __import__("json").loads(request.content)
+        content = payload["messages"][-1].get("content")
+        has_image = isinstance(content, list) and any(
+            b.get("type") == "image_url" for b in content
+        )
+        if has_image:
+            return httpx.Response(
+                500, json={"error": {"message": "image input is not supported"}}
+            )
+        if payload.get("tools"):
+            # Accepts tools but never emits tool_calls - the vLLM parser case.
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"role": "assistant", "content": "sure"}}]},
+            )
+        return httpx.Response(
+            200, json={"choices": [{"message": {"role": "assistant", "content": "OK"}}]}
+        )
+
+    respx.post(f"{UPSTREAM}/v1/chat/completions").mock(side_effect=chat_router)
+    respx.post(f"{UPSTREAM}/v1/messages").mock(return_value=httpx.Response(404))
+
+    response = client.post(
+        "/admin/models/detect", json={"base_url": UPSTREAM}, headers=auth(client.admin_key)
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["confirmed"] is False  # admin must confirm (FR-39)
+
+    suggestion = body["suggestion"]
+    assert suggestion["reachable"] is True
+    assert suggestion["upstream_model"] == "org/gemma-vision-31B"
+    assert suggestion["context_tokens"] == 65536
+    assert suggestion["capabilities"]["chat"] is True
+    assert suggestion["capabilities"]["vision"] is False
+    assert suggestion["capabilities"]["tools"] is False
+    assert any("tool_calls" in n for n in suggestion["notes"])
+
+
+@respx.mock
+def test_detect_unreachable_backend_is_reported_not_raised(client):
+    respx.get(f"{UPSTREAM}/v1/models").mock(side_effect=httpx.ConnectError("refused"))
+    response = client.post(
+        "/admin/models/detect", json={"base_url": UPSTREAM}, headers=auth(client.admin_key)
+    )
+    assert response.status_code == 200
+    assert response.json()["suggestion"]["reachable"] is False
+
+
+# ---------------------------------------------------------------------------
+# Console-triggered test runs
+# ---------------------------------------------------------------------------
+def test_test_run_is_created_and_pollable(client):
+    response = client.post(
+        "/admin/models/coding/test?only=MODEL-001", headers=auth(client.admin_key)
+    )
+    assert response.status_code == 202
+    run_id = response.json()["run_id"]
+
+    run = client.get(f"/admin/test-runs/{run_id}", headers=auth(client.admin_key)).json()
+    assert run["model"] == "coding"
+    assert run["total"] == 1
+    assert run["status"] in {"running", "done", "error"}
+
+
+def test_test_run_on_unknown_model_is_404(client):
+    response = client.post("/admin/models/ghost/test", headers=auth(client.admin_key))
+    assert response.status_code == 404
+
+
+def test_test_run_is_admin_only(client, student_key):
+    response = client.post("/admin/models/coding/test", headers=auth(student_key))
+    assert response.status_code == 403

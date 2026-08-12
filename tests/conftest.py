@@ -44,6 +44,27 @@ def temp_db(monkeypatch):
 
 
 @pytest.fixture
+def writable_config(temp_db, monkeypatch, tmp_path):
+    """A throwaway copy of config/, so save/delete tests never touch the repo.
+
+    Depends on temp_db and must be requested BEFORE `client` in a test's
+    parameter list: the app captures Settings once at startup, so the override
+    has to be in place before the client fixture builds the app. Getting this
+    order wrong silently writes into the real repo config.
+    """
+    import shutil
+
+    from app import config as config_mod
+
+    target = tmp_path / "config"
+    shutil.copytree(REPO_ROOT / "config", target)
+    monkeypatch.setenv("GW_CONFIG_DIR", str(target))
+    config_mod.get_settings.cache_clear()
+    yield target
+    config_mod.get_settings.cache_clear()
+
+
+@pytest.fixture
 def client(temp_db):
     """TestClient with lifespan run, plus the bootstrap admin key."""
     from fastapi.testclient import TestClient

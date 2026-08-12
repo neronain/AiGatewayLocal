@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -11,9 +13,16 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import Principal, generate_api_key, require_admin, require_instructor
+from app.core.auth import (
+    Principal,
+    extract_bearer_token,
+    generate_api_key,
+    require_admin,
+    require_instructor,
+)
 from app.core.capability import compatibility_badges
 from app.core.errors import ErrorCode, GatewayError
+from app.core.modeltest import ModelTestSuite, probe_backend
 from app.db.models import (
     ApiKey,
     AuditLog,
@@ -22,12 +31,20 @@ from app.db.models import (
     Enrollment,
     ModelCompatibility,
     ModelRecord,
+    ModelTestRun,
     QuotaPolicy,
     UsageLog,
     User,
     utcnow,
 )
-from app.db.session import get_session
+from app.db.session import get_session, session_scope
+from app.registry.writer import (
+    delete_model,
+    registry_writable,
+    render_yaml,
+    validate_definition,
+    write_model,
+)
 from app.state import AppState, get_state
 
 log = logging.getLogger(__name__)
@@ -597,6 +614,231 @@ async def get_compatibility(
 # ---------------------------------------------------------------------------
 # Usage reporting
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Registry authoring (console)
+# ---------------------------------------------------------------------------
+class ModelDefinitionIn(BaseModel):
+    """A full model document as the wizard builds it."""
+
+    model_config = {"extra": "allow"}
+
+    metadata: dict[str, Any]
+    spec: dict[str, Any]
+    apiVersion: str = "edullm.gateway/v1"
+    kind: str = "Model"
+
+
+@router.get("/registry/status")
+async def registry_status(
+    actor: Principal = Depends(require_admin),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """Tells the console whether 'save to disk' can be offered at all."""
+    config_dir = state.settings.config_dir
+    return {
+        "config_dir": str(config_dir),
+        "writable": registry_writable(config_dir),
+        "reload_seconds": state.settings.registry_reload_seconds,
+        "errors": state.registry.snapshot.errors,
+    }
+
+
+@router.post("/models/preview")
+async def preview_model(
+    payload: ModelDefinitionIn,
+    actor: Principal = Depends(require_admin),
+) -> dict[str, Any]:
+    """Validate a draft and render its YAML without touching disk (mode A)."""
+    definition = validate_definition(payload.model_dump())
+    return {
+        "alias": definition.alias,
+        "filename": f"{definition.alias}.yaml",
+        "yaml": render_yaml(definition),
+    }
+
+
+@router.post("/models", status_code=201)
+async def save_model(
+    payload: ModelDefinitionIn,
+    request: Request,
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """Validate and write the definition into the registry (mode B)."""
+    definition = validate_definition(payload.model_dump())
+    existing = definition.alias in state.registry.snapshot.models
+
+    path = write_model(state.settings.config_dir, definition)
+    snapshot = state.registry.reload()
+    await sync_model_projection(session, state)
+    await audit(
+        session,
+        request,
+        actor,
+        "model.update" if existing else "model.create",
+        "model",
+        definition.alias,
+        {"upstream_model": definition.spec.upstream_model, "path": str(path)},
+    )
+    await session.commit()
+
+    return {
+        "alias": definition.alias,
+        "path": str(path),
+        "created": not existing,
+        "registry_errors": snapshot.errors,
+        # Only this worker reloaded synchronously; the watcher covers the rest.
+        "propagation_seconds": state.settings.registry_reload_seconds,
+    }
+
+
+@router.delete("/models/{alias}")
+async def delete_model_definition(
+    alias: str,
+    request: Request,
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    removed = delete_model(state.settings.config_dir, alias)
+    if not removed:
+        raise GatewayError(ErrorCode.MODEL_NOT_FOUND, f"No registry file for '{alias}'.")
+    state.registry.reload()
+    await sync_model_projection(session, state)
+    await audit(session, request, actor, "model.delete", "model", alias)
+    await session.commit()
+    return {"alias": alias, "deleted": True}
+
+
+class ProbeIn(BaseModel):
+    base_url: str
+    upstream_model: str = ""
+    api_key_env: str = ""
+
+
+@router.post("/models/detect")
+async def detect_capabilities(
+    payload: ProbeIn,
+    actor: Principal = Depends(require_admin),
+) -> dict[str, Any]:
+    """Probe a backend and suggest capabilities (PRD FR-39).
+
+    The result is advisory. The admin confirms before anything is saved - the
+    gateway never flips a declared capability from a probe on its own.
+    """
+    api_key = os.environ.get(payload.api_key_env, "") if payload.api_key_env else ""
+    result = await probe_backend(payload.base_url, payload.upstream_model, api_key)
+    return {"suggestion": result.to_dict(), "confirmed": False}
+
+
+# ---------------------------------------------------------------------------
+# Console-triggered test runs
+# ---------------------------------------------------------------------------
+@router.post("/models/{alias}/test", status_code=202)
+async def start_model_test(
+    alias: str,
+    request: Request,
+    only: str = Query("", description="comma-separated test ids"),
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """Kick off MODEL-001..010 in the background and return a run id."""
+    if alias not in state.registry.snapshot.models:
+        raise GatewayError(ErrorCode.MODEL_NOT_FOUND, f"Unknown model '{alias}'.")
+
+    selected = {t.strip().upper() for t in only.split(",") if t.strip()} or None
+    run = ModelTestRun(
+        model_alias=alias,
+        status="running",
+        actor_user_id=actor.user_id,
+        total=len(selected or ModelTestSuite.ALL_TESTS),
+        completed=0,
+        results=[],
+    )
+    session.add(run)
+    await audit(session, request, actor, "model.test", "model", alias)
+    await session.commit()
+
+    # The suite drives the public API, so it needs a usable key. The caller's own
+    # key is exactly the right authority; it is held in memory for the run only
+    # and never written anywhere.
+    api_key = extract_bearer_token(request)
+    # Deliberately the server's own address, not request.base_url: the console
+    # may be reached through a proxy or port-forward whose hostname means
+    # nothing on this host.
+    base_url = state.settings.self_base_url
+
+    asyncio.create_task(
+        _execute_test_run(run.id, alias, base_url, api_key, selected),
+        name=f"model-test-{alias}",
+    )
+    return {"run_id": run.id, "model": alias, "status": "running"}
+
+
+async def _execute_test_run(
+    run_id: str,
+    alias: str,
+    base_url: str,
+    api_key: str,
+    only: set[str] | None,
+) -> None:
+    suite = ModelTestSuite(base_url, api_key, alias)
+    collected: list[dict[str, Any]] = []
+
+    async def on_result(result) -> None:  # noqa: ANN001
+        collected.append(result.to_dict())
+        async with session_scope() as session:
+            run = await session.get(ModelTestRun, run_id)
+            if run is not None:
+                run.completed = len(collected)
+                run.results = list(collected)
+
+    try:
+        results = await suite.run(only=only, progress=on_result)
+        await suite.publish(results)
+        async with session_scope() as session:
+            run = await session.get(ModelTestRun, run_id)
+            if run is not None:
+                run.status = "done"
+                run.completed = len(results)
+                run.results = [r.to_dict() for r in results]
+                run.finished_at = utcnow()
+    except Exception as exc:
+        log.exception("model test run %s failed", run_id)
+        async with session_scope() as session:
+            run = await session.get(ModelTestRun, run_id)
+            if run is not None:
+                run.status = "error"
+                run.error = f"{type(exc).__name__}: {exc}"[:1000]
+                run.finished_at = utcnow()
+    finally:
+        await suite.aclose()
+
+
+@router.get("/test-runs/{run_id}")
+async def get_test_run(
+    run_id: str,
+    actor: Principal = Depends(require_instructor),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    run = await session.get(ModelTestRun, run_id)
+    if run is None:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "Unknown test run.")
+    return {
+        "run_id": run.id,
+        "model": run.model_alias,
+        "status": run.status,
+        "total": run.total,
+        "completed": run.completed,
+        "results": run.results or [],
+        "error": run.error,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+    }
+
+
 @router.get("/usage/summary")
 async def usage_summary(
     days: int = Query(7, ge=1, le=365),

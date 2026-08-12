@@ -268,6 +268,28 @@ class UsageLog(Base):
     cost_units: Mapped[float] = mapped_column(Float, default=0.0)
 
 
+class ModelTestRun(Base):
+    """A console-triggered MODEL-001..010 run.
+
+    Stored in the database rather than in process memory so that polling for
+    progress works when the poll lands on a different uvicorn worker than the
+    one executing the run.
+    """
+
+    __tablename__ = "model_test_runs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    model_alias: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running|done|error
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    actor_user_id: Mapped[str | None] = mapped_column(String(32))
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    completed: Mapped[int] = mapped_column(Integer, default=0)
+    results: Mapped[list] = mapped_column(JSON, default=list)
+    error: Mapped[str] = mapped_column(Text, default="")
+
+
 class AuditLog(Base):
     """Admin-plane mutations. Retained longer than usage."""
 
