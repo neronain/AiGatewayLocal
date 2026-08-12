@@ -417,6 +417,50 @@ Two things to know before promising it to anyone:
 
 ---
 
+## 5d. Enrolling a group
+
+A pilot is thirty or so people, each needing a user, a place in a workspace and
+a key. By hand that is ninety API calls, and the real risk is not tedium — it is
+stopping halfway, retrying, and ending up with duplicate users or members
+holding keys nobody can account for.
+
+```bash
+export LITEGATE_URL=https://gateway.uni.ac.th
+export LITEGATE_ADMIN_KEY=lg_sk_...
+
+python scripts/provision.py members.csv --workspace ai-101 --dry-run
+python scripts/provision.py members.csv --workspace ai-101 --out keys.csv
+```
+
+```csv
+external_id,display_name,email,role
+s6412345,Somchai P.,s6412345@uni.ac.th,member
+t0001,Dr Anong,anong@uni.ac.th,manager
+```
+
+**It is safe to run again.** An existing user is left alone, and a member who
+already holds a live key does not get a second one. Add five names to the file,
+run it, and five people are enrolled — which is what a pilot actually needs,
+because the list changes every week.
+
+The list is validated before anything is created: a duplicate `external_id`, a
+missing one, or an unknown role stops the run with nothing changed. Enrolling
+the good half leaves nobody able to say who is in and who is not.
+
+**Keys are written as each one is issued**, not gathered up and saved at the
+end. The gateway shows a key exactly once, so a failure after issuing thirty of
+them would destroy thirty credentials. The output path is opened before the
+first key is created, too, so an unwritable path fails while it is still free.
+
+`keys.csv` is created mode 600 and is a file full of credentials. Hand them out,
+then delete it. If one goes missing the member is not stuck: revoke it in the
+console and run the script again.
+
+It works through the admin API, not the database, so role checks, key format and
+the audit log all apply exactly as they would to a human doing it by hand.
+
+---
+
 ## 5c. TLS
 
 Some clients refuse plain HTTP outright, and any deployment carrying API keys
