@@ -870,12 +870,39 @@ correct it — the same treatment as a missing tool parser.
 | NFR-P4 | Validation rejection | < 10 ms, zero backend calls | FR-32 test |
 | NFR-A1 | Availability (gateway) | 99.5% in term time | `/readyz` monitoring |
 | NFR-A2 | One backend down | Traffic shifts within 45 s (3 × 15 s) | Chaos test |
-| NFR-A3 | Redis down | Falls back to DB counters, no request failures | Failure test |
+| NFR-A3 | Redis down | Falls back to DB counters, no request failures | Verified on staging: Redis stopped mid-traffic, requests keep returning 200 (§16.1) |
 | NFR-A4 | Bad registry edit | Previous snapshot retained; error on `/readyz` | Reload test |
 | NFR-S1 | Image memory | Bounded by `max_images × max_size` per request | Load test |
 | NFR-Q1 | Quota overrun under burst | ≤ in-flight × per-request cost | §8.1 |
 | NFR-O1 | Add a model | One YAML file + reload, no restart, no code change | Ops drill |
 | NFR-O2 | Deploy | Single command, < 10 min from clean host | DEPLOYMENT.md |
+
+---
+
+### 16.1 What was verified, and how
+
+An NFR nobody has exercised is a wish. These were run against the staging
+gateway on real Postgres and Redis, not reasoned about:
+
+| Claim | How it was tested | Result |
+|---|---|---|
+| Runs on PostgreSQL | Booted against Postgres 18, all 13 tables created, real chat request served | Pass |
+| Quota counters use Redis | Counter key appeared in Redis after one request | Pass |
+| **NFR-A3** — Redis down, no request failures | Stopped Redis mid-traffic, issued chat requests | **Failed first: HTTP 500.** Fixed, now passes |
+| Quota survives Redis restarting empty | `FLUSHALL`, then read the quota back | Pass — restored from the database |
+
+The NFR-A3 failure is worth recording because the code looked correct. The
+gateway pinged Redis at startup and installed either the Redis store or the
+database store for the life of the process, with a comment saying an outage
+must not take the gateway down. It handled the outage that already existed at
+boot, and no other: Redis dying an hour later left the Redis store in place and
+every request — not just quota reporting — returned 500.
+
+The store is now wrapped rather than chosen (`ResilientCounterStore`), failing
+over per call and marking Redis down for a cooldown so an outage does not cost
+a connection timeout on every request. On recovery, a Redis miss is refilled
+from the database, because a Redis that comes back empty would otherwise hand
+every member their whole quota back.
 
 ---
 

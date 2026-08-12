@@ -18,6 +18,7 @@ the database otherwise, which is correct for a single-worker deployment.
 from __future__ import annotations
 
 import logging
+import time
 from abc import ABC, abstractmethod
 from calendar import monthrange
 from dataclasses import dataclass
@@ -194,6 +195,103 @@ class RedisCounterStore(CounterStore):
         ttl = max(int((end - datetime.now(UTC)).total_seconds()), 60)
         pipe.expire(redis_key, ttl)
         await pipe.execute()
+
+
+class ResilientCounterStore(CounterStore):
+    """Redis while it answers, the database when it does not (NFR-A3).
+
+    The gateway used to decide once, at startup: ping Redis, and install either
+    the Redis store or the database store for the process lifetime. That covers
+    the outage that already exists when you boot, and nothing else. Redis dying
+    an hour later left the Redis store in place, and every request - every
+    request, not just quota reporting - failed with a 500.
+
+    Which is worse than it sounds, because Redis is here as an optimisation.
+    The database store is correct on its own; it is just slower and
+    single-writer. Losing the cache should cost latency, not availability.
+
+    Failing over per call would mean paying a connection timeout on every
+    request for as long as the outage lasts, so a failure marks Redis down for
+    `retry_seconds` and the calls in between go straight to the database.
+
+    **On recovery, counts written during the outage are not lost.** They went to
+    the database, which Redis knows nothing about, so the first Redis miss after
+    an outage consults the database and seeds Redis from it. Without that, a
+    Redis that restarts empty - a crash without persistence, an eviction, a
+    `FLUSHALL` - would hand every member their whole quota back. A quota that
+    resets itself whenever the cache hiccups is not a quota.
+
+    The reseed fires on a *miss*, so it does not cover the case where Redis
+    survives the outage holding a partial count: the two ledgers are then
+    disjoint and the total is under-reported by whatever was spent while Redis
+    was unreachable. That is deliberate. Merging them would need a distributed
+    lock to stop several workers merging the same rows, and the failure that
+    buys - double-counting, which blocks a member who has done nothing wrong -
+    is worse than the one it fixes. Under-counting is bounded by the length of
+    the outage and errs towards letting people work.
+    """
+
+    def __init__(
+        self,
+        redis_store: CounterStore,
+        database_store: CounterStore,
+        retry_seconds: float = 30.0,
+    ) -> None:
+        self._redis = redis_store
+        self._database = database_store
+        self._retry_seconds = retry_seconds
+        self._down_until = 0.0
+        # Set the first time we fall back, and never cleared: it marks that the
+        # database may hold counts Redis has never seen, which is what makes the
+        # reseed on a miss necessary rather than a permanent extra query.
+        self._database_has_counts = False
+
+    @property
+    def using_redis(self) -> bool:
+        return time.monotonic() >= self._down_until
+
+    def _mark_down(self, exc: Exception) -> None:
+        first = self.using_redis
+        self._down_until = time.monotonic() + self._retry_seconds
+        self._database_has_counts = True
+        if first:
+            # Once per outage, not once per request: a Redis outage under load
+            # would otherwise write more log than the outage is worth reading.
+            log.error(
+                "Redis unavailable (%s); quota counters fall back to the database "
+                "for %.0fs", exc, self._retry_seconds,
+            )
+
+    async def get(self, key: str, window: str) -> Consumption:
+        if self.using_redis:
+            try:
+                counted = await self._redis.get(key, window)
+            except Exception as exc:  # redis client raises its own hierarchy
+                self._mark_down(exc)
+            else:
+                if counted != Consumption() or not self._database_has_counts:
+                    return counted
+                # Redis has nothing for this window but an earlier outage may
+                # have put counts in the database. Take those and put them back
+                # into Redis so the next read is fast again.
+                stored = await self._database.get(key, window)
+                if stored != Consumption():
+                    try:
+                        await self._redis.increment(key, window, stored)
+                    except Exception as exc:
+                        self._mark_down(exc)
+                    log.info("reseeded Redis quota counters for %s from the database", key)
+                return stored
+        return await self._database.get(key, window)
+
+    async def increment(self, key: str, window: str, delta: Consumption) -> None:
+        if self.using_redis:
+            try:
+                await self._redis.increment(key, window, delta)
+                return
+            except Exception as exc:
+                self._mark_down(exc)
+        await self._database.increment(key, window, delta)
 
 
 class QuotaService:

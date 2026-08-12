@@ -7,7 +7,13 @@ import logging
 from fastapi import Request
 
 from app.config import Settings, get_settings
-from app.core.quota import CounterStore, DatabaseCounterStore, QuotaService, RedisCounterStore
+from app.core.quota import (
+    CounterStore,
+    DatabaseCounterStore,
+    QuotaService,
+    RedisCounterStore,
+    ResilientCounterStore,
+)
 from app.core.routing import Router
 from app.core.usage import UsageRecorder
 from app.db.session import get_sessionmaker
@@ -43,14 +49,20 @@ class AppState:
                     self.settings.redis_url, decode_responses=False
                 )
                 await self.redis.ping()
-                self.counter_store = RedisCounterStore(self.redis)
+                # Wrapped, not swapped in: choosing the store once at startup
+                # only survives the outage that already exists when you boot.
+                # Redis dying later left every request failing with a 500, which
+                # is a poor return on a component that is here for speed.
+                self.counter_store = ResilientCounterStore(
+                    RedisCounterStore(self.redis), DatabaseCounterStore(get_sessionmaker())
+                )
                 self.quota = QuotaService(
                     self.counter_store, self.registry.snapshot.gateway.quota_defaults
                 )
-                log.info("quota counters backed by Redis")
+                log.info("quota counters backed by Redis, with database fallback")
             except Exception as exc:
-                # A Redis outage must not take the gateway down; the database
-                # store is correct, just slower and single-writer.
+                # Redis is already down. The database store is correct on its
+                # own - slower and single-writer, but correct.
                 log.error("Redis unavailable (%s); using database counters", exc)
                 self.redis = None
 
