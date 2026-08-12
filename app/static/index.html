@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.8.2">
+<link rel="stylesheet" href="style.css?v=1.9.1">
 </head>
 <body>
 
@@ -64,18 +64,18 @@
   <!-- ================= My account ================= -->
   <section id="tab-account" class="stack" hidden>
     <div>
-      <h2>My quota</h2>
+      <h2><i class="hi">◴</i>My quota</h2>
       <div class="scroll"><table id="my-quota"></table></div>
     </div>
 
     <div>
-      <h2>Models I can use</h2>
+      <h2><i class="hi">◈</i>Models I can use</h2>
       <div id="my-models"></div>
     </div>
 
     <div>
       <div class="bar" style="margin-bottom:12px">
-        <h2 style="margin:0;flex:1">My API keys</h2>
+        <h2 style="margin:0;flex:1"><i class="hi">⚿</i>My API keys</h2>
         <span class="sub" id="key-count"></span>
         <button id="new-key" class="primary">+ New key</button>
       </div>
@@ -108,19 +108,19 @@
   <!-- ================= Dashboard ================= -->
   <section id="tab-dashboard" class="stack">
     <div>
-      <h2>My quota</h2>
+      <h2><i class="hi">◴</i>My quota</h2>
       <div class="scroll"><table id="quota"></table></div>
     </div>
     <div>
-      <h2>Available AI models</h2>
+      <h2><i class="hi">◈</i>Available AI models</h2>
       <div id="catalog"></div>
     </div>
     <div id="health-wrap" hidden>
-      <h2>Backend health</h2>
+      <h2><i class="hi">♥</i>Backend health</h2>
       <div class="scroll"><table id="health"></table></div>
     </div>
     <div id="usage-wrap" hidden>
-      <h2>Usage (7 days)</h2>
+      <h2><i class="hi">▤</i>Usage (7 days)</h2>
       <div class="scroll"><table id="usage"></table></div>
     </div>
   </section>
@@ -129,7 +129,7 @@
   <section id="tab-models" class="stack" hidden>
     <div>
       <div class="bar" style="margin-bottom:12px">
-        <h2 style="margin:0;flex:1">Registered models</h2>
+        <h2 style="margin:0;flex:1"><i class="hi">◈</i>Registered models</h2>
         <button id="verify-all" class="ghost">Verify backends</button>
         <button id="new-model" class="primary">+ Add model</button>
         <button id="reload-registry" class="ghost">Reload registry</button>
@@ -165,7 +165,7 @@
 
       <div class="field">
         <label for="m-desc">Description shown in the catalogue</label>
-        <input id="m-desc" placeholder="โมเดลเขียนโค้ด เรียก tool ได้" autocomplete="off">
+        <input id="m-desc" placeholder="Writes code, can call tools" autocomplete="off">
       </div>
 
       <div class="field">
@@ -173,7 +173,7 @@
         <input id="m-upstream" placeholder="Qwen3-Coder-30B-A3B-Instruct" autocomplete="off">
       </div>
 
-      <h2 style="margin-top:20px">Backends</h2>
+      <h2 style="margin-top:20px"><i class="hi">⇄</i>Backends</h2>
       <p class="hint" style="margin:-6px 0 10px">
         More than one backend gives this alias failover: the highest priority
         healthy one wins, and traffic shifts automatically when it goes down.
@@ -181,7 +181,7 @@
       <div id="endpoints"></div>
       <button id="add-endpoint" class="ghost small">+ Add backend</button>
 
-      <h2 style="margin-top:22px">Capabilities</h2>
+      <h2 style="margin-top:22px"><i class="hi">◇</i>Capabilities</h2>
       <div class="field">
         <label>Confirm before saving — detection is a suggestion, not a decision</label>
         <div class="checks">
@@ -267,7 +267,7 @@
     </div>
 
     <div>
-      <h2>API keys</h2>
+      <h2><i class="hi">⚿</i>API keys</h2>
       <div class="scroll"><table id="key-table"></table></div>
     </div>
 
@@ -314,7 +314,7 @@
     </div>
 
     <div>
-      <h2>Workspaces — allowed models</h2>
+      <h2><i class="hi">⌂</i>Workspaces — allowed models</h2>
       <div class="scroll"><table id="workspace-table"></table></div>
     </div>
   </section>
@@ -322,7 +322,7 @@
   <!-- ================= Assistant ================= -->
   <section id="tab-assistant" class="stack" hidden>
     <div class="card">
-      <h2>Console assistant</h2>
+      <h2><i class="hi">◐</i>Console assistant</h2>
       <p class="hint">
         The model that answers in the chat panel. It is an ordinary caller: it uses
         the asker&#39;s permissions and spends the asker&#39;s quota.
@@ -339,7 +339,7 @@
     </div>
 
     <div class="card">
-      <h2>Deploy tool</h2>
+      <h2><i class="hi">⚙</i>Deploy tool</h2>
       <p class="hint">
         Optional. Connect the LMDS that deployed these backends and verification
         findings gain an <b>Apply via LMDS</b> button, instead of a command you
@@ -362,7 +362,7 @@
     </div>
 
     <div class="card">
-      <h2>Suitability</h2>
+      <h2><i class="hi">✓</i>Suitability</h2>
       <p class="hint">
         Judged from the registry and the test suite, not from model names. The
         assistant&#39;s prompt is mostly system state and grows with the deployment,
@@ -421,12 +421,12 @@
     </div>
 
     <div>
-      <h2>Active policies</h2>
+      <h2><i class="hi">◴</i>Active policies</h2>
       <div class="scroll"><table id="quota-table"></table></div>
     </div>
 
     <div>
-      <h2>Heaviest users (7 days)</h2>
+      <h2><i class="hi">▲</i>Heaviest users (7 days)</h2>
       <div class="scroll"><table id="top-users"></table></div>
     </div>
   </section>
@@ -519,6 +519,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.8.2"></script>
+<script src="app.js?v=1.9.1"></script>
 </body>
 </html>

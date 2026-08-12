@@ -344,3 +344,15 @@ nav button[aria-selected="true"] .ti { opacity: 1; }
 .form-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
 .form-row .field { flex: 1 1 200px; margin: 0; }
 .form-row button { flex: 0 0 auto; }
+
+/* Section headings carry an icon for the same reason the tabs do: it is what
+   people navigate by once they know the console, and unlike the words it is
+   the same in every language this gets deployed into. */
+h2 .hi, h3 .hi {
+  font-style: normal; margin-right: 7px; opacity: .8;
+  /* Headings are uppercase with wide tracking, which shrinks a glyph visually.
+     Sized up to compensate, and the tracking removed so the icon sits against
+     the word rather than drifting away from it. */
+  font-size: 1.05em; letter-spacing: 0; color: var(--c2);
+  font-variant-emoji: text;
+}
