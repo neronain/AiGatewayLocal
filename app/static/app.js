@@ -89,7 +89,10 @@ function showTab(name) {
   for (const sec of document.querySelectorAll('main > section')) {
     sec.hidden = sec.id !== `tab-${name}`;
   }
-  const loaders = { account: loadAccount, models: loadModels, access: loadAccess, quota: loadQuota };
+  const loaders = {
+    account: loadAccount, models: loadModels, assistant: loadAssistant,
+    access: loadAccess, quota: loadQuota,
+  };
   if (loaders[name]) loaders[name]().catch((e) => showError(e.message));
 }
 for (const btn of document.querySelectorAll('#tabs button')) {
@@ -603,6 +606,64 @@ $('verify-all').onclick = async () => {
 };
 
 /* --------------------------------------------------------- access & keys */
+// ---------------------------------------------------------------------------
+// Assistant: which model answers in the chat panel, and how well it would
+// ---------------------------------------------------------------------------
+function fitTag(fit) {
+  if (!fit.usable) return '<span class="pill err">Cannot be used</span>';
+  if (fit.reasons.some((r) => r.kind === 'warning')) return '<span class="pill warn">Usable</span>';
+  return '<span class="pill ok">Good fit</span>';
+}
+
+async function loadAssistant() {
+  const data = await api('/admin/assistant');
+
+  // The dropdown lists only what can actually be chosen. The cards below list
+  // everything, so a model missing from the dropdown still explains itself.
+  const options = data.candidates.filter((c) => c.usable);
+  const auto = data.automatic_choice
+    ? `Automatic — currently ${data.automatic_choice}`
+    : 'Automatic — no model qualifies yet';
+  $('as-model').innerHTML = [
+    `<option value="">${esc(auto)}</option>`,
+    ...options.map((c) =>
+      `<option value="${esc(c.alias)}"${c.alias === data.pinned ? ' selected' : ''}>` +
+      `${esc(c.display_name)} (${esc(c.alias)})</option>`),
+  ].join('');
+
+  const source = {
+    console: 'pinned here in the console',
+    environment: 'set at deploy time by GW_ASSISTANT_MODEL',
+    automatic: 'chosen automatically from the ranking below',
+  }[data.source] || data.source;
+  $('as-current').innerHTML = data.effective
+    ? `Answering with <code>${esc(data.effective)}</code> — ${esc(source)}.`
+    : 'No model can serve the assistant yet, so the chat panel is hidden.';
+
+  $('as-candidates').innerHTML = data.candidates.map((fit) => `
+    <div class="fit ${fit.usable ? '' : 'blocked'} ${fit.alias === data.effective ? 'picked' : ''}">
+      <div class="fit-head">
+        <b>${esc(fit.display_name)}</b>
+        <span class="alias">${esc(fit.alias)}</span>
+        ${fitTag(fit)}
+      </div>
+      <ul>${fit.reasons.map((r) => `<li class="${r.kind}">${esc(r.detail)}</li>`).join('')}</ul>
+    </div>`).join('');
+}
+
+$('as-save').onclick = async () => {
+  try {
+    await api('/admin/assistant', {
+      method: 'PUT',
+      body: JSON.stringify({ alias: $('as-model').value }),
+    });
+    await loadAssistant();
+    // The panel picks its model when it boots, so a change here does not reach
+    // an already-open chat until it asks again.
+    await initAssistant();
+  } catch (e) { showError(e.message); }
+};
+
 async function loadAccess() {
   const [users, workspaces, keys] = await Promise.all([
     api('/admin/users'), api('/admin/workspaces'), api('/admin/api-keys'),

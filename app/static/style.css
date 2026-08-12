@@ -303,3 +303,32 @@ dialog::backdrop { background: color-mix(in srgb, #000 45%, transparent); backdr
 .chat-input { display: flex; gap: 8px; padding: 12px 14px 6px; border-top: 1px solid var(--line); }
 .chat-input textarea { resize: none; font-family: var(--sans); font-size: 13.5px; }
 .chat-foot { padding: 0 14px 12px; margin: 0; }
+
+/* ── Tab icons and bilingual help ─────────────────────────────────────────── */
+/* Menus are English so the console reads the same in every deployment; the
+   explanation underneath may be Thai. The icon is what people navigate by once
+   they know the console, and it survives translation. */
+nav button .ti {
+  margin-right: 6px; opacity: .75; font-size: 13px;
+  font-variant-emoji: text;   /* keep the glyphs monochrome next to the label */
+}
+nav button[aria-selected="true"] .ti { opacity: 1; }
+.hint .th { display: block; margin-top: 3px; color: var(--fg3); }
+
+/* ── Assistant suitability ────────────────────────────────────────────────── */
+.fit {
+  padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r);
+  background: var(--card);
+}
+.fit.picked { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.fit.blocked { opacity: .72; }
+.fit-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.fit-head b { font-size: 14px; }
+.fit-head .alias { font-family: var(--mono, ui-monospace, monospace); font-size: 12px; color: var(--fg2); }
+.fit-head .pill { margin-left: auto; }
+.fit ul { margin: 8px 0 0; padding-left: 18px; }
+.fit li { font-size: 12.5px; line-height: 1.6; color: var(--fg2); }
+.fit li.good::marker { color: var(--ok); }
+.fit li.warning::marker { color: var(--warn); }
+.fit li.blocker::marker { color: var(--bad); }
+.fit li.blocker { color: var(--fg); }

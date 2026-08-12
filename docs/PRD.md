@@ -772,6 +772,7 @@ as every other caller.
 | FR-51 | Assistant context is scoped to the caller's role — a member's assistant sees only their own quota and permitted models |
 | FR-52 | Assistant requests go through the normal pipeline: capability gate, quota, routing, usage |
 | FR-53 | The assistant is hidden, not broken, when no chat model is available to the caller |
+| FR-54 | An administrator can change the assistant's model, and see why each candidate does or does not suit the role |
 
 ### 15.2 Why it is not a side door
 
@@ -809,7 +810,45 @@ no-store default requires. The cost is that history does not follow a user
 between devices — the right trade for a tool whose whole subject is the state
 of the machine in front of you.
 
-### 15.5 Reasoning models
+### 15.5 Choosing the model
+
+The assistant asks something unusual of a model. Its prompt is mostly *state* —
+the catalogue, the caller's quota, backend health — and grows with the
+deployment, while the answers it should give are short and are read in a small
+panel beside whatever the operator was already doing.
+
+None of that is visible from a model's name, and most is not visible from its
+capability flags either. `app/core/assistant_fit.py` judges each candidate from
+the registry entry and the compatibility record the test suite writes:
+
+| Signal | Effect |
+|---|---|
+| No chat capability, or the suite could not get a reply | Blocker |
+| Context below 16K | Blocker — the state block alone can reach ~12K |
+| Context at or above 32K | Best score |
+| Plain chat model | Strongly preferred |
+| Reasoning model, `reasoning_separated` untested or failing | Penalised, with the `--reasoning-parser` fix named |
+| Purpose `general`/`fast` | Preferred over a specialist |
+| Backend currently unhealthy | Penalised, never disqualified — health changes by the minute |
+
+`GET /admin/assistant` returns every candidate ranked with its reasons;
+`PUT /admin/assistant` pins one or clears the pin. **The pin is refused if the
+model cannot serve the role**, with the failing check named — accepting it would
+produce a visibly broken chat box whose owner is the last to find out.
+
+Candidates are ranked, not filtered. "Why can I not pick that one?" is a
+question operators actually ask, and a model missing from a list answers it with
+silence.
+
+The same ranking drives the automatic choice, so the console never recommends
+one model while quietly running another.
+
+The pin lives in `gateway_settings`, not in the environment: four uvicorn
+workers cannot share a variable, and a console setting that needs a file edit
+and a restart is not a console setting. `GW_ASSISTANT_MODEL` remains the way to
+set a deploy-time default.
+
+### 15.6 Reasoning models
 
 A model started without vLLM's `--reasoning-parser` puts its chain of thought in
 `content` instead of `reasoning_content`, so the narration arrives mixed into
@@ -872,7 +911,7 @@ FR-38 Multimodal usage dashboard · FR-12 Uploaded image · FR-14 PDF input
 
 **P3** — FR-40 Automatic model selection (`model=auto`) · FR-29 Video
 
-**Console assistant** — FR-50 Grounded in live state · FR-51 Role-scoped context · FR-52 Same pipeline as any caller · FR-53 Hidden when no model is available
+**Console assistant** — FR-50 Grounded in live state · FR-51 Role-scoped context · FR-52 Same pipeline as any caller · FR-53 Hidden when no model is available · FR-54 Administrator-selectable model with a suitability check
 
 ---
 

@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import assistant_fit
 from app.core.auth import (
     Principal,
     extract_bearer_token,
@@ -24,8 +25,10 @@ from app.core.capability import compatibility_badges, upstream_model_for
 from app.core.errors import ErrorCode, GatewayError
 from app.core.modeltest import ModelTestSuite, probe_backend, resolve_commands
 from app.db.models import (
+    ASSISTANT_MODEL_KEY,
     ApiKey,
     AuditLog,
+    GatewaySetting,
     Membership,
     ModelCompatibility,
     ModelRecord,
@@ -659,6 +662,130 @@ async def registry_status(
         "reload_seconds": state.settings.registry_reload_seconds,
         "errors": state.registry.snapshot.errors,
     }
+
+
+# ---------------------------------------------------------------------------
+# Console assistant
+# ---------------------------------------------------------------------------
+class AssistantModelIn(BaseModel):
+    # Empty means "choose automatically", which is a valid answer and the
+    # default. It is not the same as "no assistant".
+    alias: str = Field(default="", max_length=64)
+
+
+@router.get("/assistant")
+async def assistant_settings(
+    actor: Principal = Depends(require_admin),
+    state: AppState = Depends(get_state),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """What the assistant runs on, and how well every candidate would suit it.
+
+    Candidates are ranked, not filtered: "why can I not pick that one?" is a
+    question an operator actually asks, and a model missing from the list
+    answers it with silence. Unusable ones come with the blocker that made them
+    unusable.
+    """
+    snapshot = state.registry.snapshot
+    candidates = [m for m in snapshot.models.values() if m.spec.capabilities.chat]
+
+    health: dict[str, bool] = {}
+    for entry in state.router.health_report().values():
+        alias = entry["model"]
+        # A model with several endpoints is healthy if any endpoint is - that
+        # is what routing will do with the next request.
+        health[alias] = health.get(alias, False) or bool(entry["healthy"])
+
+    compatibility = await _compatibility_by_alias(session)
+    ranked = assistant_fit.rank(candidates, health=health, compatibility=compatibility)
+
+    row = await session.get(GatewaySetting, ASSISTANT_MODEL_KEY)
+    pinned = row.value if row is not None else ""
+    if row is not None and row.value:
+        source = "console"
+    elif row is not None:
+        # An administrator cleared the pin, which is a decision: it means
+        # "choose automatically" and it deliberately overrides the deploy-time
+        # variable. Reporting "console" here would be true but useless - the
+        # question the field answers is *what is choosing the model*.
+        source = "automatic"
+    elif state.settings.assistant_model:
+        # Set at deploy time via GW_ASSISTANT_MODEL. Shown as such so nobody
+        # hunts for a console setting that was never made here.
+        source, pinned = "environment", state.settings.assistant_model
+    else:
+        source = "automatic"
+
+    automatic = next((fit.alias for fit in ranked if fit.usable), None)
+    return {
+        "pinned": pinned,
+        "source": source,
+        "effective": pinned or automatic,
+        "automatic_choice": automatic,
+        "candidates": [fit.to_dict() for fit in ranked],
+    }
+
+
+@router.put("/assistant")
+async def set_assistant_model(
+    payload: AssistantModelIn,
+    request: Request,
+    actor: Principal = Depends(require_admin),
+    state: AppState = Depends(get_state),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Pin the assistant to an alias, or clear the pin to choose automatically.
+
+    Refuses an alias that cannot serve the role, and says which check it failed.
+    Accepting it would produce a chat box that is visibly broken with no
+    explanation, and the person who set it would be the last to find out.
+    """
+    alias = payload.alias.strip()
+    if alias:
+        model = state.registry.snapshot.models.get(alias)
+        if model is None:
+            raise GatewayError(ErrorCode.MODEL_NOT_FOUND, f"No model with alias '{alias}'.")
+        compatibility = await _compatibility_by_alias(session)
+        fit = assistant_fit.assess(model, compatibility=compatibility.get(alias))
+        if not fit.usable:
+            raise GatewayError(
+                ErrorCode.INVALID_REQUEST,
+                f"'{alias}' cannot serve as the assistant: "
+                + " ".join(reason.detail for reason in fit.blockers),
+            )
+
+    row = await session.get(GatewaySetting, ASSISTANT_MODEL_KEY)
+    if row is None:
+        row = GatewaySetting(key=ASSISTANT_MODEL_KEY)
+        session.add(row)
+    row.value = alias
+    row.updated_at = utcnow()
+    row.updated_by = actor.user_id
+    await audit(
+        session, request, actor, "assistant.model", "setting", ASSISTANT_MODEL_KEY,
+        {"alias": alias or "(automatic)"},
+    )
+    await session.commit()
+    return await assistant_settings(actor=actor, state=state, session=session)
+
+
+async def _compatibility_by_alias(session: AsyncSession) -> dict[str, dict[str, str]]:
+    """Test-suite verdicts, keyed by alias then feature.
+
+    One query rather than one per model: the console asks for this every time
+    the assistant tab opens, and a fleet of thirty models would otherwise mean
+    thirty round trips to render one list.
+    """
+    rows = (
+        await session.execute(
+            select(ModelRecord.alias, ModelCompatibility.feature, ModelCompatibility.status)
+            .join(ModelCompatibility, ModelCompatibility.model_id == ModelRecord.id)
+        )
+    ).all()
+    by_alias: dict[str, dict[str, str]] = {}
+    for alias, feature, status in rows:
+        by_alias.setdefault(alias, {})[feature] = status
+    return by_alias
 
 
 @router.post("/models/preview")

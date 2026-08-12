@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.6.3">
+<link rel="stylesheet" href="style.css?v=1.7.0">
 </head>
 <body>
 
@@ -22,11 +22,12 @@
       <button id="theme" class="ghost" title="Switch theme">◐</button>
     </div>
     <nav id="tabs" role="tablist">
-      <button data-tab="dashboard" role="tab" aria-selected="true">Dashboard</button>
-      <button data-tab="account"   role="tab" aria-selected="false">My account</button>
-      <button data-tab="models"    role="tab" aria-selected="false" data-admin>Models</button>
-      <button data-tab="access"    role="tab" aria-selected="false" data-staff>Access &amp; Keys</button>
-      <button data-tab="quota"     role="tab" aria-selected="false" data-staff>Quota</button>
+      <button data-tab="dashboard" role="tab" aria-selected="true"><span class="ti" aria-hidden="true">▦</span>Dashboard</button>
+      <button data-tab="account"   role="tab" aria-selected="false"><span class="ti" aria-hidden="true">●</span>My account</button>
+      <button data-tab="models"    role="tab" aria-selected="false" data-admin><span class="ti" aria-hidden="true">◈</span>Models</button>
+      <button data-tab="assistant" role="tab" aria-selected="false" data-admin><span class="ti" aria-hidden="true">◐</span>Assistant</button>
+      <button data-tab="access"    role="tab" aria-selected="false" data-staff><span class="ti" aria-hidden="true">⚿</span>Access &amp; Keys</button>
+      <button data-tab="quota"     role="tab" aria-selected="false" data-staff><span class="ti" aria-hidden="true">◴</span>Quota</button>
     </nav>
   </div>
 </header>
@@ -318,6 +319,37 @@
     </div>
   </section>
 
+  <!-- ================= Assistant ================= -->
+  <section id="tab-assistant" class="stack" hidden>
+    <div class="card">
+      <h2>Console assistant</h2>
+      <p class="hint">
+        The model that answers in the chat panel. It is an ordinary caller: it uses
+        the asker&#39;s permissions and spends the asker&#39;s quota.
+        <span class="th">โมเดลที่ตอบในกล่องแชท — ใช้สิทธิ์และโควตาของคนถามเหมือน request ปกติ</span>
+      </p>
+      <div class="row" style="margin-top:14px;align-items:flex-end">
+        <div class="field" style="flex:1">
+          <label for="as-model">Model</label>
+          <select id="as-model"></select>
+        </div>
+        <button id="as-save" class="primary">Save</button>
+      </div>
+      <p id="as-current" class="hint" style="margin-top:10px"></p>
+    </div>
+
+    <div class="card">
+      <h2>Suitability</h2>
+      <p class="hint">
+        Judged from the registry and the test suite, not from model names. The
+        assistant&#39;s prompt is mostly system state and grows with the deployment,
+        so context headroom matters more here than raw capability.
+        <span class="th">ตัดสินจากข้อมูลที่วัดจริง ไม่ใช่จากชื่อโมเดล</span>
+      </p>
+      <div id="as-candidates" class="stack" style="margin-top:12px"></div>
+    </div>
+  </section>
+
   <!-- ================= Quota ================= -->
   <section id="tab-quota" class="stack" hidden>
     <div class="card">
@@ -464,6 +496,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.6.3"></script>
+<script src="app.js?v=1.7.0"></script>
 </body>
 </html>

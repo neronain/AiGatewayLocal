@@ -366,6 +366,29 @@ carrying over; users and keys should be re-issued).
 
 ---
 
+## 5a. Where the models come from
+
+LiteGate serves models; it does not start them. Whatever started the backend —
+a shell script, Ansible, or **[LMDS](https://github.com/neronain/AutoDeployDGXProject)**,
+the deploy tool built alongside this one — LiteGate needs only a reachable
+OpenAI-compatible URL.
+
+If you run LMDS too, three optional links are worth setting up:
+
+1. Put `managed_by` on each endpoint so LiteGate's advice names a runnable
+   command instead of `./<controller>.sh`.
+2. Point LMDS's brain at this gateway, so its planning and its chat panel run on
+   your own models:
+   ```bash
+   lmds config set-provider openai-compat --base-url http://litegate:8080/v1 --model general
+   ```
+3. Act on `tools_flag_missing` and `reasoning_not_separated` findings with
+   LMDS's `restart --tool-parser` / `--reasoning-parser`, then re-run the suite.
+
+Neither system requires the other. Install one, or both.
+
+---
+
 ## 5b. The console assistant
 
 Nothing to install: the assistant uses the models already in the registry, so it

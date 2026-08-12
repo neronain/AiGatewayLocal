@@ -175,9 +175,28 @@ quota, and show up in usage. Conversation history stays in the browser tab and
 is never written server-side.
 
 The box hides itself when no chat model is available to you — a chat box that
-always answers "no backend" is worse than no chat box. Set `GW_ASSISTANT_MODEL`
-to pin a specific alias; by default it picks the best general chat model the
-caller is allowed to use.
+always answers "no backend" is worse than no chat box.
+
+**Choosing the model.** The *Assistant* tab ranks every chat model for this
+particular job and says why. The assistant's prompt is mostly system state and
+grows with your fleet, while its answers are short and read in a small panel, so
+context headroom and *not narrating* matter more here than raw capability:
+
+```
+  coder-next   Good fit   131,222-token context — room for state and history.
+                          Plain chat model — answers without narrating.
+                          Backend is healthy.
+  general      Usable     16,384-token context works today, but the state block
+                          grows with the fleet. Watch it as you add models.
+                          Reasoning model, and nobody has tested whether this
+                          backend separates the chain of thought.
+  embed-only   Cannot     Does not serve chat, so it cannot hold a conversation.
+```
+
+Pick one from the dropdown or leave it on *Automatic*, which uses the same
+ranking. A model that cannot serve the role is refused with the failing check
+named, rather than accepted into a chat box that visibly does not work.
+`GW_ASSISTANT_MODEL` still sets a deploy-time default.
 
 > **Reasoning models** narrate unless the backend was started with vLLM's
 > `--reasoning-parser`. The console strips what it recognises, but the real fix
@@ -280,6 +299,36 @@ endpoints:
 works without it. It only decides whether a finding names a command you can
 paste or one you have to translate.
 
+### LMDS — the deploy side of the pair
+
+**[LMDS (Local Model Deploy Studio)](https://github.com/neronain/AutoDeployDGXProject)**
+is the other half: it downloads weights, generates the launch bundle, and runs
+the model on your own machines. LiteGate is the serving and verification side.
+
+Neither depends on the other:
+
+| You install | You get |
+|---|---|
+| LMDS alone | Models deployed and running on your hardware, with its own console and its own assistant |
+| LiteGate alone | One endpoint, keys, quota and capability verification in front of backends you started any way you like |
+| **Both** | The loop closes — LMDS deploys, LiteGate measures what the running server actually does and names the exact command to fix it, and either console's assistant can answer from the state of both |
+
+The two meet in three places, all optional:
+
+* **`managed_by`** on an endpoint turns LiteGate's advice from a placeholder
+  into a command you can paste.
+* **LMDS's brain** can point at LiteGate instead of a cloud provider, so model
+  planning and both chat panels run on your own hardware:
+  ```bash
+  lmds config set-provider openai-compat --base-url http://litegate:8080/v1 --model general
+  ```
+* **The tool and reasoning parsers** LiteGate reports as missing are exactly the
+  knobs LMDS exposes with `restart --tool-parser` and `test-tools`.
+
+Nothing here is a dependency. A university that only wants to run models
+installs LMDS; a company that already has backends installs LiteGate; the ones
+who install both get the parts that only exist between them.
+
 ## Documentation
 
 | Document | Contents |
@@ -289,6 +338,9 @@ paste or one you have to translate.
 | **[API.md](docs/API.md)** | Full endpoint reference with examples |
 | **[DEPLOYMENT.md](docs/DEPLOYMENT.md)** | Docker / systemd / staging, operations, troubleshooting |
 | [PRD-v1.2-Addendum.md](docs/PRD-v1.2-Addendum.md) | The original v1.2 addendum, preserved verbatim |
+
+**Related project** — [LMDS · AutoDeployDGXProject](https://github.com/neronain/AutoDeployDGXProject),
+the deploy side of the pair. Works alone; works better alongside this.
 
 ---
 

@@ -30,8 +30,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.openai import run_chat
+from app.core import assistant_fit
 from app.core.auth import Principal, authenticate
 from app.core.errors import ErrorCode, GatewayError
+from app.db.models import ASSISTANT_MODEL_KEY, GatewaySetting
 from app.db.session import get_session
 from app.registry.schema import ModelDefinition
 from app.state import AppState, get_state
@@ -74,34 +76,68 @@ class AssistantRequest(BaseModel):
     messages: list[AssistantMessage] = Field(min_length=1, max_length=MAX_TURNS * 2)
 
 
-def _pick_model(state: AppState, principal: Principal) -> ModelDefinition | None:
+async def configured_alias(state: AppState, session: AsyncSession) -> str:
+    """The alias an administrator pinned, if any.
+
+    The console setting wins over the environment variable: someone changing it
+    in the UI expects that to take effect, and being silently overridden by a
+    file they cannot see from there is the worst kind of surprise. The variable
+    remains the way to set a default at deploy time.
+    """
+    row = await session.get(GatewaySetting, ASSISTANT_MODEL_KEY)
+    if row is not None:
+        return row.value
+    return state.settings.assistant_model
+
+
+def _pick_model(
+    state: AppState, principal: Principal, configured: str = ""
+) -> ModelDefinition | None:
     """The model the assistant will use.
 
-    Configured alias first; otherwise the most capable chat model this caller is
+    Pinned alias first; otherwise the best-fitting chat model this caller is
     allowed to use. Never a model they cannot use themselves - the assistant
     must not be a side door to a restricted model.
+
+    The ranking is `assistant_fit.rank()`, the same one the admin console shows.
+    An automatic choice the console cannot explain is one nobody can debug.
     """
     snapshot = state.registry.snapshot
     allowed = [m for m in snapshot.visible_to(principal.role) if m.spec.capabilities.chat]
     if not allowed:
         return None
 
-    configured = state.settings.assistant_model
     if configured:
+        # A pinned alias the caller may not use is not silently replaced: that
+        # would hide a permission problem behind a working chat box.
         return next((m for m in allowed if m.alias == configured), None)
 
-    # Prefer something meant for general use, then the largest context: the
-    # assistant's prompt carries state and grows with the deployment.
-    def rank(model: ModelDefinition) -> tuple[int, int, int]:
-        general = any(p.value in ("general", "fast") for p in model.spec.purpose)
-        # A reasoning model spends its output budget thinking out loud, which in
-        # a chat panel is noise the reader has to scroll past. Prefer a plain
-        # chat model when there is one; fall back to reasoning rather than
-        # having no assistant at all.
-        plain = not model.spec.capabilities.reasoning
-        return (1 if general else 0, 1 if plain else 0, model.spec.limits.context_tokens)
+    by_alias = {m.alias: m for m in allowed}
+    health = {
+        alias: bool(entry["healthy"])
+        for alias, entry in _health_by_alias(state).items()
+        if alias in by_alias
+    }
+    ranked = assistant_fit.rank(allowed, health=health)
+    usable = [fit for fit in ranked if fit.usable]
+    if not usable:
+        return None
+    return by_alias[usable[0].alias]
 
-    return max(allowed, key=rank)
+
+def _health_by_alias(state: AppState) -> dict[str, dict]:
+    """Router health keyed by alias rather than by endpoint.
+
+    A model with several endpoints counts as healthy if any of them is: that is
+    what routing will do with the next request.
+    """
+    merged: dict[str, dict] = {}
+    for entry in state.router.health_report().values():
+        alias = entry["model"]
+        current = merged.get(alias)
+        if current is None or entry["healthy"]:
+            merged[alias] = entry
+    return merged
 
 
 async def _gather_state(
@@ -163,18 +199,28 @@ async def _gather_state(
 async def assistant_status(
     principal: Principal = Depends(authenticate),
     state: AppState = Depends(get_state),
+    session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Whether to show the assistant at all.
 
     It is hidden rather than broken when there is no model to talk to: a chat
     box that always answers "no backend" is worse than no chat box.
     """
-    model = _pick_model(state, principal)
+    configured = await configured_alias(state, session)
+    model = _pick_model(state, principal, configured)
+    if model is None and configured:
+        reason = (
+            f"The assistant is pinned to '{configured}', which is not available to your "
+            "account. Ask an administrator to change it."
+        )
+    else:
+        reason = "No chat model is available to your account yet."
     return {
         "available": model is not None,
         "model": model.alias if model else None,
         "display_name": model.metadata.display_name if model else None,
-        "reason": None if model else "No chat model is available to your account yet.",
+        "pinned": bool(configured),
+        "reason": None if model else reason,
     }
 
 
@@ -186,11 +232,15 @@ async def assistant_chat(
     state: AppState = Depends(get_state),
     session: AsyncSession = Depends(get_session),
 ):
-    model = _pick_model(state, principal)
+    configured = await configured_alias(state, session)
+    model = _pick_model(state, principal, configured)
     if model is None:
         raise GatewayError(
             ErrorCode.MODEL_NOT_FOUND,
-            "No chat model is available to your account. Ask an administrator to "
+            f"The assistant is pinned to '{configured}', which is not available to your "
+            "account. Ask an administrator to change it."
+            if configured
+            else "No chat model is available to your account. Ask an administrator to "
             "enable one, or deploy one with your model deployment tool.",
         )
 

@@ -286,6 +286,48 @@ network at the proxy (SEC-5).
 > request.** With multiple uvicorn workers, the file-watcher
 > (`GW_REGISTRY_RELOAD_SECONDS`) is what propagates a change to all of them.
 
+### `GET /admin/assistant`
+
+Which model the console assistant uses, and how well every chat model would suit
+the role.
+
+```json
+{
+  "pinned": "",
+  "source": "automatic",
+  "effective": "coder-next",
+  "automatic_choice": "coder-next",
+  "candidates": [
+    {
+      "alias": "coder-next", "display_name": "Coder Next", "usable": true, "score": 90,
+      "reasons": [
+        { "kind": "good", "detail": "131,222-token context — room for state and history." },
+        { "kind": "good", "detail": "Plain chat model — answers without narrating." }
+      ]
+    }
+  ]
+}
+```
+
+`source` is `console`, `environment` or `automatic`. Candidates are ranked, not
+filtered: an unusable model stays in the list carrying the `blocker` reason that
+made it unusable.
+
+### `PUT /admin/assistant`
+
+```json
+{ "alias": "coder-next" }
+```
+
+An empty `alias` clears the pin and returns to the automatic choice. Returns the
+same body as `GET`.
+
+Refuses (`400`) an alias that cannot serve the role, naming the failing check —
+no chat capability, a context window too small for the state block, or a chat
+test the suite could not pass. `404` for an unknown alias.
+
+---
+
 ### `POST /admin/api-keys`
 
 ```json

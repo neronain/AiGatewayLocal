@@ -313,6 +313,32 @@ class ModelTestRun(Base):
     error: Mapped[str] = mapped_column(Text, default="")
 
 
+class GatewaySetting(Base):
+    """Runtime settings an administrator may change from the console.
+
+    Deliberately tiny and deliberately separate from `Settings`. Environment
+    variables are the operator's contract with the deployment - editing them
+    means editing a file and restarting - so anything the console can change at
+    runtime has to live somewhere the console can write and every worker can
+    read. Four uvicorn workers share this table; they cannot share a variable.
+
+    Not a general key-value store. Each key here is a decision someone made in
+    the UI, and it belongs in the audit log alongside every other admin change.
+    """
+
+    __tablename__ = "gateway_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_by: Mapped[str] = mapped_column(String(32), default="")
+
+
+# The alias the console assistant talks to. Empty means "choose automatically",
+# which is what a fresh install wants and what most stay on.
+ASSISTANT_MODEL_KEY = "assistant_model"
+
+
 class AuditLog(Base):
     """Admin-plane mutations. Retained longer than usage."""
 

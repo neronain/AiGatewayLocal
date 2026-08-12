@@ -235,3 +235,88 @@ def test_a_backend_that_separates_reasoning_gets_no_such_advice():
     result.capabilities["reasoning_separated"] = True
 
     assert not [a for a in build_advice(result) if a.issue == "reasoning_not_separated"]
+
+
+# ---------------------------------------------------------------------------
+# Choosing which model answers (FR-54)
+# ---------------------------------------------------------------------------
+def test_an_admin_sees_every_candidate_ranked(client):
+    body = client.get("/admin/assistant", headers=auth(client.admin_key)).json()
+
+    assert body["source"] == "automatic"
+    assert body["effective"] == body["automatic_choice"]
+    aliases = [c["alias"] for c in body["candidates"]]
+    assert len(aliases) > 1
+    # Every candidate explains itself; a bare score is not actionable.
+    assert all(c["reasons"] for c in body["candidates"])
+
+
+def test_pinning_a_model_changes_what_the_assistant_answers_with(client, member_key):
+    target = client.get("/v1/models", headers=auth(member_key)).json()["data"][0]["id"]
+
+    body = client.put(
+        "/admin/assistant", headers=auth(client.admin_key), json={"alias": target}
+    ).json()
+    assert body["pinned"] == target
+    assert body["source"] == "console"
+
+    status = client.get("/v1/assistant/status", headers=auth(member_key)).json()
+    assert status["model"] == target
+    assert status["pinned"] is True
+
+
+def test_clearing_the_pin_returns_to_choosing_automatically(client):
+    client.put("/admin/assistant", headers=auth(client.admin_key), json={"alias": "coding"})
+    body = client.put("/admin/assistant", headers=auth(client.admin_key), json={"alias": ""}).json()
+
+    assert body["pinned"] == ""
+    assert body["source"] == "automatic"
+    assert body["effective"] == body["automatic_choice"]
+
+
+def test_a_model_that_cannot_serve_the_role_is_refused_with_the_reason(client, admin_headers=None):
+    """Accepting it would produce a visibly broken chat box and no explanation."""
+    snapshot = client.app.state.services.registry.snapshot
+    model = next(iter(snapshot.models.values()))
+    original = model.spec.limits.context_tokens
+    model.spec.limits.context_tokens = 4096
+    try:
+        response = client.put(
+            "/admin/assistant", headers=auth(client.admin_key), json={"alias": model.alias}
+        )
+        assert response.status_code == 400
+        assert "state block" in response.json()["error"]["message"]
+    finally:
+        model.spec.limits.context_tokens = original
+
+
+def test_an_unknown_alias_is_refused(client):
+    response = client.put(
+        "/admin/assistant", headers=auth(client.admin_key), json={"alias": "no-such-model"}
+    )
+    assert response.status_code == 404
+
+
+def test_a_member_cannot_change_which_model_the_assistant_uses(client, member_key):
+    assert client.put(
+        "/admin/assistant", headers=auth(member_key), json={"alias": "coding"}
+    ).status_code == 403
+    assert client.get("/admin/assistant", headers=auth(member_key)).status_code == 403
+
+
+def test_a_pin_the_caller_may_not_use_is_reported_not_silently_replaced(client, member_key):
+    """Falling back would hide a permission problem behind a working chat box."""
+    from app.registry.schema import Visibility
+
+    snapshot = client.app.state.services.registry.snapshot
+    model = next(iter(snapshot.models.values()))
+    client.put("/admin/assistant", headers=auth(client.admin_key), json={"alias": model.alias})
+
+    original = model.metadata.visibility
+    model.metadata.visibility = Visibility.ADMIN
+    try:
+        status = client.get("/v1/assistant/status", headers=auth(member_key)).json()
+        assert status["available"] is False
+        assert model.alias in status["reason"]
+    finally:
+        model.metadata.visibility = original
