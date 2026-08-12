@@ -20,7 +20,7 @@ from app.core.auth import (
     require_admin,
     require_instructor,
 )
-from app.core.capability import compatibility_badges
+from app.core.capability import compatibility_badges, upstream_model_for
 from app.core.errors import ErrorCode, GatewayError
 from app.core.modeltest import ModelTestSuite, probe_backend
 from app.db.models import (
@@ -737,6 +737,87 @@ async def detect_capabilities(
     api_key = os.environ.get(payload.api_key_env, "") if payload.api_key_env else ""
     result = await probe_backend(payload.base_url, payload.upstream_model, api_key)
     return {"suggestion": result.to_dict(), "confirmed": False}
+
+
+@router.get("/models/{alias}/advice")
+async def model_advice(
+    alias: str,
+    actor: Principal = Depends(require_admin),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """Re-probe every backend of a registered model and report what to fix.
+
+    This is the verification LMDS has no way to run: LMDS decides what to
+    generate, the gateway measures what the running server actually does. It
+    works with LMDS absent - the advice names the flags either way - and the
+    findings are machine-readable so a deploy tool could consume them.
+    """
+    model = state.registry.snapshot.models.get(alias)
+    if model is None:
+        raise GatewayError(ErrorCode.MODEL_NOT_FOUND, f"Unknown model '{alias}'.")
+
+    backends: list[dict[str, Any]] = []
+    for endpoint in model.spec.endpoints:
+        if not endpoint.enabled:
+            continue
+        api_key = os.environ.get(endpoint.api_key_env, "") if endpoint.api_key_env else ""
+        probe = await probe_backend(
+            endpoint.normalized_base_url,
+            upstream_model_for(model, endpoint),
+            api_key,
+        )
+        # What the registry claims versus what the backend just did. A mismatch
+        # here is the thing that silently breaks students.
+        declared = model.spec.capabilities.model_dump()
+        drift = [
+            {
+                "capability": name,
+                "declared": bool(declared.get(name)),
+                "measured": bool(probe.capabilities.get(name)),
+            }
+            for name in ("chat", "streaming", "tools", "vision")
+            if name in probe.capabilities
+            and bool(declared.get(name)) != bool(probe.capabilities[name])
+        ]
+        # The probe does not know what this alias is *for*. Advice that does not
+        # apply to the declared intent is noise, and noise is what makes people
+        # stop reading the advice at all.
+        suppressed = set()
+        if not declared.get("vision"):
+            suppressed.add("projector_missing")  # text-only by design
+        if model.spec.protocols.anthropic:
+            suppressed.add("anthropic_via_translation")  # already exposed
+        relevant = [a.to_dict() for a in probe.advice if a.issue not in suppressed]
+
+        backends.append(
+            {
+                "endpoint": endpoint.name,
+                "base_url": endpoint.normalized_base_url,
+                "server_type": endpoint.server_type.value,
+                "reachable": probe.reachable,
+                "measured": probe.capabilities,
+                "context_tokens": probe.context_tokens,
+                "drift": drift,
+                "advice": relevant,
+                "notes": probe.notes,
+            }
+        )
+
+    total_drift = sum(len(b["drift"]) for b in backends)
+    blockers = sum(
+        1 for b in backends for a in b["advice"] if a["severity"] == "blocker"
+    )
+    return {
+        "model": alias,
+        "declared_context_tokens": model.spec.limits.context_tokens,
+        "backends": backends,
+        "summary": {
+            "backends": len(backends),
+            "drift": total_drift,
+            "blockers": blockers,
+            "verdict": "blocked" if blockers else "drift" if total_drift else "consistent",
+        },
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -315,3 +315,98 @@ def test_request_uses_the_endpoints_own_model_name(client, student_key):
     assert sent["model"] == "Ai1/Qwen3-Coder-30B-A3B-Instruct"
     # The student still only ever sees the alias.
     assert response.json()["model"] == "coding"
+
+
+# ---------------------------------------------------------------------------
+# Verify & advise
+# ---------------------------------------------------------------------------
+@respx.mock
+def test_advice_names_the_missing_vllm_flag(client):
+    """A tools rejection must come back with the flag and the command to run."""
+    base = "http://dgx03:8000"  # coding, per config/models/coding.yaml
+    respx.get(f"{base}/v1/models").mock(
+        return_value=httpx.Response(
+            200, json={"data": [{"id": "Qwen3-Coder-30B-A3B-Instruct", "max_model_len": 65536}]}
+        )
+    )
+
+    def router(request: httpx.Request) -> httpx.Response:
+        payload = __import__("json").loads(request.content)
+        if payload.get("tools"):
+            return httpx.Response(
+                400,
+                json={"error": {"message": '"auto" tool choice requires '
+                                           "--enable-auto-tool-choice and "
+                                           "--tool-call-parser to be set"}},
+            )
+        content = payload["messages"][-1].get("content")
+        if isinstance(content, list):
+            return httpx.Response(400, json={"error": {"message": "not a multimodal model"}})
+        return httpx.Response(
+            200, json={"choices": [{"message": {"role": "assistant", "content": "OK"}}]}
+        )
+
+    respx.post(f"{base}/v1/chat/completions").mock(side_effect=router)
+    respx.post(f"{base}/v1/messages").mock(return_value=httpx.Response(404))
+
+    body = client.get(
+        "/admin/models/coding/advice", headers=auth(client.admin_key)
+    ).json()
+
+    assert body["model"] == "coding"
+    backend = body["backends"][0]
+    assert backend["reachable"] is True
+    assert backend["measured"]["tools"] is False
+
+    issues = {a["issue"]: a for a in backend["advice"]}
+    assert "tools_flag_missing" in issues
+    fix = issues["tools_flag_missing"]
+    assert "--enable-auto-tool-choice" in fix["detail"]
+    # The parser must be the one built for this family, not a generic guess.
+    assert "--tool-parser qwen3_coder" in fix["command"]
+
+    # The registry says tools=true; the backend just proved otherwise.
+    assert {"capability": "tools", "declared": True, "measured": False} in backend["drift"]
+    assert body["summary"]["verdict"] == "drift"
+
+
+@respx.mock
+def test_advice_reports_a_missing_projector(client):
+    base = "http://dgx02:8000"  # gemma-vision, per config/models/gemma-vision.yaml
+    respx.get(f"{base}/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "some/vision-model"}]})
+    )
+
+    def router(request: httpx.Request) -> httpx.Response:
+        payload = __import__("json").loads(request.content)
+        content = payload["messages"][-1].get("content")
+        if isinstance(content, list):
+            return httpx.Response(
+                500,
+                json={"error": {"message": "image input is not supported - hint: if this "
+                                           "is unexpected, you may need to provide the mmproj"}},
+            )
+        return httpx.Response(
+            200, json={"choices": [{"message": {"role": "assistant", "content": "OK"}}]}
+        )
+
+    respx.post(f"{base}/v1/chat/completions").mock(side_effect=router)
+    respx.post(f"{base}/v1/messages").mock(return_value=httpx.Response(404))
+
+    body = client.get(
+        "/admin/models/gemma-vision/advice", headers=auth(client.admin_key)
+    ).json()
+    issues = {a["issue"] for a in body["backends"][0]["advice"]}
+    assert "projector_missing" in issues
+
+
+def test_advice_is_admin_only(client, student_key):
+    assert client.get(
+        "/admin/models/coding/advice", headers=auth(student_key)
+    ).status_code == 403
+
+
+def test_advice_on_unknown_model_is_404(client):
+    assert client.get(
+        "/admin/models/ghost/advice", headers=auth(client.admin_key)
+    ).status_code == 404

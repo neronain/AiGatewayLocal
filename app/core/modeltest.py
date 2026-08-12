@@ -563,6 +563,49 @@ class ModelTestSuite:
 # Backend capability probe (PRD FR-39)
 # ---------------------------------------------------------------------------
 @dataclass
+class Advice:
+    """A finding with its remediation attached.
+
+    Reporting that a backend cannot call tools is half an answer: whoever reads
+    it still has to work out which flag is missing and what to run. Every entry
+    carries the fix, and `command` is meant to be pasted.
+    """
+
+    issue: str
+    severity: str  # blocker | warning | info
+    detail: str
+    fix: str
+    command: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+# vLLM ships one tool parser per model family and picking the wrong one fails
+# quietly - the server starts and simply never emits tool_calls. So suggest only
+# where the served name is unambiguous, and say when it is a guess.
+_PARSER_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("qwen3-coder", "qwen3_coder", "qwen3coder"), "qwen3_coder"),
+    (("llama-4", "llama4"), "llama4_pythonic"),
+    (("llama-3", "llama3"), "llama3_json"),
+    (("mistral", "mixtral"), "mistral"),
+    (("deepseek-v3", "deepseek_v3"), "deepseek_v3"),
+    (("glm-4", "glm4"), "glm45"),
+    (("kimi", "k2"), "kimi_k2"),
+    (("qwen",), "hermes"),
+)
+
+
+def suggest_tool_parser(served_name: str) -> tuple[str, bool]:
+    """Return (parser, confident). Never guesses silently."""
+    name = (served_name or "").lower()
+    for needles, parser in _PARSER_HINTS:
+        if any(n in name for n in needles):
+            return parser, len(needles) > 1 or needles[0] != "qwen"
+    return "hermes", False
+
+
+@dataclass
 class ProbeResult:
     reachable: bool = False
     served_models: list[str] = field(default_factory=list)
@@ -571,9 +614,114 @@ class ProbeResult:
     capabilities: dict[str, bool] = field(default_factory=dict)
     protocols: dict[str, bool] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    advice: list[Advice] = field(default_factory=list)
+    server_kind: str = ""  # vllm | llamacpp | unknown
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def _detect_server_kind(notes: list[str], served: list[str]) -> str:
+    blob = " ".join(notes).lower()
+    if "vllm" in blob or "tool choice requires" in blob:
+        return "vllm"
+    if "mmproj" in blob or "llama" in blob:
+        return "llamacpp"
+    return "unknown"
+
+
+def build_advice(result: ProbeResult) -> list[Advice]:
+    """Turn what was measured into what to do about it.
+
+    Grounded in the two failures this fleet actually hit: a vLLM started without
+    a tool parser, and a vision-capable GGUF served without its projector.
+    """
+    advice: list[Advice] = []
+    notes = " ".join(result.notes).lower()
+    model = result.upstream_model or (result.served_models[0] if result.served_models else "")
+
+    if not result.reachable:
+        advice.append(
+            Advice(
+                issue="unreachable",
+                severity="blocker",
+                detail="The backend did not answer /v1/models.",
+                fix="Check the server is running and the base URL is reachable "
+                "from the gateway host.",
+            )
+        )
+        return advice
+
+    if not result.capabilities.get("tools"):
+        parser, confident = suggest_tool_parser(model)
+        if "tool choice requires" in notes or "enable-auto-tool-choice" in notes:
+            advice.append(
+                Advice(
+                    issue="tools_flag_missing",
+                    severity="warning",
+                    detail="vLLM rejected the tool request: it was started without "
+                    "--enable-auto-tool-choice and a --tool-call-parser.",
+                    fix=(
+                        f"Restart with the parser for this model "
+                        f"({parser}{'' if confident else ', unverified guess'}). "
+                        "An LMDS controller takes it as an option; a hand-written "
+                        "unit needs the two flags added."
+                    ),
+                    command=f"./<controller>.sh restart --tool-parser {parser}",
+                )
+            )
+        else:
+            advice.append(
+                Advice(
+                    issue="tools_unavailable",
+                    severity="info",
+                    detail="The backend accepted a tool request but returned no "
+                    "tool_calls.",
+                    fix="Either the model has no tool template, or the parser does "
+                    "not match it. Declare tools=false unless you can make it "
+                    "emit tool_calls.",
+                )
+            )
+
+    if "mmproj" in notes:
+        advice.append(
+            Advice(
+                issue="projector_missing",
+                severity="warning",
+                detail="The backend rejected an image: the multimodal projector "
+                "(mmproj) is not loaded.",
+                fix="llama.cpp needs --mmproj pointing at the projector from the "
+                "model repo. LMDS picks it up automatically when it generates the "
+                "bundle; a hand-written unit has to pass it.",
+                command="./<controller>.sh restart   # after adding --mmproj",
+            )
+        )
+
+    if result.context_tokens is None:
+        advice.append(
+            Advice(
+                issue="context_unknown",
+                severity="info",
+                detail="The backend did not report its context window.",
+                fix="Read it from the server rather than the launch flags: "
+                "llama.cpp divides --ctx-size by --parallel, so the per-request "
+                "window is smaller than the flag suggests.",
+                command="curl -s <base_url>/props | jq .default_generation_settings.n_ctx",
+            )
+        )
+
+    if result.capabilities.get("tools") and not result.protocols.get("anthropic"):
+        advice.append(
+            Advice(
+                issue="anthropic_via_translation",
+                severity="info",
+                detail="The backend speaks OpenAI only, but has tool calling.",
+                fix="Enable the Anthropic surface on the alias - the gateway "
+                "translates, so Claude Code can use this model as it is.",
+            )
+        )
+
+    return advice
 
 
 async def probe_backend(
@@ -743,4 +891,6 @@ async def probe_backend(
             anthropic = False
         result.protocols = {"openai": result.capabilities["chat"], "anthropic": anthropic}
 
+    result.server_kind = _detect_server_kind(result.notes, result.served_models)
+    result.advice = build_advice(result)
     return result

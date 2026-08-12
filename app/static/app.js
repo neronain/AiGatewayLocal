@@ -218,12 +218,16 @@ async function loadModels() {
         <td><span class="pill ${ccls}">${esc(c.status)}</span>
             <div class="hint" id="run-${esc(m.alias)}"></div></td>
         <td style="white-space:nowrap">
+          <button class="ghost small" data-verify="${esc(m.alias)}">Verify</button>
           <button class="ghost small" data-test="${esc(m.alias)}">Run tests</button>
           <button class="ghost small" data-edit="${esc(m.alias)}">Edit</button>
           <button class="danger small" data-del="${esc(m.alias)}">Delete</button>
         </td></tr>`;
     }).join('')}`;
 
+  for (const btn of $('model-table').querySelectorAll('[data-verify]')) {
+    btn.onclick = () => verifyModel(btn.dataset.verify, btn);
+  }
   for (const btn of $('model-table').querySelectorAll('[data-test]')) {
     btn.onclick = () => runTests(btn.dataset.test, btn);
   }
@@ -517,6 +521,79 @@ $('save-model').onclick = async () => {
   } catch (e) {
     flash('save-status', 'err', e.message);
   }
+};
+
+
+/* -- verify: what the backend actually does, and how to fix it ---------- */
+const VERDICT_PILL = { consistent: 'ok', drift: 'warn', blocked: 'err' };
+
+async function verifyModel(alias, btn) {
+  const out = $(`run-${alias}`);
+  btn.disabled = true;
+  out.textContent = 'probing…';
+  try {
+    const r = await api(`/admin/models/${encodeURIComponent(alias)}/advice`);
+    out.innerHTML = `<span class="pill ${VERDICT_PILL[r.summary.verdict] || 'mute'}">${esc(r.summary.verdict)}</span>`;
+
+    const rows = r.backends.map((b) => `
+      <h3 style="margin:16px 0 6px">${esc(b.endpoint)}
+        <span class="pill ${b.reachable ? 'ok' : 'err'}">${b.reachable ? 'reachable' : 'unreachable'}</span></h3>
+      <div class="hint" style="margin-bottom:8px">${esc(b.base_url)} ·
+        ${esc(b.server_type)} · context ${b.context_tokens ? num(b.context_tokens) : 'unknown'}</div>
+      ${b.drift.length ? `<div class="banner warn">Registry disagrees with the backend:
+        ${b.drift.map((d) => `<div class="mono">${esc(d.capability)}: declared ${d.declared} · measured ${d.measured}</div>`).join('')}
+      </div>` : ''}
+      ${b.advice.length ? b.advice.map((a) => `
+        <div class="banner ${a.severity === 'blocker' ? 'err' : a.severity === 'warning' ? 'warn' : 'ok'}">
+          <strong>${esc(a.issue)}</strong>
+          <div style="margin-top:5px">${esc(a.detail)}</div>
+          <div style="margin-top:5px">${esc(a.fix)}</div>
+          ${a.command ? `<pre style="margin-top:8px">${esc(a.command)}</pre>` : ''}
+        </div>`).join('')
+        : '<div class="banner ok">Nothing to fix on this backend.</div>'}`).join('');
+
+    modal(`Verify — ${alias}`, rows);
+  } catch (e) {
+    out.innerHTML = `<span class="pill err">${esc(e.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$('verify-all').onclick = async () => {
+  const aliases = (state.cache.models || []).map((m) => m.alias);
+  banner('registry-note', 'ok', `Probing ${aliases.length} model(s)…`);
+  const findings = [];
+  for (const alias of aliases) {
+    try {
+      const r = await api(`/admin/models/${encodeURIComponent(alias)}/advice`);
+      for (const b of r.backends) {
+        for (const a of b.advice) findings.push({ alias, endpoint: b.endpoint, ...a });
+        for (const d of b.drift) {
+          findings.push({
+            alias, endpoint: b.endpoint, severity: 'warning', issue: 'capability_drift',
+            detail: `${d.capability}: registry says ${d.declared}, backend says ${d.measured}`,
+            fix: 'Correct the registry, or fix the backend so it matches.', command: '',
+          });
+        }
+      }
+    } catch (e) {
+      findings.push({ alias, endpoint: '-', severity: 'blocker', issue: 'probe_failed',
+                      detail: e.message, fix: '', command: '' });
+    }
+  }
+  banner('registry-note', '', '');
+  modal('Fleet verification', findings.length ? `
+    <div class="scroll"><table>
+      <tr><th>Model</th><th>Backend</th><th>Severity</th><th>Issue</th><th>What to do</th></tr>
+      ${findings.map((f) => `<tr>
+        <td><code>${esc(f.alias)}</code></td><td>${esc(f.endpoint)}</td>
+        <td><span class="pill ${f.severity === 'blocker' ? 'err' : f.severity === 'warning' ? 'warn' : 'mute'}">${esc(f.severity)}</span></td>
+        <td>${esc(f.issue)}<div class="hint">${esc(f.detail)}</div></td>
+        <td>${esc(f.fix)}${f.command ? `<pre style="margin-top:6px">${esc(f.command)}</pre>` : ''}</td>
+      </tr>`).join('')}
+    </table></div>`
+    : '<div class="banner ok">Every backend matches what the registry declares.</div>');
 };
 
 /* --------------------------------------------------------- access & keys */
