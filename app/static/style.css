@@ -277,9 +277,24 @@ dialog::backdrop { background: color-mix(in srgb, #000 45%, transparent); backdr
   border-color: transparent;
   background: var(--g-mix); color: #fff; box-shadow: var(--shadow-lg);
 }
-.chat-fab .ai-mark { width: 22px; height: 22px; }
-.chat-title { display: flex; align-items: center; gap: 6px; }
-.chat-title .ai-mark { width: 15px; height: 15px; opacity: .8; }
+.chat-fab .ai-mark { width: 24px; height: 24px; }
+
+/* The mark is the panel's identity, so it is drawn at full strength rather than
+   dimmed like a decorative glyph. At 15px and 0.8 opacity it read as a speck. */
+.chat-title { display: flex; align-items: center; gap: 7px; }
+.chat-title .ai-mark { width: 18px; height: 18px; color: var(--c2); }
+
+/* Header controls are icon buttons, identical to the LMDS console's - the two
+   get installed side by side, and a text button next to an icon button is the
+   kind of difference that makes them feel like different products. */
+.chat-icon {
+  width: 27px; height: 27px; padding: 0; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; border-radius: var(--r-sm);
+  background: none; color: var(--fg3); cursor: pointer;
+  font-size: 13px; line-height: 1;
+}
+.chat-icon:hover { background: var(--sunken); border-color: var(--line); color: var(--fg); }
 .chat-fab:hover:not(:disabled) { filter: brightness(1.08); background: var(--g-mix); }
 
 .chat-panel {
