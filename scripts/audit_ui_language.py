@@ -4,7 +4,7 @@ Both consoles get handed to universities and companies who may not read Thai,
 so the chrome has to be one language. Doing that by eye does not work: the
 first pass through this codebase caught the buttons and the section headings
 and left twenty labels behind in dropdown options, form labels and
-placeholders, which is exactly the sort of thing that reads as unfinished.
+placeholders - exactly the sort of thing that reads as unfinished.
 
 The line this draws:
 
@@ -12,7 +12,7 @@ The line this draws:
     table header, placeholder, expander summary - must be English. People scan
     these without meaning to read them, and a second language there interrupts
     every time.
-  * **Text that explains** - tooltips and the paragraphs under a heading - may
+  * **Text that explains** - tooltips, and the paragraphs under a heading - may
     stay Thai. That is what someone reads when they are genuinely unsure, and
     their own language helps most exactly then.
 
@@ -20,14 +20,9 @@ Usage:
 
     python scripts/audit_ui_language.py app/static/index.html app/static/app.js
 
-Prints every label that still needs translating, grouped by what kind of
-control it sits in. Tooltips are reported too, so the split stays a decision
-rather than an oversight.
-"""
-
-แยกให้ชัดว่าอะไรคือป้าย: ปุ่ม, หัวข้อ, label ของฟอร์ม, option ใน dropdown,
-หัวตาราง, placeholder, tooltip · ส่วนคำอธิบาย (.dim, .muted, .hint, ข้อความยาว)
-เป็นไทยได้ตามที่ตกลงไว้
+Prints every label still needing translation, grouped by the kind of control it
+sits in. Tooltips are reported too, so keeping them Thai stays a decision rather
+than an oversight.
 """
 
 import html
