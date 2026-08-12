@@ -160,7 +160,20 @@ class Suite:
             "MODEL-003", "long_context", "pass", elapsed, f"{used} prompt tokens accepted"
         )
 
+    def _skip_without_tools(self, test_id: str, feature: str) -> Result | None:
+        """A model that declares tools=false is not broken - the test is N/A.
+
+        Without this the gateway's own (correct) MODEL_CAPABILITY_NOT_SUPPORTED
+        rejection would be recorded as a failure and drag the model to DEGRADED.
+        """
+        if not self._capabilities()["capabilities"].get("tools"):
+            return Result(test_id, feature, "not_tested", 0, "model declares tools=false")
+        return None
+
     def model_004_tool_calling(self) -> Result:
+        skip = self._skip_without_tools("MODEL-004", "tools")
+        if skip:
+            return skip
         started = time.perf_counter()
         response = self._chat(
             messages=[{"role": "user", "content": "What is the weather in Bangkok?"}],
@@ -192,6 +205,9 @@ class Suite:
         return Result("MODEL-004", "tools", "pass", elapsed, f"called {name}")
 
     def model_005_multi_tool(self) -> Result:
+        skip = self._skip_without_tools("MODEL-005", "multi_tool")
+        if skip:
+            return skip
         started = time.perf_counter()
         response = self._chat(
             messages=[
@@ -276,6 +292,9 @@ class Suite:
 
     def model_008_agent_loop(self) -> Result:
         """Two turns with a tool result fed back - the core agentic pattern."""
+        skip = self._skip_without_tools("MODEL-008", "agent_loop")
+        if skip:
+            return skip
         started = time.perf_counter()
         first = self._chat(
             messages=[{"role": "user", "content": "Read the file main.py."}],
@@ -414,9 +433,10 @@ class Suite:
         return results
 
     def publish(self, results: list[Result]) -> None:
+        # `not_tested` is published too, not skipped: it is what clears a stale
+        # `fail` recorded before the model's capabilities were declared
+        # correctly. Skipping it leaves the model DEGRADED forever.
         for result in results:
-            if result.status == "not_tested":
-                continue
             response = self.client.post(
                 f"/admin/models/{self.model}/compatibility",
                 json={
