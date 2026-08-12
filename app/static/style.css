@@ -273,9 +273,13 @@ dialog::backdrop { background: color-mix(in srgb, #000 45%, transparent); backdr
 .chat-fab {
   position: fixed; right: 20px; bottom: 20px; z-index: 40;
   width: 48px; height: 48px; border-radius: 50%; padding: 0;
-  font-size: 20px; line-height: 1; border-color: transparent;
+  display: flex; align-items: center; justify-content: center;
+  border-color: transparent;
   background: var(--g-mix); color: #fff; box-shadow: var(--shadow-lg);
 }
+.chat-fab .ai-mark { width: 22px; height: 22px; }
+.chat-title { display: flex; align-items: center; gap: 6px; }
+.chat-title .ai-mark { width: 15px; height: 15px; opacity: .8; }
 .chat-fab:hover:not(:disabled) { filter: brightness(1.08); background: var(--g-mix); }
 
 .chat-panel {

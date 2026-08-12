@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.7.0">
+<link rel="stylesheet" href="style.css?v=1.7.2">
 </head>
 <body>
 
@@ -333,7 +333,7 @@
           <label for="as-model">Model</label>
           <select id="as-model"></select>
         </div>
-        <button id="as-save" class="primary">Save</button>
+        <button id="as-save" class="primary" style="flex:none">Save</button>
       </div>
       <p id="as-current" class="hint" style="margin-top:10px"></p>
     </div>
@@ -475,11 +475,11 @@
 
 
 <!-- ================= Assistant ================= -->
-<button id="chat-open" class="chat-fab" hidden title="Ask the assistant">💬</button>
+<button id="chat-open" class="chat-fab" hidden title="Ask the assistant" aria-label="Ask the assistant"><svg class="ai-mark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 2.5l1.55 4.7a3 3 0 0 0 1.9 1.9l4.7 1.55-4.7 1.55a3 3 0 0 0-1.9 1.9L11 18.8l-1.55-4.7a3 3 0 0 0-1.9-1.9L2.85 10.65l4.7-1.55a3 3 0 0 0 1.9-1.9L11 2.5z"/><path d="M18.4 14.2l.62 1.88a1.2 1.2 0 0 0 .76.76l1.88.62-1.88.62a1.2 1.2 0 0 0-.76.76l-.62 1.88-.62-1.88a1.2 1.2 0 0 0-.76-.76l-1.88-.62 1.88-.62a1.2 1.2 0 0 0 .76-.76z"/></svg></button>
 
 <aside id="chat" class="chat-panel" hidden>
   <div class="chat-head">
-    <strong>Assistant</strong>
+    <strong class="chat-title"><svg class="ai-mark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 2.5l1.55 4.7a3 3 0 0 0 1.9 1.9l4.7 1.55-4.7 1.55a3 3 0 0 0-1.9 1.9L11 18.8l-1.55-4.7a3 3 0 0 0-1.9-1.9L2.85 10.65l4.7-1.55a3 3 0 0 0 1.9-1.9L11 2.5z"/><path d="M18.4 14.2l.62 1.88a1.2 1.2 0 0 0 .76.76l1.88.62-1.88.62a1.2 1.2 0 0 0-.76.76l-.62 1.88-.62-1.88a1.2 1.2 0 0 0-.76-.76l-1.88-.62 1.88-.62a1.2 1.2 0 0 0 .76-.76z"/></svg>Assistant</strong>
     <span class="sub" id="chat-model"></span>
     <span class="spacer"></span>
     <button id="chat-clear" class="ghost small" title="Clear this conversation">Clear</button>
@@ -496,6 +496,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.7.0"></script>
+<script src="app.js?v=1.7.2"></script>
 </body>
 </html>

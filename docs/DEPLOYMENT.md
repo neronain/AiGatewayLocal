@@ -417,6 +417,59 @@ Two things to know before promising it to anyone:
 
 ---
 
+## 5c. TLS
+
+Some clients refuse plain HTTP outright, and any deployment carrying API keys
+should be encrypted regardless. The awkward part of a self-hosted gateway is
+that it usually has no public DNS name: it answers on `192.168.x.y` or an
+internal hostname, and no public CA will issue a certificate for either.
+
+The tempting shortcut - a one-line `openssl req -x509` - produces a certificate
+with no `subjectAltName`, which every current browser and HTTP client rejects.
+People then reach for `--insecure` everywhere, which is worse than plain HTTP
+because it looks encrypted while verifying nothing.
+
+`scripts/make_tls_cert.sh` creates a small CA of your own and issues a server
+certificate from it with the right names, including IP addresses as IP SANs:
+
+```bash
+./scripts/make_tls_cert.sh --out ./certs litegate.local 192.168.1.10
+sudo install -m 644 certs/litegate.crt /etc/ssl/certs/litegate.crt
+sudo install -m 600 certs/litegate.key /etc/ssl/private/litegate.key
+sudo cp deploy/nginx/litegate.conf /etc/nginx/sites-available/
+sudo ln -s ../sites-available/litegate.conf /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+List **every** name the gateway will be reached by. A certificate for the
+hostname does not cover the IP, and clients differ in which they send.
+
+Then install `certs/ca.crt` on the machines that call the gateway — the script
+prints the command for each platform. Until you do, they are right to refuse the
+connection. Verify without `--insecure`, which is the whole point:
+
+```bash
+curl https://192.168.1.10/healthz
+```
+
+Re-running the script reuses an existing CA, so certificates issued later stay
+trusted and nobody reinstalls anything.
+
+**Two things to change once TLS is in front:**
+
+* **Bind the app to localhost.** With a proxy in front, `--host 0.0.0.0` leaves
+  port 8080 reachable directly, which bypasses TLS, the rate limits and the
+  `/admin` and `/metrics` restrictions in the nginx config. Change the systemd
+  unit to `--host 127.0.0.1`.
+* **Nothing else.** The session cookie already sets `Secure` when the request
+  arrives over HTTPS, which works behind the proxy because the unit passes
+  `--proxy-headers`.
+
+If you *do* have a public hostname, use the Caddy config instead and let it
+obtain a real certificate — then none of the CA installation applies.
+
+---
+
 ## 6. Backup
 
 | What | Why | How |
