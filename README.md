@@ -197,6 +197,53 @@ python scripts/model_test_suite.py --base-url $GW --admin-key $KEY --model my-mo
 
 ---
 
+## Working with a deploy tool
+
+LiteGate does not deploy models and does not want to. It measures what a running
+server actually does, which is the one thing a deploy tool structurally cannot
+check: the tool knows what it *generated*, not what the process is *doing*.
+
+Used together the loop closes. Used alone, each still works.
+
+```
+  deploy tool                LiteGate
+  (LMDS, Ansible,     ──▶    verifies the running server
+   a shell script)           and names the fix
+        ▲                              │
+        └──────────────────────────────┘
+              you apply it
+```
+
+**Verify** re-probes every backend of a model and reports what to change:
+
+```
+[warning] tools_flag_missing
+  vLLM rejected the tool request: it was started without
+  --enable-auto-tool-choice and a --tool-call-parser.
+  → ./<controller>.sh restart --tool-parser qwen3_coder
+```
+
+If a model file says where the backend came from, the command is filled in
+rather than left as a placeholder:
+
+```yaml
+endpoints:
+  - name: msi-6
+    base_url: http://10.0.0.6:8000
+    managed_by:                       # optional, purely informational
+      tool: lmds
+      node: ops@10.0.0.6
+      controller: ~/bundles/coder/coder-single.sh
+```
+
+```
+→ ssh ops@10.0.0.6 '~/bundles/coder/coder-single.sh restart --tool-parser qwen3_coder'
+```
+
+`managed_by` is inert: LiteGate never contacts the deploy tool, and every model
+works without it. It only decides whether a finding names a command you can
+paste or one you have to translate.
+
 ## Documentation
 
 | Document | Contents |

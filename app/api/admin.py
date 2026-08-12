@@ -22,7 +22,7 @@ from app.core.auth import (
 )
 from app.core.capability import compatibility_badges, upstream_model_for
 from app.core.errors import ErrorCode, GatewayError
-from app.core.modeltest import ModelTestSuite, probe_backend
+from app.core.modeltest import ModelTestSuite, probe_backend, resolve_commands
 from app.db.models import (
     ApiKey,
     AuditLog,
@@ -798,7 +798,11 @@ async def model_advice(
             suppressed.add("projector_missing")  # text-only by design
         if model.spec.protocols.anthropic:
             suppressed.add("anthropic_via_translation")  # already exposed
-        relevant = [a.to_dict() for a in probe.advice if a.issue not in suppressed]
+        relevant = [
+            a.to_dict()
+            for a in resolve_commands(probe.advice, endpoint.managed_by)
+            if a.issue not in suppressed
+        ]
 
         backends.append(
             {

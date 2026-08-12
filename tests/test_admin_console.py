@@ -530,3 +530,65 @@ def test_a_manager_stored_as_instructor_keeps_their_rights(client):
     assert me["role"] == "manager"
     # And the manager-only surface is reachable.
     assert client.get("/admin/users", headers=auth(key)).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Integration with the deploy tool: advice you can paste
+# ---------------------------------------------------------------------------
+def test_advice_command_names_the_real_controller_when_known():
+    """`./<controller>.sh` is advice someone has to translate; a real path is not."""
+    from app.core.modeltest import Advice, resolve_commands
+    from app.registry.schema import ManagedBy
+
+    finding = Advice(
+        issue="tools_flag_missing",
+        severity="warning",
+        detail="vLLM rejected the tool request.",
+        fix="Restart with the parser.",
+        command="./<controller>.sh restart --tool-parser qwen3_coder",
+    )
+
+    managed = ManagedBy(
+        tool="lmds",
+        node="neronain@100.80.132.102",
+        controller="~/bundles/qwen3-coder/qwen3-coder-single.sh",
+    )
+    resolved = resolve_commands([finding], managed)[0]
+    assert resolved.command == (
+        "ssh neronain@100.80.132.102 "
+        "'~/bundles/qwen3-coder/qwen3-coder-single.sh restart --tool-parser qwen3_coder'"
+    )
+
+    # Local controller, no ssh hop.
+    local = ManagedBy(controller="/opt/models/run.sh")
+    assert resolve_commands([finding], local)[0].command == (
+        "/opt/models/run.sh restart --tool-parser qwen3_coder"
+    )
+
+
+def test_advice_is_unchanged_when_the_deploy_tool_is_unknown():
+    """LiteGate must be useful with no deploy tool in the picture at all."""
+    from app.core.modeltest import Advice, resolve_commands
+
+    finding = Advice(
+        issue="tools_flag_missing", severity="warning", detail="", fix="",
+        command="./<controller>.sh restart --tool-parser hermes",
+    )
+    assert resolve_commands([finding], None)[0].command == finding.command
+
+
+def test_managed_by_is_optional_in_the_registry(client):
+    """A model file that says nothing about deployment still validates."""
+    with_tool = definition()
+    with_tool["spec"]["endpoints"][0]["managed_by"] = {
+        "tool": "lmds",
+        "node": "ops@10.0.0.5",
+        "controller": "~/bundles/x/x-single.sh",
+    }
+    assert client.post(
+        "/admin/models/preview", json=with_tool, headers=auth(client.admin_key)
+    ).status_code == 200
+    # And without it.
+    assert client.post(
+        "/admin/models/preview", json=definition(), headers=auth(client.admin_key)
+    ).status_code == 200

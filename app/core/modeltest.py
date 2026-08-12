@@ -630,6 +630,38 @@ def _detect_server_kind(notes: list[str], served: list[str]) -> str:
     return "unknown"
 
 
+def resolve_commands(advice: list[Advice], managed_by: object | None) -> list[Advice]:
+    """Turn `./<controller>.sh ...` into the command for this actual backend.
+
+    Advice with a placeholder in it is advice someone still has to translate.
+    When the registry says which deploy tool produced a backend and where its
+    controller lives, the finding can name the command outright.
+
+    Nothing here contacts the deploy tool - this is string substitution against
+    what the registry already declares.
+    """
+    node = getattr(managed_by, "node", "") if managed_by else ""
+    controller = getattr(managed_by, "controller", "") if managed_by else ""
+    if not controller:
+        return advice
+
+    invocation = f"{controller}" if not node else f"ssh {node} '{controller}"
+    closing = "" if not node else "'"
+    resolved: list[Advice] = []
+    for item in advice:
+        if "<controller>" in item.command:
+            tail = item.command.split("./<controller>.sh", 1)[1].strip()
+            item = Advice(
+                issue=item.issue,
+                severity=item.severity,
+                detail=item.detail,
+                fix=item.fix,
+                command=f"{invocation} {tail}{closing}",
+            )
+        resolved.append(item)
+    return resolved
+
+
 def build_advice(result: ProbeResult) -> list[Advice]:
     """Turn what was measured into what to do about it.
 

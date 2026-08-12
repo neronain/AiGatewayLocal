@@ -144,6 +144,22 @@ class EndpointModalities(BaseModel):
         return bool(getattr(self, modality.value, False))
 
 
+class ManagedBy(BaseModel):
+    """Where this backend came from, when a deploy tool produced it.
+
+    Optional and inert: the gateway never calls out to the deploy tool, and
+    everything works with this absent. It exists so that a finding can name the
+    exact command to run instead of `./<controller>.sh`, which is the difference
+    between advice someone can paste and advice they have to translate.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool: str = "lmds"
+    node: str = ""       # ssh target, e.g. neronain@100.80.132.102
+    controller: str = ""  # path to the controller script on that node
+
+
 class Endpoint(BaseModel):
     """A concrete serving process (one vLLM/Ollama instance on one node)."""
 
@@ -167,6 +183,7 @@ class Endpoint(BaseModel):
     protocols: Protocols = Field(default_factory=Protocols)
     modalities: EndpointModalities = Field(default_factory=EndpointModalities)
     health_path: str = "/health"
+    managed_by: ManagedBy | None = None
     enabled: bool = True
 
     @property
