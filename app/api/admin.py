@@ -260,6 +260,19 @@ async def list_workspaces(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     result = await session.execute(select(Workspace).order_by(Workspace.code))
+    spaces = list(result.scalars())
+
+    # โมเดลที่อนุญาตไว้ต้องมากับรายการนี้ ไม่งั้นหน้าเว็บวาด checkbox เป็นว่างทุกครั้ง
+    # แล้วกด Save ทีเดียวรายการที่ตั้งไว้หายหมด — UI ที่โกหกสถานะปัจจุบันอันตรายกว่าไม่มี
+    allowed: dict[str, list[str]] = {}
+    if spaces:
+        rows = await session.execute(
+            select(WorkspaceModel.workspace_id, WorkspaceModel.model_alias)
+            .where(WorkspaceModel.enabled.is_(True))
+        )
+        for workspace_id, alias in rows:
+            allowed.setdefault(workspace_id, []).append(alias)
+
     return {
         "data": [
             {
@@ -268,8 +281,9 @@ async def list_workspaces(
                 "name": c.name,
                 "term": c.term,
                 "status": c.status,
+                "models": sorted(allowed.get(c.id, [])),
             }
-            for c in result.scalars()
+            for c in spaces
         ]
     }
 

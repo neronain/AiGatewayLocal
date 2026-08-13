@@ -577,6 +577,11 @@ async function verifyModel(alias, btn) {
 }
 
 $('verify-all').onclick = async () => {
+  // รายชื่อโมเดลเคยมาจากแคชที่เติมตอนเปิดแท็บ Models เท่านั้น — คนที่ login แล้วมา
+  // หน้านี้เลยเห็น "open the Models tab first" แทนช่องติ๊ก แล้วดูเหมือนไม่มีฟีเจอร์
+  if (!state.cache.models) {
+    try { state.cache.models = (await api('/admin/models')).data; } catch { state.cache.models = []; }
+  }
   const aliases = (state.cache.models || []).map((m) => m.alias);
   banner('registry-note', 'ok', `Probing ${aliases.length} model(s)…`);
   const findings = [];
@@ -899,8 +904,9 @@ async function loadAccess() {
     ${workspaces.data.map((c) => `<tr>
       <td><code>${esc(c.code)}</code></td><td>${esc(c.name)}</td><td>${esc(c.term)}</td>
       <td class="checks">${aliases.map((a) => `
-        <label><input type="checkbox" data-workspace="${esc(c.id)}" value="${esc(a)}"> ${esc(a)}</label>
-      `).join('') || '<span class="hint">open the Models tab first</span>'}</td>
+        <label><input type="checkbox" data-workspace="${esc(c.id)}" value="${esc(a)}"${
+          (c.models || []).includes(a) ? ' checked' : ''}> ${esc(a)}</label>
+      `).join('') || '<span class="hint">ยังไม่มีโมเดลใน registry</span>'}</td>
       <td><button class="ghost small" data-saveworkspace="${esc(c.id)}">Save</button></td>
     </tr>`).join('') || '<tr><td class="empty">No workspaces yet.</td></tr>'}`;
 
@@ -909,6 +915,10 @@ async function loadAccess() {
       const id = btn.dataset.saveworkspace;
       const models = [...document.querySelectorAll(`input[data-workspace="${id}"]:checked`)]
         .map((i) => i.value);
+      // ไม่ติ๊กอะไรเลย = workspace นี้เรียกโมเดลไม่ได้สักตัว (ไม่มีแถว = ไม่อนุญาต)
+      // ซึ่งต่างจาก "ยังไม่ได้ตั้ง" อย่างสิ้นเชิง — key ที่ผูกกับมันจะใช้ไม่ได้ทันที
+      if (!models.length && !confirm('ไม่ได้เลือกโมเดลเลย\n\n'
+        + 'key ที่ผูกกับ workspace นี้จะเรียกโมเดลไม่ได้สักตัว ยืนยันไหม?')) return;
       try {
         await post(`/admin/workspaces/${id}/models`, { models });
         banner('error', 'ok', `Updated allowed models: ${models.join(', ') || 'none'}`);
