@@ -778,23 +778,55 @@ async function loadAccess() {
   const roles = ['member', 'manager', 'admin'];
   const adminCount = users.data.filter((u) => u.role === 'admin').length;
   $('user-table').innerHTML = `
-    <tr><th>ID</th><th>Name</th><th>Email</th><th>Role</th><th>Status</th></tr>
+    <tr><th>ID</th><th>Name</th><th>Role</th><th>Workspaces</th><th>Status</th></tr>
     ${users.data.map((u) => {
       // admin คนสุดท้ายเปลี่ยน role ไม่ได้ — ไม่มี admin แปลว่าไม่มีใครออก key
       // ตั้ง quota หรือแก้ registry ได้อีก และไม่มีทางกลับผ่านหน้าเว็บ
       const locked = u.role === 'admin' && adminCount <= 1;
+      // workspace ที่คนนี้อยู่ + ตัวเลือกให้เพิ่มเข้าที่ยังไม่ได้อยู่
+      // `join` มีมาตั้งแต่ต้นแต่ไม่มีหน้าไหนเรียกใช้เลย — สร้าง workspace ได้
+      // แต่ใส่คนเข้าไปไม่ได้
+      const mine = u.workspaces || [];
+      const spare = workspaces.data.filter((c) => !mine.includes(c.code));
       return `<tr>
         <td><code>${esc(u.external_id)}</code></td>
-        <td>${esc(u.display_name || '—')}</td>
-        <td class="hint">${esc(u.email || '—')}</td>
+        <td>${esc(u.display_name || '—')}<div class="hint">${esc(u.email || '')}</div></td>
         <td>${locked
           ? `<span class="pill ok" title="ผู้ดูแลคนเดียวที่เหลืออยู่ — ตั้งให้คนอื่นเป็น admin ก่อนถึงจะเปลี่ยนได้">admin (คนเดียว)</span>`
           : `<select class="small" data-role="${esc(u.id)}">${roles.map((r) =>
               `<option value="${r}"${u.role === r ? ' selected' : ''}>${r}</option>`).join('')}</select>`}</td>
+        <td>
+          ${mine.map((code) => {
+            const ws = workspaces.data.find((c) => c.code === code);
+            return `<span class="pill mute">${esc(code)}<button class="link small"
+              data-leave="${esc(ws ? ws.id : '')}" data-who="${esc(u.id)}"
+              title="เอา ${esc(u.external_id)} ออกจาก ${esc(code)}">×</button></span>`;
+          }).join(' ') || '<span class="hint">—</span>'}
+          ${spare.length ? `<select class="small" data-join="${esc(u.id)}">
+            <option value="">+ add…</option>
+            ${spare.map((c) => `<option value="${esc(c.id)}">${esc(c.code)}</option>`).join('')}
+          </select>` : ''}
+        </td>
         <td><span class="pill ${u.status === 'active' ? 'ok' : 'mute'}">${esc(u.status || 'active')}</span></td>
       </tr>`;
     }).join('') || '<tr><td class="empty">No people yet.</td></tr>'}`;
 
+  for (const sel of $('user-table').querySelectorAll('[data-join]')) {
+    sel.onchange = async () => {
+      if (!sel.value) return;
+      try { await post(`/admin/workspaces/${sel.value}/join`, { user_id: sel.dataset.join }); await loadAccess(); }
+      catch (e) { sel.value = ''; showError(e.message); }
+    };
+  }
+  for (const btn of $('user-table').querySelectorAll('[data-leave]')) {
+    btn.onclick = async () => {
+      // key ที่ผูกกับ workspace นี้ไม่ถูกเพิกถอน — มันเลิกใช้ quota ของ workspace เอง
+      if (!confirm('เอาออกจาก workspace นี้?\n\nkey ที่ออกให้ภายใต้ workspace นี้ไม่ถูกเพิกถอน '
+        + 'แต่จะไม่ใช้โควตาของ workspace อีก')) return;
+      try { await del(`/admin/workspaces/${btn.dataset.leave}/members/${btn.dataset.who}`); await loadAccess(); }
+      catch (e) { showError(e.message); }
+    };
+  }
   for (const sel of $('user-table').querySelectorAll('[data-role]')) {
     const before = sel.value;
     sel.onchange = async () => {

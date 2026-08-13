@@ -162,7 +162,22 @@ async def list_users(
     if role:
         stmt = stmt.where(User.role == role)
     result = await session.execute(stmt)
-    return {"data": [_user_dict(u) for u in result.scalars()]}
+    users = list(result.scalars())
+
+    # ดึง membership ทั้งหมดในคำสั่งเดียว ไม่ใช่ต่อคน — และไม่แตะ user.memberships
+    # แบบ lazy เพราะ session เป็น async การโหลดตอนอ่านจะระเบิดกลางทาง
+    joined: dict[str, list[str]] = {}
+    if users:
+        rows = await session.execute(
+            select(Membership.user_id, Workspace.code)
+            .join(Workspace, Workspace.id == Membership.workspace_id)
+            .where(Membership.user_id.in_([u.id for u in users]))
+        )
+        for user_id, code in rows:
+            joined.setdefault(user_id, []).append(code)
+
+    return {"data": [{**_user_dict(u), "workspaces": sorted(joined.get(u.id, []))}
+                     for u in users]}
 
 
 @router.patch("/users/{user_id}")
@@ -383,6 +398,37 @@ async def create_api_key(
         "expires_at": expires_at.isoformat() if expires_at else None,
         "warning": "Store this key now. It cannot be retrieved again.",
     }
+
+
+@router.delete("/workspaces/{workspace_id}/members/{user_id}")
+async def leave(
+    workspace_id: str,
+    user_id: str,
+    request: Request,
+    actor: Principal = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """เอาคนออกจาก workspace
+
+    `join` มีมาตั้งแต่ต้น แต่ไม่มีทางออก — ใส่ผิดคนแล้วแก้ไม่ได้เลยนอกจากแก้ฐานข้อมูล
+    เอง และคนที่จบเทอมไปแล้วก็ยังค้างอยู่ในรายชื่อตลอดไป
+
+    key ที่ผูกกับ workspace นี้ไม่ถูกแตะ — มันหยุดใช้ quota ของ workspace เองเมื่อ
+    สิทธิ์หายไป การไปเพิกถอน key ให้ด้วยเป็นการตัดสินใจแทนผู้ใช้ในเรื่องที่กู้คืนไม่ได้
+    """
+    result = await session.execute(
+        select(Membership).where(
+            Membership.workspace_id == workspace_id, Membership.user_id == user_id
+        )
+    )
+    membership = result.scalar_one_or_none()
+    if membership is None:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "That person is not in this workspace.")
+    await session.delete(membership)
+    await audit(session, request, actor, "workspace.leave", "workspace",
+                workspace_id, {"user_id": user_id})
+    await session.commit()
+    return {"workspace_id": workspace_id, "user_id": user_id, "status": "removed"}
 
 
 @router.get("/api-keys")
