@@ -66,6 +66,7 @@ async function api(path, options = {}) {
 }
 const post = (p, b) => api(p, { method: 'POST', body: JSON.stringify(b || {}) });
 const del = (p) => api(p, { method: 'DELETE' });
+const patch = (p, b) => api(p, { method: 'PATCH', body: JSON.stringify(b || {}) });
 
 function modal(title, html, copyText) {
   $('modal-title').textContent = title;
@@ -771,6 +772,41 @@ async function loadAccess() {
     .map((c) => `<option value="${esc(c.id)}">${esc(c.code)} — ${esc(c.name)}</option>`).join('');
   $('k-workspace').innerHTML = '<option value="">— none —</option>' + workspaceOpts;
   $('q-workspace').innerHTML = workspaceOpts;
+
+  // ตาราง People — ก่อนหน้านี้ผู้ใช้โผล่แค่ใน dropdown ตอนออก key · role ตั้งได้
+  // ตอนสร้างเท่านั้น แล้วไม่มีทางแก้จากหน้าเว็บอีกเลย
+  const roles = ['member', 'manager', 'admin'];
+  const adminCount = users.data.filter((u) => u.role === 'admin').length;
+  $('user-table').innerHTML = `
+    <tr><th>ID</th><th>Name</th><th>Email</th><th>Role</th><th>Status</th></tr>
+    ${users.data.map((u) => {
+      // admin คนสุดท้ายเปลี่ยน role ไม่ได้ — ไม่มี admin แปลว่าไม่มีใครออก key
+      // ตั้ง quota หรือแก้ registry ได้อีก และไม่มีทางกลับผ่านหน้าเว็บ
+      const locked = u.role === 'admin' && adminCount <= 1;
+      return `<tr>
+        <td><code>${esc(u.external_id)}</code></td>
+        <td>${esc(u.display_name || '—')}</td>
+        <td class="hint">${esc(u.email || '—')}</td>
+        <td>${locked
+          ? `<span class="pill ok" title="ผู้ดูแลคนเดียวที่เหลืออยู่ — ตั้งให้คนอื่นเป็น admin ก่อนถึงจะเปลี่ยนได้">admin (คนเดียว)</span>`
+          : `<select class="small" data-role="${esc(u.id)}">${roles.map((r) =>
+              `<option value="${r}"${u.role === r ? ' selected' : ''}>${r}</option>`).join('')}</select>`}</td>
+        <td><span class="pill ${u.status === 'active' ? 'ok' : 'mute'}">${esc(u.status || 'active')}</span></td>
+      </tr>`;
+    }).join('') || '<tr><td class="empty">No people yet.</td></tr>'}`;
+
+  for (const sel of $('user-table').querySelectorAll('[data-role]')) {
+    const before = sel.value;
+    sel.onchange = async () => {
+      const who = users.data.find((u) => u.id === sel.dataset.role);
+      if (!confirm(`เปลี่ยน ${who.external_id} จาก ${before} เป็น ${sel.value}?\n\n`
+        + 'admin แก้ทุกอย่างได้ · manager ออก key และดูการใช้งานได้ · member ใช้โมเดลอย่างเดียว')) {
+        sel.value = before; return;
+      }
+      try { await patch(`/admin/users/${sel.dataset.role}`, { role: sel.value }); await loadAccess(); }
+      catch (e) { sel.value = before; showError(e.message); }
+    };
+  }
 
   const byId = Object.fromEntries(users.data.map((u) => [u.id, u]));
   $('key-table').innerHTML = `

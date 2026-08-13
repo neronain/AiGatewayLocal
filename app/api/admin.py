@@ -98,6 +98,36 @@ class UserIn(BaseModel):
     status: str = "active"
 
 
+# role ที่ระบบใช้ตัดสินสิทธิ์จริง — `Principal.is_admin` เทียบ == "admin" ตรง ๆ
+# ค่าที่พิมพ์ผิดอย่าง "adminn" หรือ "Admin" จึงไม่พังตอนบันทึก แต่ทำให้คนคนนั้น
+# กลายเป็น member เงียบ ๆ แล้วไม่มีอะไรบอก · legacy alias ยังรับไว้เพราะข้อมูลเก่ามี
+ROLES = ("member", "manager", "admin")
+
+
+def _valid_role(value: str) -> str:
+    role = str(value or "").strip()
+    if role not in ROLES:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            f"role must be one of {', '.join(ROLES)} (got {value!r}).",
+        )
+    return role
+
+
+async def _would_remove_last_admin(session: AsyncSession, user: User, new_role: str) -> bool:
+    """เปลี่ยน role นี้แล้วจะไม่เหลือ admin เลยไหม
+
+    ไม่มี admin = ไม่มีใครออก key ใหม่ ตั้ง quota หรือแก้ registry ได้อีก และไม่มี
+    ทางกลับผ่านหน้าเว็บด้วย ต้องไปแก้ในฐานข้อมูลเอง
+    """
+    if user.role != "admin" or new_role == "admin":
+        return False
+    result = await session.execute(
+        select(func.count()).select_from(User).where(User.role == "admin")
+    )
+    return int(result.scalar() or 0) <= 1
+
+
 @router.post("/users", status_code=201)
 async def create_user(
     payload: UserIn,
@@ -105,8 +135,7 @@ async def create_user(
     actor: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    if payload.role not in {"member", "manager", "admin"}:
-        raise GatewayError(ErrorCode.INVALID_REQUEST, f"Unknown role '{payload.role}'.")
+    payload.role = _valid_role(payload.role)
     existing = await session.execute(
         select(User).where(User.external_id == payload.external_id)
     )
@@ -147,6 +176,16 @@ async def update_user(
     user = await session.get(User, user_id)
     if user is None:
         raise GatewayError(ErrorCode.INVALID_REQUEST, "User not found.")
+    if "role" in payload:
+        new_role = _valid_role(payload["role"])
+        if await _would_remove_last_admin(session, user, new_role):
+            raise GatewayError(
+                ErrorCode.INVALID_REQUEST,
+                "This is the only administrator. Give someone else the admin role "
+                "first — with none, nobody can issue keys or change settings, and "
+                "there is no way back through the console.",
+            )
+        payload = {**payload, "role": new_role}
     for field_name in ("display_name", "email", "role", "status"):
         if field_name in payload:
             setattr(user, field_name, payload[field_name])
