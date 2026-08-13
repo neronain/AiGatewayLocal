@@ -149,6 +149,59 @@ union ไม่ใช่ intersection · นักศึกษาลงสอง
 
 ---
 
+### 5.5 ผลการทดลองติดตั้ง LiteLLM จริง (2026-08-14)
+
+คำถามคือ "ติดตั้ง LiteLLM แล้วเขียนส่วนของเราเพิ่ม" แทนการเขียนเองทั้งหมด ได้ไหม
+ตอบด้วยการติดตั้งจริงแล้วยิงใส่ backend ของเราเอง ไม่ใช่จากเอกสาร
+
+**ที่ใช้ได้ — ทดสอบกับ muse-glimmer (llama.cpp, spark-head) และ qwen3-coder-next
+(vLLM, msi-6) ผ่าน LiteLLM ที่ชี้ไป `api_base` ของทั้งสอง**
+
+| | ผล |
+|---|---|
+| `/v1/chat/completions` | ผ่าน |
+| `/v1/messages` (ไม่สตรีม) | ผ่าน — `type=message` |
+| `tool_use` | ผ่าน — `read_file{'path': 'config.yaml'}` |
+| `tool_result` round trip | ผ่าน — `end_turn` ตอบถูก |
+| vision (PNG 224×224) | ผ่าน — ตอบ `red` |
+| system prompt 21,840 ตัวอักษร + tools | ผ่าน — เรียก tool ได้ |
+
+**ที่ใช้ไม่ได้ — และตรงกับโมเดลที่เรารันอยู่พอดี**
+
+| โมเดล | `content_block_delta` | ข้อความที่ client ได้รับ |
+|---|---|---|
+| `coder-next` (ไม่ใช่ reasoning) | 5 | `'1 \\n2 \\n3'` |
+| `muse` (reasoning) | **0** | **`''`** |
+| `muse` ยิงตรงที่ llama.cpp | 58 | ครบ |
+
+LiteLLM เปิด `content_block_start` ชนิด `thinking` ที่ว่างเปล่าแล้วปิดทันที
+**คำตอบไม่ถูกส่งออกมาเลย** ไม่ใช่แค่ไม่สตรีมทีละ token
+
+Claude Code สตรีมเสมอ และโมเดลหลักที่เรารัน (Muse-Glimmer, gpt-oss-120b) เป็น
+reasoning model ทั้งคู่ — นี่จึงไม่ใช่ข้อบกพร่องเล็กน้อย แต่คือกรณีใช้งานหลัก
+
+**ความยากตอนติดตั้ง (บันทึกไว้เพราะเป็นต้นทุนจริง)**
+
+- `pip install litellm[proxy]` วันนี้ได้ FastAPI 0.141 ซึ่ง proxy ใช้ไม่ได้
+  (`ImportError: cannot import name 'get_flat_dependant'`) ต้อง pin `fastapi<0.116`
+- `litellm` CLI พัง (`ModuleNotFoundError: No module named 'proxy_server'`)
+  ทั้งบน Python 3.12 และ 3.14 — ต้องรันผ่าน `uvicorn litellm.proxy.proxy_server:app`
+- ยังไม่ได้ทดสอบ image ทางการ (`ghcr.io/berriai/litellm`) ซึ่งน่าจะ pin ไว้ครบแล้ว
+  — **ควรลองก่อนตัดสินใจขั้นสุดท้าย** เพราะสองข้อบนอาจหายไปเลย
+
+**สิ่งที่ผลนี้บอก**
+
+โครงสิทธิ์ของ LiteLLM (key → team → models) ใกล้กับที่ §2 ตัวเลือก A เสนอมาก และ
+ถ้าย้ายไปจริงจะได้ virtual key, budget, spend tracking มาฟรี แต่ต้องแก้เรื่อง
+streaming ของ reasoning model ก่อน — ไม่งั้นแลกฟีเจอร์บริหารจัดการมาด้วยการเสีย
+กรณีใช้งานหลักไป
+
+ทางที่ยังเปิดอยู่และยังไม่ได้ประเมิน: ใช้ LiteLLM เป็นชั้นบริหารจัดการ (key/team/
+budget) แล้วให้คำขอที่ต้องสตรีมวิ่งผ่านทางของเราเอง — ได้ทั้งสองอย่างโดยไม่ต้องรอ
+ให้ upstream แก้
+
+---
+
 ### 6. สิ่งที่ **ไม่** ทำในรอบนี้
 
 - ไม่รื้อไปเป็น LiteLLM · ถ้าต้องการพฤติกรรม LiteLLM ครบ **ใช้ LiteLLM ตรง ๆ
