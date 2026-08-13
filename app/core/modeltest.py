@@ -776,7 +776,7 @@ def build_advice(result: ProbeResult) -> list[Advice]:
             )
         )
 
-    if result.capabilities.get("tools") and not result.protocols.get("anthropic"):
+    if result.capabilities.get("tools") and result.protocols.get("anthropic") is False:
         advice.append(
             Advice(
                 issue="anthropic_via_translation",
@@ -784,6 +784,17 @@ def build_advice(result: ProbeResult) -> list[Advice]:
                 detail="The backend speaks OpenAI only, but has tool calling.",
                 fix="Enable the Anthropic surface on the alias - the gateway "
                 "translates, so Claude Code can use this model as it is.",
+            )
+        )
+    elif result.protocols.get("anthropic"):
+        # พูดได้เองโดยไม่ต้องแปล — เคยถูกประกาศเป็น false มาแล้วสองที่ ทั้งที่ตอบได้
+        advice.append(
+            Advice(
+                issue="anthropic_native",
+                severity="info",
+                detail="The backend answers /v1/messages itself, no translation needed.",
+                fix="Set protocols.anthropic to true on this endpoint so the "
+                "gateway passes requests straight through.",
             )
         )
 
@@ -971,6 +982,10 @@ async def probe_backend(
             )
 
         # 6. native Anthropic surface?
+        #
+        # 200 อย่างเดียวไม่พอ: proxy บางตัวรับ path นี้แล้วตอบกลับเป็นรูปของ OpenAI
+        # ซึ่ง client ที่พูด Anthropic ใช้ไม่ได้ · ต้องเห็น `type: "message"` จริง
+        # ก่อนจะประกาศว่ารองรับ ไม่งั้น registry จะบันทึกว่าใช้ได้แล้วไปพังที่ผู้ใช้
         anthropic = False
         try:
             response = await client.post(
@@ -980,8 +995,19 @@ async def probe_backend(
                     "max_tokens": 16,
                     "messages": [{"role": "user", "content": "hi"}],
                 },
+                headers={"anthropic-version": "2023-06-01"},
             )
-            anthropic = response.status_code == 200
+            if response.status_code == 200:
+                anthropic = (response.json() or {}).get("type") == "message"
+                if not anthropic:
+                    result.notes.append(
+                        "/v1/messages answered 200 but not in Anthropic shape"
+                    )
+            else:
+                result.notes.append(
+                    f"/v1/messages -> HTTP {response.status_code} "
+                    "(the gateway can still translate for it)"
+                )
         except Exception:
             anthropic = False
         result.protocols = {"openai": result.capabilities["chat"], "anthropic": anthropic}
