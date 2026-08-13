@@ -134,12 +134,18 @@ def test_unknown_model_returns_404_with_alternatives(client, member_key):
 
 
 def test_anthropic_surface_rejects_model_without_that_protocol(client, member_key):
-    """muse-local declares protocols.anthropic=false, so /v1/messages must 400."""
+    """gemma-vision declares protocols.anthropic=false, so /v1/messages must 400.
+
+    This used to point at muse-local, until that backend moved to llama.cpp and
+    started answering /v1/messages itself. Any member-visible model with
+    anthropic=false does the job — the subject here is the gateway's refusal,
+    not the model.
+    """
     response = client.post(
         "/v1/messages",
         headers=auth(member_key),
         json={
-            "model": "muse-local",
+            "model": "gemma-vision",
             "max_tokens": 10,
             "messages": [{"role": "user", "content": "hi"}],
         },

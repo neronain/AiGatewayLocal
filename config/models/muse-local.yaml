@@ -10,7 +10,11 @@ metadata:
 
 spec:
   # Admin-only. Members never see this string (PRD §6).
-  upstream_model: meta-models/Muse-Glimmer-30B
+  #
+  # The GGUF build on llama.cpp, not the safetensors one: the original would not
+  # start under vLLM, and the quantised release with its own projector runs on
+  # hardware that could not hold the full weights.
+  upstream_model: unsloth/Muse-Glimmer-30B-GGUF
 
   purpose:
     - general
@@ -38,30 +42,38 @@ spec:
 
   protocols:
     openai: true
-    # Served over the Anthropic API by translation; the backend itself is OpenAI.
-    anthropic: false
+    # llama.cpp answers /v1/messages itself — no translation in between. Checked
+    # against the running server, not assumed from the engine name.
+    anthropic: true
 
   agent_clients:
     claude_code:
-      enabled: false
-      tested: false
-      notes: "Not validated for Claude Code; use the 'coding' alias."
+      enabled: true
+      tested: true
+      notes: >-
+        Validated 2026-08-13 on the GGUF build: tool_use -> tool_result ->
+        end_turn under a 21,840-char system prompt, streaming SSE complete, and
+        131,072 context per request. Serve it on one llama.cpp slot — the pool
+        is split evenly across --parallel, so four slots would leave 32,768
+        each, under what this client needs before it reads a single file.
     qwen_code:
       enabled: true
       tested: false
 
   endpoints:
     - name: dgx01
-      server_type: vllm
+      server_type: llama.cpp
       base_url: http://dgx01:8000
       api_key_env: DGX01_API_KEY
       priority: 100
       weight: 1
-      max_concurrency: 32
+      # One llama.cpp slot, so one request at a time keeps the full context.
+      # Raising this does not add slots on the backend; it only queues here.
+      max_concurrency: 1
       health_path: /health
       protocols:
         openai: true
-        anthropic: false
+        anthropic: true
       modalities:
         text: true
         image: true
