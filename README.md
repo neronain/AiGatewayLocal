@@ -402,6 +402,7 @@ who install both get the parts that only exist between them.
 | **[DEPLOYMENT.md](docs/DEPLOYMENT.md)** | Docker / systemd / staging, operations, troubleshooting |
 | **[RUNBOOK.md](docs/RUNBOOK.md)** | What to do when an alert fires, one section per alert |
 | [PRD-v1.2-Addendum.md](docs/PRD-v1.2-Addendum.md) | The original v1.2 addendum, preserved verbatim |
+| [PRD-v1.5-Models.md](docs/PRD-v1.5-Models.md) | **Draft** — Models & Endpoints measured against a running LiteLLM: what to adopt, what we already have, and the one thing not to copy |
 | [PRD-v1.4-Access.md](docs/PRD-v1.4-Access.md) | **Draft, not approved** — proposal to make workspace membership actually govern access, with the options weighed and the decision gate that comes before any code |
 
 **Related project** — [LMDS · AutoDeployDGXProject](https://github.com/neronain/AutoDeployDGXProject),
