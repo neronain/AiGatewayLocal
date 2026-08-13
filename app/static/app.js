@@ -787,7 +787,9 @@ async function loadAccess() {
         <td class="hint">${k.expires_at ? new Date(k.expires_at).toLocaleDateString() : 'never'}</td>
         <td class="hint">${k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'never'}</td>
         <td><span class="pill ${k.revoked ? 'err' : 'ok'}">${k.revoked ? 'revoked' : 'active'}</span></td>
-        <td>${k.revoked ? '' : `<button class="danger small" data-revoke="${esc(k.id)}">Revoke</button>`}</td>
+        <td>${k.revoked
+          ? `<button class="small" data-purge="${esc(k.id)}" title="ลบแถวนี้ถาวร — ประวัติการใช้งานยังอยู่">Delete</button>`
+          : `<button class="danger small" data-revoke="${esc(k.id)}">Revoke</button>`}</td>
       </tr>`;
     }).join('') || '<tr><td class="empty">No keys issued yet.</td></tr>'}`;
 
@@ -795,6 +797,30 @@ async function loadAccess() {
     btn.onclick = async () => {
       if (!confirm('Revoke this key? Any client using it stops working immediately.')) return;
       try { await del(`/admin/api-keys/${btn.dataset.revoke}`); await loadAccess(); }
+      catch (e) { showError(e.message); }
+    };
+  }
+
+  // ลบได้เฉพาะคีย์ที่เพิกถอนแล้ว — คีย์ที่ยังใช้งานอยู่ต้องกด Revoke ก่อน
+  // เพื่อไม่ให้ใครถูกตัดการใช้งานโดยไม่มีร่องรอยว่าเป็นคีย์ใบไหน
+  for (const btn of $('key-table').querySelectorAll('[data-purge]')) {
+    btn.onclick = async () => {
+      if (!confirm('ลบคีย์ใบนี้ถาวร?\n\nคีย์ถูกเพิกถอนไปแล้วจึงใช้งานไม่ได้อยู่แล้ว '
+        + 'การลบเป็นการเอาแถวออกจากรายการ ประวัติการใช้งานยังอยู่ครบ')) return;
+      try { await del(`/admin/api-keys/${btn.dataset.purge}/purge`); await loadAccess(); }
+      catch (e) { showError(e.message); }
+    };
+  }
+
+  const revokedCount = keys.data.filter((k) => k.revoked).length;
+  const sweep = $('purge-revoked');
+  if (sweep) {
+    sweep.hidden = revokedCount === 0;
+    sweep.textContent = `Clear ${revokedCount} revoked`;
+    sweep.onclick = async () => {
+      if (!confirm(`ลบคีย์ที่เพิกถอนแล้วทั้ง ${revokedCount} ใบถาวร?\n\n`
+        + 'ทุกใบใช้งานไม่ได้อยู่แล้ว ประวัติการใช้งานยังอยู่ครบ')) return;
+      try { await post('/admin/api-keys/purge-revoked', {}); await loadAccess(); }
       catch (e) { showError(e.message); }
     };
   }
@@ -886,7 +912,7 @@ async function loadQuota() {
   $('quota-table').innerHTML = `
     <tr><th>Scope</th><th>Applies to</th><th>Model</th><th>Window</th>
         <th class="num">Requests</th><th class="num">Input</th>
-        <th class="num">Output</th><th class="num">Images</th></tr>
+        <th class="num">Output</th><th class="num">Images</th><th></th></tr>
     ${policies.data.map((p) => `<tr>
       <td><span class="pill mute">${esc(p.scope)}</span></td>
       <td>${esc(users[p.user_id] || workspaces[p.workspace_id] || 'everyone')}</td>
@@ -894,7 +920,19 @@ async function loadQuota() {
       <td>${esc(p.window)}</td>
       <td class="num">${lim(p.max_requests)}</td><td class="num">${lim(p.max_input_tokens)}</td>
       <td class="num">${lim(p.max_output_tokens)}</td><td class="num">${lim(p.max_images)}</td>
+      <td><button class="danger small" data-del-policy="${esc(p.id)}">Delete</button></td>
     </tr>`).join('') || '<tr><td class="empty">No policies — the gateway.yaml defaults apply.</td></tr>'}`;
+
+  // นโยบายที่เจาะจงกว่าชนะเสมอ (user > workspace > global) การลบตัวหนึ่งจึงไม่ได้แค่
+  // หายไป แต่ทำให้คนที่เคยอยู่ใต้มันเลื่อนไปใช้ตัวถัดไป — ต้องบอกให้เห็นก่อนกด
+  for (const btn of $('quota-table').querySelectorAll('[data-del-policy]')) {
+    btn.onclick = async () => {
+      if (!confirm('ลบนโยบายนี้?\n\nคนที่เคยอยู่ใต้นโยบายนี้จะเลื่อนไปใช้ตัวที่กว้างกว่า '
+        + '(user → workspace → global) โควตาที่ใช้ได้จริงจะเปลี่ยนทันที')) return;
+      try { await del(`/admin/quota-policies/${btn.dataset.delPolicy}`); await loadQuota(); }
+      catch (e) { showError(e.message); }
+    };
+  }
 
   $('top-users').innerHTML = `
     <tr><th>User</th><th>Name</th><th class="num">Requests</th>

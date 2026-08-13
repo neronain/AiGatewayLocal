@@ -388,6 +388,73 @@ async def revoke_api_key(
     return {"id": key_id, "revoked": True}
 
 
+@router.delete("/api-keys/{key_id}/purge")
+async def purge_api_key(
+    key_id: str,
+    request: Request,
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Delete a revoked key's row for good.
+
+    Revoking is what stops a key working; the row stays so the listing can show
+    what was withdrawn and when. After a term of issuing and rotating, that list
+    is mostly tombstones and the live keys are hard to find in it.
+
+    Only a key that is already revoked can be purged. Deleting a live key would
+    lock somebody out with nothing to point at afterwards, so revoking stays a
+    separate, deliberate step.
+
+    Usage rows survive: `usage.api_key_id` is a plain column, not a foreign key,
+    exactly so history outlives the key. What the row carried and nothing else
+    does - the name and prefix - goes into the audit entry before it is gone.
+    """
+    api_key = await session.get(ApiKey, key_id)
+    if api_key is None:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "API key not found.")
+    if api_key.revoked_at is None:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            "Revoke this key before deleting it. Deleting a live key would cut "
+            "off whoever is holding it with no record of which key it was.",
+        )
+
+    detail = f"{api_key.name or '(unnamed)'} {api_key.key_prefix}"
+    await audit(session, request, actor, "apikey.purge", "apikey", f"{key_id} {detail}")
+    await session.delete(api_key)
+    await session.commit()
+    return {"id": key_id, "purged": True}
+
+
+@router.post("/api-keys/purge-revoked")
+async def purge_revoked_api_keys(
+    request: Request,
+    older_than_days: int = 0,
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Clear out revoked keys in one go.
+
+    `older_than_days` keeps recent revocations visible - useful right after a
+    rotation, when seeing what was just withdrawn is the point. 0 removes all
+    of them.
+    """
+    stmt = select(ApiKey).where(ApiKey.revoked_at.is_not(None))
+    if older_than_days > 0:
+        cutoff = utcnow() - timedelta(days=older_than_days)
+        stmt = stmt.where(ApiKey.revoked_at < cutoff)
+    keys = list((await session.execute(stmt)).scalars())
+
+    for api_key in keys:
+        await session.delete(api_key)
+    # One audit line for the sweep - a line per key would bury the log with the
+    # thing being cleaned up.
+    await audit(session, request, actor, "apikey.purge_revoked", "apikey",
+                f"{len(keys)} key(s), older_than_days={older_than_days}")
+    await session.commit()
+    return {"purged": len(keys)}
+
+
 # ---------------------------------------------------------------------------
 # Quota policies
 # ---------------------------------------------------------------------------
@@ -442,6 +509,36 @@ async def list_quota_policies(
             for p in result.scalars()
         ]
     }
+
+
+@router.delete("/quota-policies/{policy_id}")
+async def delete_quota_policy(
+    policy_id: str,
+    request: Request,
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Remove a quota policy.
+
+    Policies were only ever created, so a wrong one could be superseded but not
+    taken away - and since the most specific match wins, a stale narrow policy
+    quietly keeps beating the broader one meant to replace it.
+
+    Deleting shifts everyone it covered to the next policy out (user -> workspace
+    -> global), which is a real change in what members can spend. The audit entry
+    records what the policy was, since the row will not be there to look at.
+    """
+    policy = await session.get(QuotaPolicy, policy_id)
+    if policy is None:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "Quota policy not found.")
+
+    detail = (f"scope={policy.scope} window={policy.window} "
+              f"requests={policy.max_requests} user={policy.user_id or '-'} "
+              f"workspace={policy.workspace_id or '-'} model={policy.model_alias or '-'}")
+    await audit(session, request, actor, "quota.delete", "quota", f"{policy_id} {detail}")
+    await session.delete(policy)
+    await session.commit()
+    return {"id": policy_id, "deleted": True}
 
 
 # ---------------------------------------------------------------------------
