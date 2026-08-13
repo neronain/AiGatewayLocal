@@ -18,7 +18,7 @@ import hashlib
 import hmac
 import logging
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from fastapi import Depends, Request
@@ -66,6 +66,8 @@ class Principal:
     api_key_id: str
     workspace_id: str | None
     scopes: list[str]
+    # alias ที่ key ใบนี้ระบุไว้เอง · ว่าง = ไม่จำกัดเพิ่ม (ดู assert_model_permitted)
+    key_models: list[str] = field(default_factory=list)
     # "key" for a program, "session" for a signed-in human. Self-service actions
     # that mint credentials require a session: a leaked key must not be able to
     # mint more keys for itself.
@@ -154,6 +156,7 @@ async def authenticate(
         api_key_id=api_key.id,
         workspace_id=api_key.workspace_id,
         scopes=list(api_key.scopes or []),
+        key_models=list(api_key.models or []),
         via="key",
     )
 
@@ -217,6 +220,19 @@ async def assert_model_permitted(
     that workspace enables. An unbound member key is allowed any member-visible
     model - visibility is enforced separately by the registry.
     """
+    # รายการบน key เองมาก่อน และมีผลกับทุก role รวมถึง admin
+    #
+    # จงใจไม่ยกเว้น manager/admin ตรงนี้ ต่างจากกติกาของ workspace ข้างล่าง: การ
+    # ยกเว้นที่นั่นคือ "คนที่ดูแลระบบเห็นทุกอย่างได้" ส่วนตรงนี้คือข้อจำกัดที่ผู้ออก key
+    # ตั้งใจใส่ให้ key ใบนั้น — key ที่ออกให้สคริปต์ตัวเดียวควรจำกัดได้จริง ไม่ว่า
+    # เจ้าของจะเป็นใคร ไม่งั้นข้อจำกัดจะหายไปเงียบ ๆ เมื่อเจ้าของถูกเลื่อนเป็น admin
+    if principal.key_models and alias not in principal.key_models:
+        raise GatewayError(
+            ErrorCode.MODEL_NOT_PERMITTED,
+            f"This key can only use: {', '.join(sorted(principal.key_models))}.",
+            details={"model": alias, "allowed": sorted(principal.key_models)},
+        )
+
     if principal.is_manager:
         return
     if principal.workspace_id is None:

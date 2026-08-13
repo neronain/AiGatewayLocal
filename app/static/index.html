@@ -261,6 +261,12 @@
           <label for="k-days">Expires in (days)</label>
           <input id="k-days" type="number" value="180">
         </div>
+        <div class="field" style="width:100%">
+          <label>Models this key may use</label>
+          <div id="k-models" class="checks"></div>
+          <span class="hint">ไม่ติ๊กเลย = ใช้ได้เท่าที่ workspace และ role อนุญาต ·
+            ติ๊กแล้ว = จำกัดเฉพาะที่ติ๊ก (จำกัดได้อย่างเดียว ขยายไม่ได้)</span>
+        </div>
       </div>
       <button id="issue-key" class="primary">Issue key</button>
       <div id="key-out"></div>

@@ -367,6 +367,8 @@ class ApiKeyIn(BaseModel):
     name: str = ""
     expires_in_days: int | None = 180
     scopes: list[str] = Field(default_factory=list)
+    # จำกัด key ใบนี้ให้ใช้ได้เฉพาะ alias เหล่านี้ · ว่าง = ไม่จำกัดเพิ่ม
+    models: list[str] = Field(default_factory=list)
 
 
 @router.post("/api-keys", status_code=201)
@@ -375,6 +377,7 @@ async def create_api_key(
     request: Request,
     actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
     """The plaintext key is returned exactly once and never stored."""
     user = await session.get(User, payload.user_id)
@@ -384,6 +387,18 @@ async def create_api_key(
         raise GatewayError(
             ErrorCode.INSUFFICIENT_SCOPE, "Only an admin can issue an admin key."
         )
+
+    # alias ที่ไม่มีอยู่จริงบน key = key ที่เรียกอะไรไม่ได้เลย และไม่มีอะไรบอกจนกว่า
+    # ผู้ใช้จะลอง · ตรวจตอนออกดีกว่าให้ไปเจอตอนใช้
+    if payload.models:
+        known = set(state.registry.snapshot.models)
+        unknown = [a for a in payload.models if a not in known]
+        if unknown:
+            raise GatewayError(
+                ErrorCode.MODEL_NOT_FOUND,
+                f"Unknown model alias(es): {', '.join(unknown)}.",
+                details={"known_models": sorted(known)},
+            )
 
     plaintext, prefix, digest = generate_api_key()
     expires_at = (
@@ -398,6 +413,7 @@ async def create_api_key(
         key_prefix=prefix,
         key_hash=digest,
         scopes=payload.scopes,
+        models=payload.models,
         expires_at=expires_at,
     )
     session.add(api_key)
@@ -409,6 +425,7 @@ async def create_api_key(
         "key_prefix": prefix,
         "user_id": payload.user_id,
         "workspace_id": payload.workspace_id,
+        "models": payload.models,
         "expires_at": expires_at.isoformat() if expires_at else None,
         "warning": "Store this key now. It cannot be retrieved again.",
     }
@@ -463,6 +480,7 @@ async def list_api_keys(
                 "workspace_id": k.workspace_id,
                 "name": k.name,
                 "key_prefix": k.key_prefix,
+                "models": list(k.models or []),
                 "revoked": k.revoked_at is not None,
                 "expires_at": k.expires_at.isoformat() if k.expires_at else None,
                 "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,

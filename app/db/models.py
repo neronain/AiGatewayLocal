@@ -123,6 +123,11 @@ class ApiKey(Base, TimestampMixin):
     key_prefix: Mapped[str] = mapped_column(String(24), index=True)
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     scopes: Mapped[list] = mapped_column(JSON, default=list)
+    # อนุญาตเฉพาะ alias เหล่านี้ · ว่าง = ไม่จำกัดเพิ่มจากที่ workspace/role ให้อยู่แล้ว
+    #
+    # ใช้ **แคบลงเท่านั้น** ไม่เคยกว้างขึ้น: key ที่ระบุโมเดลซึ่ง workspace ไม่อนุญาต
+    # จะยังถูกปฏิเสธ ไม่งั้นการออก key จะกลายเป็นทางลัดข้ามนโยบายของ workspace
+    models: Mapped[list] = mapped_column(JSON, default=list)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -776,6 +776,14 @@ async function loadAccess() {
   const workspaceOpts = workspaces.data
     .map((c) => `<option value="${esc(c.id)}">${esc(c.code)} — ${esc(c.name)}</option>`).join('');
   $('k-workspace').innerHTML = '<option value="">— none —</option>' + workspaceOpts;
+
+  // จำกัดโมเดลต่อ key — ว่าง = พฤติกรรมเดิม · เลือกแล้ว = แคบลงเท่านั้น
+  if (!state.cache.models) {
+    try { state.cache.models = (await api('/admin/models')).data; } catch { state.cache.models = []; }
+  }
+  $('k-models').innerHTML = (state.cache.models || []).map((m) =>
+    `<label><input type="checkbox" class="k-model" value="${esc(m.alias)}"> ${esc(m.alias)}</label>`
+  ).join('') || '<span class="hint">ยังไม่มีโมเดลใน registry</span>';
   $('q-workspace').innerHTML = workspaceOpts;
 
   // ตาราง People — ก่อนหน้านี้ผู้ใช้โผล่แค่ใน dropdown ตอนออก key · role ตั้งได้
@@ -856,7 +864,8 @@ async function loadAccess() {
         <td><code>${esc(k.key_prefix)}…</code></td>
         <td>${esc(u ? u.external_id : k.user_id)}</td>
         <td>${esc(workspace ? workspace.code : '—')}</td>
-        <td>${esc(k.name || '—')}</td>
+        <td>${esc(k.name || '—')}${(k.models || []).length
+          ? `<div class="hint">เฉพาะ ${(k.models || []).map(esc).join(', ')}</div>` : ''}</td>
         <td class="hint">${k.expires_at ? new Date(k.expires_at).toLocaleDateString() : 'never'}</td>
         <td class="hint">${k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'never'}</td>
         <td><span class="pill ${k.revoked ? 'err' : 'ok'}">${k.revoked ? 'revoked' : 'active'}</span></td>
@@ -934,6 +943,7 @@ $('issue-key').onclick = async () => {
       workspace_id: $('k-workspace').value || null,
       name: $('k-name').value.trim(),
       expires_in_days: Number($('k-days').value) || null,
+      models: [...document.querySelectorAll('.k-model:checked')].map((i) => i.value),
     });
     $('key-out').innerHTML = `<div class="secret">
       <strong>Store this key now — it cannot be retrieved again.</strong>
