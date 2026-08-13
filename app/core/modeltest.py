@@ -23,6 +23,8 @@ from typing import Any
 
 import httpx
 
+from app.core.passwords import SESSION_COOKIE
+
 TEST_VERSION = "1.1"
 
 # Tests whose feature name maps onto a capability flag. When the model declares
@@ -146,15 +148,33 @@ class ModelTestSuite:
     )
 
     def __init__(
-        self, base_url: str, api_key: str, model: str, timeout: float = 180.0
+        self, base_url: str, api_key: str, model: str, timeout: float = 180.0,
+        session_cookie: str = "",
     ) -> None:
+        """`api_key` or `session_cookie` — whichever the caller authenticated with.
+
+        The suite drives the public API, and that accepts either: a program sends
+        a key, the console sends a cookie. Taking only the key meant every run
+        started from the console arrived with no credential at all and each test
+        came back `MISSING_API_KEY` — the console being the only place the button
+        exists.
+
+        Whichever it is, it is the caller's own authority, held for the run and
+        never written down. Minting a key here instead would leave a row behind
+        for something that lasts seconds.
+        """
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
         self._caps: dict[str, Any] | None = None
+        headers: dict[str, str] = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        cookies = {SESSION_COOKIE: session_cookie} if session_cookie else None
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
-            headers={"Authorization": f"Bearer {api_key}"},
+            cookies=cookies,
+            headers=headers,
             timeout=timeout,
         )
 

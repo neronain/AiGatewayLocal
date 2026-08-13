@@ -24,6 +24,7 @@ from app.core.auth import (
 )
 from app.core.capability import compatibility_badges, upstream_model_for
 from app.core.errors import ErrorCode, GatewayError
+from app.core.passwords import SESSION_COOKIE
 from app.core.modeltest import (
     ModelTestSuite,
     probe_backend,
@@ -1303,17 +1304,30 @@ async def start_model_test(
     await audit(session, request, actor, "model.test", "model", alias)
     await session.commit()
 
-    # The suite drives the public API, so it needs a usable key. The caller's own
-    # key is exactly the right authority; it is held in memory for the run only
-    # and never written anywhere.
-    api_key = extract_bearer_token(request)
+    # The suite drives the public API, so it needs whatever the caller
+    # authenticated with. A program sends a key; the console sends a session
+    # cookie, and the public API accepts both. Reading only the bearer token
+    # meant every run started from the console - the only place this button
+    # exists - arrived unauthenticated and failed with MISSING_API_KEY.
+    #
+    # Either credential is the caller's own authority, held for the run and
+    # never written anywhere.
+    # extract_bearer_token raises MISSING_API_KEY rather than returning empty -
+    # right where a key is required, wrong here, where a cookie is equally valid.
+    # Calling it unguarded is what made the console button 401 before the run
+    # even started, with the raised message showing up as the test result.
+    try:
+        api_key = extract_bearer_token(request)
+    except GatewayError:
+        api_key = ""
+    session_cookie = "" if api_key else request.cookies.get(SESSION_COOKIE, "")
     # Deliberately the server's own address, not request.base_url: the console
     # may be reached through a proxy or port-forward whose hostname means
     # nothing on this host.
     base_url = state.settings.self_base_url
 
     asyncio.create_task(
-        _execute_test_run(run.id, alias, base_url, api_key, selected),
+        _execute_test_run(run.id, alias, base_url, api_key, selected, session_cookie),
         name=f"model-test-{alias}",
     )
     return {"run_id": run.id, "model": alias, "status": "running"}
@@ -1325,8 +1339,9 @@ async def _execute_test_run(
     base_url: str,
     api_key: str,
     only: set[str] | None,
+    session_cookie: str = "",
 ) -> None:
-    suite = ModelTestSuite(base_url, api_key, alias)
+    suite = ModelTestSuite(base_url, api_key, alias, session_cookie=session_cookie)
     collected: list[dict[str, Any]] = []
 
     async def on_result(result) -> None:  # noqa: ANN001
