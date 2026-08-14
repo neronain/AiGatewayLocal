@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import Counter, Gauge, Histogram
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.api import admin, anthropic, assistant, auth, catalog, health, openai
@@ -99,10 +99,21 @@ async def _bootstrap_admin(app: FastAPI) -> None:
                 # is the same as no credential.
                 if current.password_hash:
                     return
+                # uvicorn รัน 4 worker และทุกตัวรัน startup hook นี้ · ถ้าต่างคนต่าง
+                # สุ่มแล้วเขียนทับกัน จะได้รหัสผ่านสี่อันพิมพ์ออก log แต่ใช้ได้อันเดียว
+                # (อันที่ commit ทีหลังสุด) แล้วคนอ่าน log ก็หยิบอันแรกไปลอง — เจอจริง
+                # ตอน deploy 2026-08-14 · เขียนแบบมีเงื่อนไขแล้วดู rowcount: ใครแพ้ก็เงียบ
                 recovered = settings.admin_password or secrets.token_urlsafe(12)
-                current.password_hash = hash_password(recovered)
-                current.must_change_password = not settings.admin_password
+                won = await session.execute(
+                    update(User)
+                    .where(User.id == current.id, or_(User.password_hash == "",
+                                                      User.password_hash.is_(None)))
+                    .values(password_hash=hash_password(recovered),
+                            must_change_password=not settings.admin_password)
+                )
                 await session.commit()
+                if not won.rowcount:
+                    return          # worker อื่นตั้งไปแล้ว — ของเราไม่ได้ถูกใช้ ห้ามพิมพ์
                 log.warning(
                     "\n%s\nCONSOLE SIGN-IN RESTORED (shown once)\n"
                     "  This administrator existed without a password, which no\n"

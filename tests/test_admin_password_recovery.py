@@ -77,3 +77,35 @@ def test_an_admin_that_already_has_one_is_left_alone(client, chosen_password):
     assert before, "เทสนี้ต้องเริ่มจาก admin ที่มีรหัสผ่านอยู่แล้ว"
     loop.run_until_complete(_bootstrap_admin(client.app))
     assert loop.run_until_complete(hash_now()) == before
+
+
+def test_only_one_worker_announces_the_password(client, chosen_password):
+    """uvicorn รันหลาย worker และทุกตัวรัน startup hook นี้
+
+    ต่างคนต่างสุ่มแล้วเขียนทับกัน = log มีรหัสผ่านหลายอันแต่ใช้ได้อันเดียว แล้วคนอ่าน
+    log ก็หยิบอันแรกไปลอง · เจอจริงตอน deploy: พิมพ์ออกมาสี่อัน ใช้ได้อันสุดท้าย
+    """
+    import asyncio
+    import logging
+
+    from app.main import _bootstrap_admin
+
+    who = _strip_password(client)
+    loop = asyncio.get_event_loop_policy().new_event_loop()
+
+    announced = []
+    handler = logging.Handler()
+    handler.emit = lambda record: announced.append(record.getMessage())
+    log = logging.getLogger("app.main")
+    log.addHandler(handler)
+    try:
+        for _ in range(4):                       # เหมือนสี่ worker เรียกพร้อมกัน
+            loop.run_until_complete(_bootstrap_admin(client.app))
+    finally:
+        log.removeHandler(handler)
+
+    restored = [m for m in announced if "RESTORED" in m]
+    assert len(restored) == 1, f"ประกาศ {len(restored)} ครั้ง — ต้องมีผู้ชนะคนเดียว"
+    assert client.post("/auth/login",
+                       json={"username": who, "password": chosen_password}
+                       ).status_code == 200
