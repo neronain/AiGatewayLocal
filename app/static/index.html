@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.15.0">
+<link rel="stylesheet" href="style.css?v=1.16.0">
 </head>
 <body>
 
@@ -478,7 +478,7 @@
     <div class="card">
       <h3>Add a quota policy</h3>
       <p class="hint">
-        The most specific match wins: user + model &gt; user &gt; workspace + model &gt; workspace &gt; global.
+        The most specific match wins: user + model &gt; user + bundle &gt; user &gt; workspace + model &gt; workspace + bundle &gt; workspace &gt; global.
         Leave a limit at 0 for unlimited.
       </p>
       <div class="row" style="margin-top:12px">
@@ -509,6 +509,12 @@
             <option value="month">month</option>
             <option value="term">term</option>
           </select>
+        </div>
+      </div>
+      <div class="row">
+        <div class="field" style="flex:1 1 100%">
+          <label for="q-name">ชื่อนโยบาย (ไม่บังคับ)</label>
+          <input id="q-name" placeholder="เช่น ช่วงสอบปลายภาค · วิชาที่ใช้ vision หนัก" autocomplete="off">
         </div>
       </div>
       <div class="row">
@@ -634,6 +640,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.15.0"></script>
+<script src="app.js?v=1.16.0"></script>
 </body>
 </html>

@@ -271,6 +271,7 @@ network at the proxy (SEC-5).
 | POST | `/admin/workspaces/{id}/models` | manager | Replace the allowed alias list |
 | POST | `/admin/workspaces/{id}/join` | manager | Enroll a user |
 | PATCH | `/admin/workspaces/{id}/status` | manager | `active` / `suspended` — reversible |
+| DELETE | `/admin/workspaces/{id}` | admin | Refused while it has members or keys |
 | POST | `/admin/access-groups` | admin | Name a bundle of aliases |
 | GET | `/admin/access-groups` | manager | List bundles and who holds them |
 | PATCH | `/admin/access-groups/{id}` | admin | Edit — reaches every workspace holding it |
@@ -278,7 +279,7 @@ network at the proxy (SEC-5).
 | POST | `/admin/api-keys` | manager | Issue a key (**plaintext returned once**) — `models`, `access_groups`, `kind`; blanks filled from the workspace defaults |
 | GET | `/admin/api-keys?user_id=` | manager | List keys (prefix only) |
 | DELETE | `/admin/api-keys/{id}` | manager | Revoke |
-| POST | `/admin/quota-policies` | admin | Create a policy — window limits plus `max_requests_per_minute` / `max_tokens_per_minute` |
+| POST | `/admin/quota-policies` | admin | Create a policy — `name`, window limits, `max_requests_per_minute` / `max_tokens_per_minute`, and either `model_alias` or `access_group_id` |
 | GET | `/admin/quota-policies` | manager | List policies |
 | GET | `/admin/models` | admin | Registry incl. upstream names, endpoints, health |
 | PATCH | `/admin/models/{alias}/enabled` | admin | Take an alias or one endpoint out of service |

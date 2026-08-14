@@ -393,6 +393,21 @@ curl -s -X POST $GW/admin/quota-policies -H "Authorization: Bearer $ADMIN_KEY" \
        "max_requests_per_minute":6,"max_tokens_per_minute":40000}'
 ```
 
+A policy can carry a `name` — six of them told apart only by reading their
+scope and target is six nobody dares touch — and can apply to a whole **bundle**
+instead of one alias:
+
+```bash
+  -d '{"name":"heavy GPU models","access_group_id":"<id>",
+       "window":"day","max_requests_per_minute":10}'
+```
+
+A limit meant for four models was four policies to write and four to remember
+to change; an access group is already a named set, so that is what a policy
+points at. Name one alias or one bundle, not both. Precedence puts a named alias
+above a bundle containing it, for the same reason a rule about one person beats
+a rule about their class.
+
 Counted **per person**, not per key: ten tabs is still one person, and counting
 per key would make issuing yourself another one a way to get more. `0` means
 unlimited and is the default — a rate limit nobody chose is one that refuses

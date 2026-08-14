@@ -484,6 +484,66 @@ async def delete_access_group(
     return {"id": group_id, "deleted": True}
 
 
+@router.delete("/workspaces/{workspace_id}")
+async def delete_workspace(
+    workspace_id: str,
+    request: Request,
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Remove a workspace that is genuinely finished with.
+
+    Refused while anybody is still in it or any key is still pinned to it. A
+    pinned key whose workspace has gone permits nothing, and nothing on screen
+    would say why — the owner would find out by being refused. Take the members
+    out and re-issue or revoke those keys first, or suspend it instead, which
+    stops it granting anything and can be undone.
+    """
+    workspace = await session.get(Workspace, workspace_id)
+    if workspace is None:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "Workspace not found.")
+
+    members = int((await session.execute(
+        select(func.count()).select_from(Membership).where(
+            Membership.workspace_id == workspace_id
+        )
+    )).scalar() or 0)
+    pinned = int((await session.execute(
+        select(func.count()).select_from(ApiKey).where(
+            ApiKey.workspace_id == workspace_id, ApiKey.revoked_at.is_(None)
+        )
+    )).scalar() or 0)
+    if members or pinned:
+        parts = []
+        if members:
+            parts.append(f"{members} member(s)")
+        if pinned:
+            parts.append(f"{pinned} key(s) issued for it")
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            f"'{workspace.code}' still has {' and '.join(parts)}. Clear those "
+            "first, or suspend it instead — that stops it granting anything and "
+            "can be undone.",
+            details={"members": members, "pinned_keys": pinned},
+        )
+
+    await session.execute(
+        delete(WorkspaceModel).where(WorkspaceModel.workspace_id == workspace_id)
+    )
+    await session.execute(
+        delete(WorkspaceAccessGroup).where(
+            WorkspaceAccessGroup.workspace_id == workspace_id
+        )
+    )
+    await session.execute(
+        delete(QuotaPolicy).where(QuotaPolicy.workspace_id == workspace_id)
+    )
+    await session.delete(workspace)
+    await audit(session, request, actor, "workspace.delete", "workspace", workspace.code)
+    await session.commit()
+    return {"id": workspace_id, "code": workspace.code, "deleted": True}
+
+
 WORKSPACE_STATUSES = ("active", "suspended")
 
 
@@ -1039,10 +1099,16 @@ async def purge_revoked_api_keys(
 # Quota policies
 # ---------------------------------------------------------------------------
 class QuotaPolicyIn(BaseModel):
+    # ชื่อที่คนอ่านออกว่านโยบายนี้เขียนไว้เพื่ออะไร · scope+เป้าหมายบอกโค้ดได้ แต่ไม่ได้
+    # บอกคนที่กำลังมองอยู่หกใบว่าใบไหนคือใบที่เขียนไว้ตอนสอบ
+    name: str = ""
     scope: str = "global"
     workspace_id: str | None = None
     user_id: str | None = None
     model_alias: str | None = None
+    # หรือทั้งมัด · มัดคือชุดโมเดลที่มีชื่ออยู่แล้ว จึงเล็งไปที่มัดแทนที่จะสร้างรายชื่อ
+    # โมเดลชุดที่สองซึ่งต้องคอยไล่ให้ตรงกัน
+    access_group_id: str | None = None
     window: str = "day"
     max_requests: int = 0
     max_input_tokens: int = 0
@@ -1062,6 +1128,16 @@ async def create_quota_policy(
 ) -> dict[str, Any]:
     if payload.window not in {"day", "month", "term"}:
         raise GatewayError(ErrorCode.INVALID_REQUEST, "window must be day, month or term.")
+    if payload.model_alias and payload.access_group_id:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            "Name one model or one bundle, not both — two answers to the same "
+            "question is a policy nobody can predict.",
+        )
+    if payload.access_group_id and not await session.get(
+        AccessGroup, payload.access_group_id
+    ):
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "Access group not found.")
     policy = QuotaPolicy(**payload.model_dump())
     session.add(policy)
     await audit(session, request, actor, "quota.create", "quota", payload.scope)
@@ -1089,7 +1165,9 @@ async def list_quota_policies(
         "data": [
             {
                 "id": p.id,
+                "name": p.name,
                 "scope": p.scope,
+                "access_group_id": p.access_group_id,
                 "workspace_id": p.workspace_id,
                 "user_id": p.user_id,
                 "model_alias": p.model_alias,

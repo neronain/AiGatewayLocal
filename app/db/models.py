@@ -264,12 +264,23 @@ class QuotaPolicy(Base, TimestampMixin):
     __tablename__ = "quota_policies"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    # What this policy is for, in the operator's words. Scope plus target
+    # identifies a policy to the code; it does not tell the person looking at
+    # six of them which is the one they wrote for the exam period.
+    name: Mapped[str] = mapped_column(String(128), default="")
     scope: Mapped[str] = mapped_column(String(16), default="global")  # global|workspace|user
     workspace_id: Mapped[str | None] = mapped_column(
         "course_id", ForeignKey("courses.id"), index=True
     )
     user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), index=True)
     model_alias: Mapped[str | None] = mapped_column(String(64), index=True)
+    # Or a whole bundle of them. A quota that should cover four models was four
+    # policies to write and four to remember to change; an access group is
+    # already a named set of models, so it is the set to point at rather than
+    # inventing a second list of aliases that has to be kept in step with it.
+    access_group_id: Mapped[str | None] = mapped_column(
+        ForeignKey("access_groups.id"), index=True
+    )
 
     window: Mapped[str] = mapped_column(String(16), default="day")  # day|month|term
     max_requests: Mapped[int] = mapped_column(Integer, default=0)  # 0 == unlimited

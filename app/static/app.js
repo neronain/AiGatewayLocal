@@ -1240,6 +1240,8 @@ async function loadAccess() {
         <button class="ghost small" data-holdworkspace="${esc(c.id)}"
           data-to="${held ? 'active' : 'suspended'}" data-code="${esc(c.code)}"
           >${held ? 'เปิดใช้' : 'ระงับ'}</button>
+        <button class="danger small" data-delworkspace="${esc(c.id)}"
+          data-code="${esc(c.code)}">Delete</button>
       </td>
     </tr>`;
     }).join('') || '<tr><td class="empty">No workspaces yet.</td></tr>'}`;
@@ -1257,6 +1259,15 @@ async function loadAccess() {
         await patch(`/admin/workspaces/${id}/status`, { status: to });
         await loadAccess();
       } catch (e) { showError(e.message); }
+    };
+  }
+  for (const btn of $('workspace-table').querySelectorAll('[data-delworkspace]')) {
+    btn.onclick = async () => {
+      if (!confirm(`ลบ ${btn.dataset.code} ถาวร?\n\n`
+        + 'ถ้าแค่อยากหยุดใช้ชั่วคราว กด "ระงับ" แทน ซึ่งย้อนกลับได้\n'
+        + 'การลบจะถูกปฏิเสธถ้ายังมีสมาชิกหรือ key ที่ผูกกับวิชานี้อยู่')) return;
+      try { await del(`/admin/workspaces/${btn.dataset.delworkspace}`); await loadAccess(); }
+      catch (e) { showError(e.message); }
     };
   }
   for (const btn of $('workspace-table').querySelectorAll('[data-saveworkspace]')) {
@@ -1353,8 +1364,17 @@ async function loadQuota() {
     api('/admin/quota-policies'), api('/admin/usage/top-users?days=7'),
   ]);
 
-  $('q-model').innerHTML = '<option value="">— all models —</option>' +
-    (state.cache.models || []).map((m) => `<option value="${esc(m.alias)}">${esc(m.alias)}</option>`).join('');
+  // มัดอยู่ในลิสต์เดียวกับโมเดล เพราะเป็นคำตอบของคำถามเดียวกันว่า "ใช้กับอะไร"
+  const bundles = state.cache.accessGroups || [];
+  $('q-model').innerHTML = '<option value="">— all models —</option>'
+    + (state.cache.models || [])
+      .map((m) => `<option value="${esc(m.alias)}">${esc(m.alias)}</option>`).join('')
+    + (bundles.length
+      ? `<optgroup label="มัดโมเดล">${bundles.map((g) =>
+          `<option value="group:${esc(g.id)}">${esc(g.name)} · ${
+            (g.models || []).length} โมเดล</option>`).join('')}</optgroup>`
+      : '');
+  const groupNames = Object.fromEntries(bundles.map((g) => [g.id, g.name]));
 
   const users = Object.fromEntries((state.cache.users || []).map((u) => [u.id, u.external_id]));
   const workspaces = Object.fromEntries((state.cache.workspaces || []).map((c) => [c.id, c.code]));
@@ -1366,9 +1386,13 @@ async function loadQuota() {
         <th class="num">Output</th><th class="num">Images</th>
         <th class="num">Per minute</th><th></th></tr>
     ${policies.data.map((p) => `<tr>
-      <td><span class="pill mute">${esc(p.scope)}</span></td>
+      <td><span class="pill mute">${esc(p.scope)}</span>${p.name
+        ? `<div class="hint">${esc(p.name)}</div>` : ''}</td>
       <td>${esc(users[p.user_id] || workspaces[p.workspace_id] || 'everyone')}</td>
-      <td><code>${esc(p.model_alias || 'all')}</code></td>
+      <td>${p.access_group_id
+        ? `<code>${esc(groupNames[p.access_group_id] || 'bundle')}</code>
+           <div class="hint">มัด</div>`
+        : `<code>${esc(p.model_alias || 'all')}</code>`}</td>
       <td>${esc(p.window)}</td>
       <td class="num">${lim(p.max_requests)}</td><td class="num">${lim(p.max_input_tokens)}</td>
       <td class="num">${lim(p.max_output_tokens)}</td><td class="num">${lim(p.max_images)}</td>
@@ -1408,8 +1432,11 @@ $('create-quota').onclick = async () => {
       scope,
       workspace_id: scope === 'workspace' ? $('q-workspace').value : null,
       user_id: scope === 'user' ? $('q-user').value : null,
-      model_alias: $('q-model').value || null,
+      model_alias: $('q-model').value.startsWith('group:') ? null : ($('q-model').value || null),
+      access_group_id: $('q-model').value.startsWith('group:')
+        ? $('q-model').value.slice(6) : null,
       window: $('q-window').value,
+      name: $('q-name').value.trim(),
       max_requests: Number($('q-req').value) || 0,
       max_input_tokens: Number($('q-in').value) || 0,
       max_output_tokens: Number($('q-outt').value) || 0,

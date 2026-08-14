@@ -29,7 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ErrorCode, GatewayError
-from app.db.models import QuotaCounter, QuotaPolicy
+from app.db.models import AccessGroup, QuotaCounter, QuotaPolicy
 from app.registry.schema import QuotaDefaults
 
 log = logging.getLogger(__name__)
@@ -346,11 +346,30 @@ class QuotaService:
         workspace_id: str | None,
         model_alias: str,
     ) -> ResolvedLimits:
-        """Most specific policy wins: user+model > user > workspace+model > workspace > global."""
+        """Most specific policy wins.
+
+        user+model > user+bundle > user > workspace+model > workspace+bundle >
+        workspace > global. A policy naming one alias beats a policy naming a
+        bundle that happens to contain it, for the same reason a rule about one
+        person beats a rule about their class: it was written with more
+        knowledge of the case.
+        """
         result = await session.execute(
             select(QuotaPolicy).where(QuotaPolicy.enabled.is_(True))
         )
         policies = list(result.scalars())
+
+        # Only the bundles some policy actually points at, and only when the
+        # alias could match one - a deployment with no bundle quotas asks nothing.
+        bundles: dict[str, set[str]] = {}
+        wanted = {p.access_group_id for p in policies if p.access_group_id}
+        if wanted and model_alias:
+            rows = await session.execute(
+                select(AccessGroup.id, AccessGroup.models).where(
+                    AccessGroup.id.in_(wanted), AccessGroup.enabled.is_(True)
+                )
+            )
+            bundles = {gid: set(models or []) for gid, models in rows}
 
         def score(policy: QuotaPolicy) -> int:
             if policy.user_id and policy.user_id != user_id:
@@ -359,12 +378,18 @@ class QuotaService:
                 return -1
             if policy.model_alias and policy.model_alias != model_alias:
                 return -1
+            if policy.access_group_id and model_alias not in bundles.get(
+                policy.access_group_id, set()
+            ):
+                return -1
             value = 0
             if policy.user_id:
-                value += 4
+                value += 8
             if policy.workspace_id:
-                value += 2
+                value += 4
             if policy.model_alias:
+                value += 2
+            elif policy.access_group_id:
                 value += 1
             return value
 
