@@ -989,3 +989,52 @@ GW_KEY_REVEAL_SECRET=$(openssl rand -base64 32)
 
 Leaving it unset keeps the original behaviour, which is the stronger posture: a
 stolen database dump contains no usable credentials.
+
+
+## Certificates for clients on other machines
+
+`scripts/install_tls.sh` issues from a private CA when no certificate is given,
+and leaves it at `/etc/ssl/litegate-ca/ca.crt`. That file is what makes TLS
+verify on the machines that call the gateway; `ca.key` beside it is what issues
+certificates they will then trust, so it never leaves the host.
+
+**Name every address before issuing.** A certificate for the hostname does not
+cover the IP, and clients differ in which one they send:
+
+```bash
+sudo scripts/install_tls.sh --force \
+  gateway.example.ac.th 10.0.0.5 localhost 127.0.0.1
+```
+
+`--force` matters on the second run. Without it the script keeps a certificate
+that has not expired — which says nothing about whether it still covers the
+address in use, and is how a working gateway starts failing after a rename.
+
+**Installing the CA on a client:**
+
+```bash
+# macOS, system-wide — required for Electron/Chromium apps
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain litegate-ca.crt
+
+# Linux
+sudo cp litegate-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates
+
+# Node processes only
+export NODE_EXTRA_CA_CERTS=/path/to/litegate-ca.crt
+
+# curl / scripts, without touching any store
+curl --cacert litegate-ca.crt https://gateway.example.ac.th/healthz
+```
+
+Desktop applications usually need the system store rather than the Node
+variable: they make some requests from Node and others from Chromium, and only
+the first reads `NODE_EXTRA_CA_CERTS`. The symptom of getting that wrong is
+`net::ERR_CERT_AUTHORITY_INVALID` from one half of an app while `curl` on the
+same machine is happy.
+
+**When not to bother.** A client on the gateway host itself can use
+`http://127.0.0.1:8080` and skip certificates entirely — that is the reason the
+plain port stays open. And for a client that cannot be given the CA, a tunnel
+(`cloudflared tunnel --url http://localhost:8080`) supplies a publicly trusted
+name at the cost of publishing the endpoint while it runs.

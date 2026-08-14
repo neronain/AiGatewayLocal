@@ -111,8 +111,92 @@ so a bad render never takes the site down. **HSTS is opt-in** (`--hsts`) because
 it is host-scoped, not port-scoped — switching it on also upgrades
 `http://host:8080` and can strand a private-CA deployment with no way back.
 
+Reissuing after the names change — a new hostname, a moved IP — needs `--force`.
+A certificate that has not expired is not the same as one that still covers the
+address you are using, and without the flag the script keeps the old one:
+
+```bash
+sudo scripts/install_tls.sh --force gateway.example.ac.th 10.0.0.5 localhost 127.0.0.1
+```
+
 Real deployments — Docker Compose, systemd, Postgres + Redis, backup and
 restore, monitoring: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**
+
+---
+
+## Pointing Claude Code and other clients at it
+
+The gateway serves `/v1/messages`, so Claude Code talks to it directly:
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
+export ANTHROPIC_AUTH_TOKEN=lg_sk_...
+export ANTHROPIC_MODEL=coding
+claude
+```
+
+Claude's third-party provider settings refuse anything that is not **https, or
+http on loopback** — `baseUrl: must use https (or http on loopback)`. A plain
+LAN address is rejected outright, which leaves three ways in. Pick by where the
+client runs:
+
+| The client runs | Use | What it costs |
+|---|---|---|
+| On the gateway host itself | `http://127.0.0.1:8080` | nothing — no certificate involved |
+| On another machine you control | `https://<host>` + your own CA | install one file on each client |
+| Anywhere, or you want a real name | a Cloudflare tunnel | the endpoint becomes reachable from the internet |
+
+### Loopback, when the client is on the same machine
+
+Nothing to configure. If the gateway runs in a VM whose ports are published to
+the host — OrbStack, Docker Desktop, `ssh -L` — `127.0.0.1` on the host already
+is the gateway, and it satisfies the loopback rule.
+
+### Your own CA, when clients are elsewhere on the network
+
+`install_tls.sh` issues a certificate from a private CA and leaves the CA at
+`/etc/ssl/litegate-ca/ca.crt`. Copy that one file to each machine that will call
+the gateway:
+
+```bash
+# macOS — trusted system-wide, which is what Chromium-based apps read
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain litegate-ca.crt
+
+# Linux
+sudo cp litegate-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates
+
+# Node only, no changes to the system store
+export NODE_EXTRA_CA_CERTS=/path/to/litegate-ca.crt
+```
+
+Desktop apps built on Electron use **both**: Node for some requests and Chromium
+for others, and the two read different trust stores. `NODE_EXTRA_CA_CERTS` alone
+gets `net::ERR_CERT_AUTHORITY_INVALID` from the Chromium half, so install into
+the system store when an app is involved rather than a script. Restart the app
+afterwards — the trust store is read at launch.
+
+> Trusting a root CA means the machine believes **every** certificate that CA
+> signs. `/etc/ssl/litegate-ca/ca.key` is what issues them: guard it like a
+> password and hand out only `ca.crt`. Undo with
+> `sudo security delete-certificate -c "LiteGate Local CA" /Library/Keychains/System.keychain`.
+
+The certificate only covers the names it was issued for. A certificate for the
+hostname does not cover the IP, and clients differ in which they send — so name
+every address you will actually use, and `--force` a reissue when that list
+changes.
+
+### A tunnel, when you want a name every client already trusts
+
+```bash
+cloudflared tunnel --url http://localhost:8080
+```
+
+Gives an `https://…trycloudflare.com` URL with a publicly trusted certificate,
+so nothing needs installing anywhere. It also **publishes the gateway to the
+internet** for as long as it runs: fine for a test, and the API key is still
+required, but close it afterwards and use a named tunnel with Cloudflare Access
+in front for anything lasting.
 
 ---
 

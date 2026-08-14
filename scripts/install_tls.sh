@@ -6,6 +6,7 @@
 #   sudo ./scripts/install_tls.sh                          # private CA, auto names
 #   sudo ./scripts/install_tls.sh gateway.uni.ac.th        # add a name
 #   sudo ./scripts/install_tls.sh --cert /path/full.pem --key /path/key.pem
+#   sudo ./scripts/install_tls.sh --force gw.local 10.0.0.5   # ออกใหม่เมื่อชื่อเปลี่ยน
 #
 # HTTPS is not optional in practice. A growing number of clients refuse plain
 # HTTP outright - browser APIs gated on a secure context, editor extensions,
@@ -35,12 +36,13 @@ log()  { printf '\033[36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m!!\033[0m %s\n' "$*"; }
 die()  { printf '\033[31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
-OWN_CERT="" OWN_KEY="" HSTS="" NAMES=()
+OWN_CERT="" OWN_KEY="" HSTS="" FORCE="" NAMES=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --cert) OWN_CERT="${2:?--cert needs a path}"; shift 2 ;;
         --key)  OWN_KEY="${2:?--key needs a path}"; shift 2 ;;
         --hsts) HSTS="yes"; shift ;;
+        --force) FORCE="yes"; shift ;;
         --no-hsts) HSTS="no"; shift ;;
         -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
         -*) die "unknown option: $1" ;;
@@ -80,9 +82,12 @@ if [[ -n "$OWN_CERT" ]]; then
     # A certificate from a public CA is already trusted everywhere, so the
     # first-visit warning that HSTS makes unbypassable cannot happen.
     [[ -z "$HSTS" ]] && HSTS="yes"
-elif [[ -s "$CERT_PATH" && -s "$KEY_PATH" ]] && \
+elif [[ -z "$FORCE" && -s "$CERT_PATH" && -s "$KEY_PATH" ]] && \
      openssl x509 -in "$CERT_PATH" -checkend 604800 -noout >/dev/null 2>&1; then
-    log "Keeping the existing certificate (valid for more than a week)"
+    # ยังไม่หมดอายุ = ไม่ต้องออกใหม่ · แต่ "ยังไม่หมดอายุ" ไม่ได้แปลว่า "ยังใช้ได้"
+    # เพิ่มชื่อใหม่ (โฮสต์ที่จะเรียกเพิ่ม, IP ที่เปลี่ยน) แล้วใบเดิมจะไม่ครอบคลุม
+    # และก่อนมี --force ทางเดียวคือไปลบไฟล์เองซึ่งไม่มีใครเดาถูก
+    log "Keeping the existing certificate (valid for more than a week) - use --force to reissue"
 else
     log "Issuing a certificate from a private CA"
     "$REPO_DIR/scripts/make_tls_cert.sh" --out "$CA_OUT" "${NAMES[@]}" >/dev/null
