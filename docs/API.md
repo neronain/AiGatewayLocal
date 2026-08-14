@@ -279,8 +279,9 @@ network at the proxy (SEC-5).
 | DELETE | `/admin/access-groups/{id}` | admin | Refused while any workspace holds it |
 | POST | `/admin/api-keys` | manager | Issue a key (**plaintext returned once**) — `models`, `access_groups`, `kind`; blanks filled from the workspace defaults |
 | GET | `/admin/api-keys?user_id=` | manager | List keys (prefix only) |
-| PATCH | `/admin/api-keys/{id}` | manager | Move the expiry — `{"days": n}` from today, `null` to remove |
+| PATCH | `/admin/api-keys/{id}` | manager | Amend a live key — `{"days": n}` from today (`null` removes it) and/or `{"models": [...]}` replacing the scope. Either alone; neither disturbs the other |
 | DELETE | `/admin/api-keys/{id}` | manager | Revoke |
+| POST | `/admin/users/{id}/quota/reset` | **admin** | Zero this person's counter for the current window — usage records untouched |
 | POST | `/admin/quota-policies` | admin | Create a policy — `name`, window limits, per-minute limits, `expires_in_days`, and either `model_alias` or `access_group_id` |
 | GET | `/admin/quota-policies` | manager | List policies |
 | PATCH | `/admin/quota-policies/{id}` | admin | Move the expiry — same shape |
@@ -455,12 +456,71 @@ and hyphen. Errors from the deploy tool are passed through verbatim.
 ```
 
 ```json
-{ "id": "…", "api_key": "edu_sk_…", "key_prefix": "edu_sk_jYPu",
-  "expires_at": "2027-02-08T…",
+{ "id": "…", "api_key": "lg_sk_…", "key_prefix": "lg_sk_jYPu",
+  "expires_at": "2027-02-08T…", "revealable": false,
   "warning": "Store this key now. It cannot be retrieved again." }
 ```
 
-The plaintext is stored nowhere. A lost key must be revoked and re-issued.
+By default the plaintext is stored nowhere and a lost key can only be replaced.
+Set `GW_KEY_REVEAL_SECRET` and a sealed copy is kept that an **administrator**
+can open through `POST /admin/api-keys/{id}/reveal`; `revealable` says which of
+the two applies to that key, and it is decided when the key is issued — turning
+the setting on later does not make existing keys readable. Every reveal is
+recorded and listed by `GET /admin/api-keys/{id}/reveals`.
+
+> The reveal response is **flat** — `{"id", "api_key", "key_prefix"}` — not
+> wrapped in `data` like the rest of the admin API.
+
+Keys issued before v1.4 carry the `edu_sk_` prefix and keep working: a key is
+verified by HMAC over the whole string, so the prefix is only a label.
+
+### `PATCH /admin/api-keys/{id}`
+
+```json
+{ "days": 30, "models": ["claude-opus-4.8", "claude-haiku-4.8"] }
+```
+
+```json
+{ "id": "…", "expires_at": "2026-09-13T…",
+  "models": ["claude-opus-4.8", "claude-haiku-4.8"] }
+```
+
+Both fields are optional and independent — send one and the other is left
+exactly as it was. Sending neither is refused rather than treated as a no-op.
+
+`models` **replaces** the list; there is no add or remove. `[]` lifts the
+restriction, which widens the key rather than narrowing it, so it is a decision
+the caller has to make explicitly. Unknown aliases are refused with
+`MODEL_NOT_FOUND` and the known list in `details.known_models`, because a key
+naming a model that does not exist reaches nothing and says nothing until
+somebody tries to use it.
+
+A manager is held to the same bar as at issue: only models they could call
+themselves, and only for keys belonging to their own workspaces. A revoked key
+cannot be amended — revocation is meant to be final, not a detour.
+
+### `POST /admin/users/{id}/quota/reset`
+
+```json
+{ "user_id": "…", "window": "day",
+  "cleared": { "requests": 151, "input_tokens": 1630767, "output_tokens": 11033, "images": 2 },
+  "usage": { "window": "day", "limits": { … }, "used": { "requests": 0, … } } }
+```
+
+Zeroes the counter for the window that currently resolves for that person, and
+the per-minute counter when a rate limit is in force. Admin only.
+
+**Usage records are a separate ledger and are not touched** — `/admin/usage/*`
+reports the same figures afterwards. What was cleared is written to the audit
+log, so the reset is a visible decision rather than a way to hand out unmetered
+access quietly.
+
+With Redis configured, both stores are cleared. Clearing only Redis achieves
+nothing lasting: the next read misses, concludes an earlier outage may have left
+counts in the database, and reseeds from there. If Redis cannot be reached the
+call fails with `UPSTREAM_ERROR` rather than reporting a success it did not
+deliver — the database side is still cleared, so retrying once Redis is back
+completes the job.
 
 ### `GET /admin/usage/summary?days=7`
 

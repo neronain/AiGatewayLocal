@@ -61,6 +61,11 @@ actually call, so nothing is offered that would be refused on use.
 Keep this key revealable (`GW_KEY_REVEAL_SECRET` set) and it can be read back
 from the console later instead of reissued.
 
+Adding a fourth alias later does not mean a new key: **Access & Keys → the key's
+`model` button**, tick it, save. The value in Developer Mode stays as it is —
+which is the point, because editing it there means finding it again in every
+client you set up.
+
 ## 3 · Install cloudflared
 
 ```bash
@@ -157,6 +162,21 @@ agree. If it lists more than the key can call, the key is wider than intended.
 | `SUMMARY: Environment has critical failures` but it connects | One region unreachable, usually UDP 7844 | Open the port, or `--protocol http2` |
 | Discovery lists models you did not expect | The key is not scoped | Set `models: [...]` on the key |
 | Tunnel URL stopped working | Quick tunnels are ephemeral | Named tunnel with your own hostname |
+| Everything answers, but Claude never uses a tool | The backend's tool parser does not match the model, so the call arrives as text | Fix it on the backend, not here — see below |
+| `UPSTREAM_ERROR` on `/v1/messages` while `/v1/chat/completions` is fine | The alias has no `upstream_model`, so the gateway forwards the alias name and the backend does not know it | Set `upstream_model` to the name the backend actually serves (`GET <backend>/v1/models`) |
+
+### When tools silently do nothing
+
+The hardest one to see, because nothing errors. Claude Code sends
+`tool_choice: "auto"`, the model writes a tool call in its own format, and a
+mismatched parser on the backend fails to read it — so the call arrives as
+ordinary prose and Claude looks like it is refusing to use tools.
+
+Run the gateway's own suite (**Models → Run tests**) rather than guessing: it
+sends no `tool_choice`, which means `auto`, and `MODEL-004` reports `degraded`
+when no `tool_calls` come back. A backend test that forces `tool_choice:
+"required"` will pass regardless, because the engine constrains the output shape
+itself — that is a test of the engine, not of the parser.
 
 ## What this costs
 

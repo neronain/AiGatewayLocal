@@ -17,6 +17,11 @@ journalctl -u litegate -n 100 --no-pager   # or: docker compose logs --tail=100 
 
 `/readyz` answers most of what follows without reading a log.
 
+> **Check the unit name once, now, not at 3am.** A gateway upgraded from EduLLM
+> Gateway still answers to `edullm-gateway` in `/opt/edullm-gateway`, and every
+> `litegate` command below will report success while doing nothing at all.
+> `systemctl show <unit> -p FragmentPath -p WorkingDirectory --value` settles it.
+
 ---
 
 ## The gateway is down
@@ -189,6 +194,43 @@ Thirty people rarely hit a limit at the same moment. Check, in this order:
    thousands of requests is a script, not a person.
 3. Is the window shorter than intended? A `day` policy meant as `term` will
    look exactly like this every afternoon.
+
+Once the cause is understood, deal with the person and the rule separately. If
+one runaway loop spent somebody's allowance, hand it back rather than raising
+the limit — the limit was not the problem, and a limit raised in an incident
+stays raised:
+
+```bash
+curl -s -X POST https://gateway/admin/users/<id>/quota/reset \
+  -H "Authorization: Bearer $ADMIN"
+```
+
+It returns what it cleared, leaves the usage records intact, and writes the
+reset to the audit log. Fix the loop too, or you will be back within the hour.
+
+---
+
+## Somebody's key cannot reach a model
+
+Nothing is broken. `MODEL_NOT_PERMITTED` names the models the key does allow —
+read the message before changing anything, because the other three causes look
+identical to the user and none of them is the key:
+
+| The message says | Cause |
+|---|---|
+| `not available to you. Allowed by the model list on this key` | The key's own scope |
+| the workspace's models | The workspace, or it is suspended |
+| unknown model | The alias is not in the registry — a typo, or the file failed validation (`/readyz`) |
+
+Only the first is fixed on the key, and it no longer needs reissuing:
+
+```bash
+curl -s -X PATCH https://gateway/admin/api-keys/<id> -H "Authorization: Bearer $ADMIN" \
+  -H 'Content-Type: application/json' -d '{"models":["alias-a","alias-b"]}'
+```
+
+Send the whole list you want. `[]` removes the restriction entirely, which
+widens the key — rarely what is wanted during an incident.
 
 ---
 

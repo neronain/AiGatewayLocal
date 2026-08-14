@@ -33,8 +33,17 @@ vllm serve ucbye/Qwen3-Coder-Next-NVFP4-GB10 \
   --host 0.0.0.0 --port 8000 \
   --served-model-name ucbye/Qwen3-Coder-Next-NVFP4-GB10 \
   --max-model-len 262144 \
-  --enable-auto-tool-choice --tool-call-parser hermes
+  --enable-auto-tool-choice --tool-call-parser qwen3_coder
 ```
+
+> **The parser has to match the model family.** A wrong one does not error — it
+> silently fails to parse, and the tool call arrives as ordinary text, which the
+> client reads as the model refusing to use tools. Qwen-family models (this one,
+> and Nemotron-3) need `qwen3_coder`; `hermes` expects JSON and will not read
+> their XML. Ask the engine for the names it accepts rather than guessing from
+> filenames — see [LMDS · เลือก parser ตัวไหน][lmds-parsers].
+
+[lmds-parsers]: https://github.com/neronain/AutoDeployDGXProject/blob/main/docs/USAGE.md
 
 Verify from the gateway host before going further:
 
@@ -999,6 +1008,7 @@ surface, and renaming them would force a migration for nothing a user can see.
 
 ### Routine upgrade
 
+When the host has a checkout of this repository:
 
 ```bash
 cd AiGatewayLocal && git pull
@@ -1015,6 +1025,54 @@ that changes a column will say so in its notes and ship a migration.
 
 Roll back by checking out the previous tag and repeating. The database schema is
 additive, so an older gateway runs against a newer database.
+
+#### When the host has no checkout
+
+An install that was put there by copying files has no git, no remote and no tag
+to roll back to — which the instructions above quietly assume. Copying the
+changed files over is fine; doing it without the first step is what takes a
+gateway down.
+
+**Check that the target is where you think it is.** Compare every file you are
+about to replace against the commit you believe is deployed:
+
+```bash
+for f in app/api/admin.py app/core/quota.py app/static/app.js; do
+  printf '%-34s %s %s\n' "$f" \
+    "$(git show HEAD~1:$f | sha256sum | cut -c1-12)" \
+    "$(ssh HOST sudo sha256sum /opt/litegate/$f | cut -c1-12)"
+done
+```
+
+Every pair must match. If one does not, the running code is not the parent of
+what you are shipping, and copying a subset of files onto it produces a tree
+that never existed — a module importing a name a sibling file does not have yet.
+Four uvicorn workers then crash-loop on `ImportError` and the gateway is down
+until you notice.
+
+Then, in order — each step exists because skipping it has cost an outage:
+
+```bash
+BACKUP=/opt/gw-backup-$(date +%Y%m%d-%H%M%S)
+sudo mkdir -p $BACKUP && sudo cp --parents app/api/admin.py … $BACKUP/   # 1. keep the way back
+sudo /opt/litegate/.venv/bin/python -m compileall -q <staged files>      # 2. syntax, before it is live
+sudo install -o litegate -g litegate -m 644 <file> /opt/litegate/<file>  # 3. copy
+sudo -u litegate /opt/litegate/.venv/bin/python -c 'import app.main'     # 4. imports, before restart
+sudo systemctl restart litegate
+curl -sf --retry 10 --retry-delay 2 http://127.0.0.1:8080/healthz        # 5. prove it came back
+```
+
+Steps 2 and 4 are the point: a syntax error or a missing import found *after*
+the restart is an outage, and found before it is a no-op. If any step fails,
+restore from `$BACKUP` and restart — decide that in advance rather than while
+the console is down.
+
+> **Legacy installs answer to different names.** A gateway that started life as
+> EduLLM Gateway lives in `/opt/edullm-gateway` under unit `edullm-gateway`,
+> owned by the `edullm` user. Every command in this guide says `litegate`;
+> substitute throughout, or the commands will appear to succeed while acting on
+> nothing. `systemctl show <unit> -p FragmentPath -p WorkingDirectory --value`
+> settles which one you have.
 
 
 ## Reading an issued key back (optional)
