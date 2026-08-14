@@ -168,23 +168,33 @@ def _atomic_write(path: Path, content: str, alias: str) -> None:
         ) from exc
 
 
-# `enabled: true` / `enabled: false`, with whatever trailing comment it carries.
-_ENABLED_LINE = re.compile(r"^(\s*)enabled:\s*(?:true|false)\s*(#.*)?$", re.IGNORECASE)
+def _key_line(key: str) -> re.Pattern[str]:
+    """`<key>: <scalar>` with whatever trailing comment it carries."""
+    return re.compile(rf"^(\s*){re.escape(key)}:\s*[^#\n]*?\s*(#.*)?$")
 
 
-def set_enabled_in_file(path: Path, enabled: bool, endpoint: str | None = None) -> bool:
-    """Flip one `enabled:` flag, leaving every other byte of the file alone.
+def _yaml_scalar(value: object) -> str:
+    if isinstance(value, bool):
+        return str(value).lower()
+    return str(value)
+
+
+def set_field_in_file(
+    path: Path, key: str, value: object, endpoint: str | None = None
+) -> bool:
+    """Set one scalar, leaving every other byte of the file alone.
 
     Rewriting the document from the parsed model - what `write_model` does - is
     the right trade when an admin edited the fields: they saw a form, they
-    expect the file to be regenerated. It is the wrong trade for a switch. The
-    rewrite drops every comment in the file, and comments in a registry file are
-    where an operator explains why a backend is set up the way it is - the
+    expect the file to be regenerated. It is the wrong trade for a single knob.
+    The rewrite drops every comment in the file, and comments in a registry file
+    are where an operator explains why a backend is set up the way it is - the
     single-slot note on a llama.cpp box, why one endpoint has lower priority.
     Losing that to a toggle is a bad bargain, and the toggle is exactly when the
     next person is most likely to be reading it.
 
-    Returns False when the flag cannot be located confidently, so the caller
+    `endpoint` names a backend block; without it the key is set on `spec`.
+    Returns False when the key cannot be located confidently, so the caller
     falls back to a full rewrite rather than guessing at the file's structure.
     """
     try:
@@ -197,24 +207,41 @@ def set_enabled_in_file(path: Path, enabled: bool, endpoint: str | None = None) 
     if block is None:
         return False
     start, stop, indent = block
+    pattern = _key_line(key)
+    rendered = _yaml_scalar(value)
 
     for index in range(start, stop):
-        match = _ENABLED_LINE.match(lines[index].rstrip("\n"))
+        match = pattern.match(lines[index].rstrip("\n"))
         if match and len(match.group(1)) == indent:
             comment = f"  {match.group(2)}" if match.group(2) else ""
             ending = "\n" if lines[index].endswith("\n") else ""
-            lines[index] = f"{' ' * indent}enabled: {str(enabled).lower()}{comment}{ending}"
+            lines[index] = f"{' ' * indent}{key}: {rendered}{comment}{ending}"
             _atomic_write(path, "".join(lines), path.stem)
             return True
 
-    # No key at all means the schema default, which is `true`. Asking for true
-    # is then already satisfied; asking for false has to be written down.
-    if enabled:
+    # An absent key means the schema default. Writing the default back would be
+    # noise, so only a change from it needs a line.
+    if _is_schema_default(key, value):
         return True
     insert = _last_content_line(lines, start, stop) + 1
-    lines.insert(insert, f"{' ' * indent}enabled: false\n")
+    lines.insert(insert, f"{' ' * indent}{key}: {rendered}\n")
     _atomic_write(path, "".join(lines), path.stem)
     return True
+
+
+def _is_schema_default(key: str, value: object) -> bool:
+    from app.registry.schema import Endpoint, ModelSpec
+
+    for model in (Endpoint, ModelSpec):
+        field = model.model_fields.get(key)
+        if field is not None and field.default == value:
+            return True
+    return False
+
+
+def set_enabled_in_file(path: Path, enabled: bool, endpoint: str | None = None) -> bool:
+    """Flip one `enabled:` flag. See `set_field_in_file`."""
+    return set_field_in_file(path, "enabled", enabled, endpoint)
 
 
 def _indent_of(line: str) -> int:

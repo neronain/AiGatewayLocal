@@ -515,6 +515,50 @@ is ejected after `unhealthy_threshold` consecutive failures and restored after
 `healthy_threshold` consecutive successes. Hysteresis stops a single blip from
 flapping an endpoint out of rotation.
 
+### 9.4 Failover within a request — FR-16b · **P0**
+
+Hysteresis is right for routing and wrong for the request that is happening now.
+An endpoint stays healthy for two more strikes after its first failure, so the
+request that arrives while a machine is dying is sent to the dying machine — and
+so are the next two. A backend going down did not degrade the service; it broke
+three conversations before routing caught up.
+
+So a failed attempt is re-sent to another backend for the same alias:
+
+```
+retry when          transport failure, 5xx, 408, 429
+never retry when    4xx  (the backend judged the request; the next one agrees)
+                    a backend already tried for this request
+                    anything has already been streamed to the caller
+```
+
+The last line is the one that matters. Before the first byte a switch is
+invisible. After it, replaying would show the caller the answer twice, so the
+stream fails instead — an error they can see beats output they cannot trust.
+
+Each attempt is re-addressed, not merely re-sent: the upstream model name, the
+API key, and — on the Anthropic surface — whether to translate all belong to the
+machine, so failing over from a native Anthropic backend to an OpenAI-only one
+rewrites the request on the way.
+
+The response names what happened: `x-litegate-endpoint` is who answered,
+`x-litegate-failed-over` lists who was tried first.
+
+### 9.5 Sharing load between machines
+
+`priority` picks the tier and `max_concurrency` decides when it overflows:
+
+| Want | Set |
+|---|---|
+| One machine, another as standby | different `priority` |
+| Both working, whoever is free | **same** `priority` |
+| Spill to the standby under load | `max_concurrency` on the top tier |
+
+Equal priority is the answer to "one person is mid-request, the next should not
+wait": the router sends each request to whichever machine is carrying less.
+Editable per backend in the console — the row for that machine, not the full
+editor, which rewrites the file and drops its comments.
+
 ### FR-25 — Protocol translation · **P0**
 
 | Client wants | Backend speaks | Behaviour |

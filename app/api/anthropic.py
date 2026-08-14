@@ -15,7 +15,8 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -32,6 +33,7 @@ from app.core.capability import (
 )
 from app.core.errors import ErrorCode, GatewayError
 from app.core.multimodal import profile_anthropic_request
+from app.core.routing import RETRYABLE_ERRORS, is_retryable_status
 from app.core.tokens import resolve_usage
 from app.db.session import get_session
 from app.registry.schema import Endpoint
@@ -108,61 +110,88 @@ async def messages(
         client_agent=request.headers.get("user-agent", "")[:128],
         protocol="anthropic",
     )
-    headers = upstream.upstream_headers(endpoint, dict(request.headers))
-    stream = bool(body.get("stream"))
-
-    if native:
-        payload = dict(body)
-        payload["model"] = upstream_model_for(model, endpoint)
-        payload["max_tokens"] = effective_max_tokens
-        path = MESSAGES_PATH
-        translate = False
-    else:
-        payload = anthropic_to_openai_request(body, upstream_model_for(model, endpoint))
-        payload["max_tokens"] = effective_max_tokens
-        path = CHAT_PATH
-        translate = True
-
-    if stream:
-        return await _stream_messages(payload, headers, ctx, path, translate)
-    return await _complete_messages(payload, headers, ctx, path, translate)
-
-
-async def _complete_messages(
-    payload: dict[str, Any],
-    headers: dict[str, str],
-    ctx: _RequestContext,
-    path: str,
-    translate: bool,
-) -> JSONResponse:
-    state, endpoint, alias = ctx.state, ctx.endpoint, ctx.model.alias
-    state.router.acquire(alias, endpoint)
-    try:
-        response = await upstream.post_json(endpoint, path, payload, headers)
-    except GatewayError as exc:
-        state.router.report_failure(alias, endpoint, exc.message)
-        await ctx.finalize(
-            resolve_usage(ctx.profile, None),
-            status="error",
-            http_status=exc.http_status,
-            error_code=exc.code,
+    # Whether to translate is a property of the machine that ends up serving,
+    # not of the alias: a request that fails over from a native Anthropic box to
+    # an OpenAI-only one has to be rewritten, not merely re-sent. Deciding it
+    # here, per attempt, is also what keeps the two in step.
+    def build(target: Endpoint) -> _Attempt:
+        if target.protocols.anthropic:
+            payload = dict(body)
+            payload["model"] = upstream_model_for(model, target)
+            payload["max_tokens"] = effective_max_tokens
+            path, translate = MESSAGES_PATH, False
+        else:
+            payload = anthropic_to_openai_request(body, upstream_model_for(model, target))
+            payload["max_tokens"] = effective_max_tokens
+            path, translate = CHAT_PATH, True
+        return _Attempt(
+            payload=payload,
+            headers=upstream.upstream_headers(target, dict(request.headers)),
+            path=path,
+            translate=translate,
         )
-        raise
-    finally:
-        state.router.release(alias, endpoint)
 
-    if response.status_code >= 400:
-        state.router.report_failure(alias, endpoint, f"HTTP {response.status_code}")
-        error = upstream.upstream_error(endpoint, response.status_code, response.text[:2000])
-        await ctx.finalize(
-            resolve_usage(ctx.profile, None),
-            status="error",
-            http_status=error.http_status,
-            error_code=error.code,
-        )
-        raise error
+    if body.get("stream"):
+        return await _stream_messages(build, ctx)
+    return await _complete_messages(build, ctx)
 
-    state.router.report_success(alias, endpoint)
+
+@dataclass(frozen=True)
+class _Attempt:
+    payload: dict[str, Any]
+    headers: dict[str, str]
+    path: str
+    translate: bool
+
+
+BuildAttempt = Callable[[Endpoint], _Attempt]
+
+
+async def _complete_messages(build: BuildAttempt, ctx: _RequestContext) -> JSONResponse:
+    state, alias = ctx.state, ctx.model.alias
+    while True:
+        endpoint = ctx.endpoint
+        attempt = build(endpoint)
+        translate = attempt.translate
+        state.router.acquire(alias, endpoint)
+        try:
+            response = await upstream.post_json(
+                endpoint, attempt.path, attempt.payload, attempt.headers
+            )
+        except GatewayError as exc:
+            state.router.report_failure(alias, endpoint, exc.message)
+            if exc.code in RETRYABLE_ERRORS and (nxt := ctx.another_endpoint()):
+                ctx.retarget(nxt)
+                continue
+            await ctx.finalize(
+                resolve_usage(ctx.profile, None),
+                status="error",
+                http_status=exc.http_status,
+                error_code=exc.code,
+            )
+            raise
+        finally:
+            state.router.release(alias, endpoint)
+
+        if response.status_code >= 400:
+            state.router.report_failure(alias, endpoint, f"HTTP {response.status_code}")
+            if is_retryable_status(response.status_code) and (nxt := ctx.another_endpoint()):
+                ctx.retarget(nxt)
+                continue
+            error = upstream.upstream_error(
+                endpoint, response.status_code, response.text[:2000]
+            )
+            await ctx.finalize(
+                resolve_usage(ctx.profile, None),
+                status="error",
+                http_status=error.http_status,
+                error_code=error.code,
+            )
+            raise error
+
+        state.router.report_success(alias, endpoint)
+        break
+
     try:
         data = response.json()
     except json.JSONDecodeError as exc:
@@ -197,77 +226,107 @@ async def _complete_messages(
             "x-edullm-model": alias,
             "x-litegate-endpoint": endpoint.name,
             "x-litegate-protocol": "anthropic-native" if not translate else "anthropic-via-openai",
+            **({"x-litegate-failed-over": ",".join(sorted(ctx.tried))} if ctx.tried else {}),
         },
     )
 
 
-async def _stream_messages(
-    payload: dict[str, Any],
-    headers: dict[str, str],
-    ctx: _RequestContext,
-    path: str,
-    translate: bool,
-) -> StreamingResponse:
+async def _stream_messages(build: BuildAttempt, ctx: _RequestContext) -> StreamingResponse:
     async def generator() -> AsyncIterator[bytes]:
-        state, endpoint, alias = ctx.state, ctx.endpoint, ctx.model.alias
-        adapter = AnthropicStreamAdapter(alias) if translate else None
+        state, alias = ctx.state, ctx.model.alias
         upstream_usage: dict | None = None
         ttft_ms: int | None = None
         status, error_code, http_status = "success", None, 200
+        # After the first event reaches the caller a retry would replay the
+        # answer from the beginning, so the switch is only available before it.
+        emitted = False
 
-        state.router.acquire(alias, endpoint)
         try:
-            async with upstream.stream_json(endpoint, path, payload, headers) as response:
-                if response.status_code >= 400:
-                    body = await upstream.read_error_body(response)
-                    state.router.report_failure(alias, endpoint, f"HTTP {response.status_code}")
-                    error = upstream.upstream_error(endpoint, response.status_code, body)
-                    status, error_code, http_status = "error", error.code, error.http_status
-                    yield format_json_sse(error.to_anthropic(ctx.request_id), event="error")
+            while True:
+                endpoint = ctx.endpoint
+                attempt = build(endpoint)
+                translate = attempt.translate
+                adapter = AnthropicStreamAdapter(alias) if translate else None
+
+                retry: Endpoint | None = None
+                state.router.acquire(alias, endpoint)
+                try:
+                    async with upstream.stream_json(
+                        endpoint, attempt.path, attempt.payload, attempt.headers
+                    ) as response:
+                        if response.status_code >= 400:
+                            body = await upstream.read_error_body(response)
+                            state.router.report_failure(
+                                alias, endpoint, f"HTTP {response.status_code}"
+                            )
+                            if not emitted and is_retryable_status(response.status_code):
+                                retry = ctx.another_endpoint()
+                            if retry is None:
+                                error = upstream.upstream_error(
+                                    endpoint, response.status_code, body
+                                )
+                                status = "error"
+                                error_code, http_status = error.code, error.http_status
+                                yield format_json_sse(
+                                    error.to_anthropic(ctx.request_id), event="error"
+                                )
+                                return
+                        else:
+                            state.router.report_success(alias, endpoint)
+
+                            async for event, data in iter_sse_payloads(response.aiter_lines()):
+                                if data.strip() == DONE:
+                                    continue
+                                chunk = parse_chunk(data)
+                                if chunk is None:
+                                    continue
+                                if ttft_ms is None:
+                                    ttft_ms = ctx.elapsed_ms
+
+                                if not translate:
+                                    # Native stream: relay, masking the model name.
+                                    if chunk.get("type") == "message_start":
+                                        message = chunk.get("message")
+                                        if isinstance(message, dict):
+                                            message["model"] = alias
+                                    usage_block = _extract_anthropic_usage(chunk)
+                                    if usage_block:
+                                        upstream_usage = {**(upstream_usage or {}), **usage_block}
+                                    emitted = True
+                                    yield format_json_sse(
+                                        chunk, event=event or chunk.get("type")
+                                    )
+                                    continue
+
+                                if isinstance(chunk.get("usage"), dict):
+                                    upstream_usage = chunk["usage"]
+                                for ev_name, ev_payload in adapter.handle_chunk(chunk):
+                                    emitted = True
+                                    yield format_json_sse(ev_payload, event=ev_name)
+
+                            if translate and adapter is not None:
+                                for ev_name, ev_payload in adapter.finish_events():
+                                    yield format_json_sse(ev_payload, event=ev_name)
+                            return
+
+                except GatewayError as exc:
+                    state.router.report_failure(alias, endpoint, exc.message)
+                    if not emitted and exc.code in RETRYABLE_ERRORS:
+                        retry = ctx.another_endpoint()
+                    if retry is None:
+                        status, error_code, http_status = "error", exc.code, exc.http_status
+                        yield format_json_sse(exc.to_anthropic(ctx.request_id), event="error")
+                        return
+                except Exception as exc:
+                    log.exception("anthropic stream failed for request %s", ctx.request_id)
+                    state.router.report_failure(alias, endpoint, str(exc))
+                    status, error_code, http_status = "aborted", ErrorCode.UPSTREAM_ERROR, 502
                     return
+                finally:
+                    state.router.release(alias, endpoint)
 
-                state.router.report_success(alias, endpoint)
-
-                async for event, data in iter_sse_payloads(response.aiter_lines()):
-                    if data.strip() == DONE:
-                        continue
-                    chunk = parse_chunk(data)
-                    if chunk is None:
-                        continue
-                    if ttft_ms is None:
-                        ttft_ms = ctx.elapsed_ms
-
-                    if not translate:
-                        # Native Anthropic stream: relay, masking the model name.
-                        if chunk.get("type") == "message_start":
-                            message = chunk.get("message")
-                            if isinstance(message, dict):
-                                message["model"] = alias
-                        usage_block = _extract_anthropic_usage(chunk)
-                        if usage_block:
-                            upstream_usage = {**(upstream_usage or {}), **usage_block}
-                        yield format_json_sse(chunk, event=event or chunk.get("type"))
-                        continue
-
-                    if isinstance(chunk.get("usage"), dict):
-                        upstream_usage = chunk["usage"]
-                    for ev_name, ev_payload in adapter.handle_chunk(chunk):
-                        yield format_json_sse(ev_payload, event=ev_name)
-
-                if translate and adapter is not None:
-                    for ev_name, ev_payload in adapter.finish_events():
-                        yield format_json_sse(ev_payload, event=ev_name)
-
-        except GatewayError as exc:
-            state.router.report_failure(alias, endpoint, exc.message)
-            status, error_code, http_status = "error", exc.code, exc.http_status
-            yield format_json_sse(exc.to_anthropic(ctx.request_id), event="error")
-        except Exception as exc:
-            log.exception("anthropic stream failed for request %s", ctx.request_id)
-            state.router.report_failure(alias, endpoint, str(exc))
-            status, error_code, http_status = "aborted", ErrorCode.UPSTREAM_ERROR, 502
+                ctx.retarget(retry)
         finally:
-            state.router.release(alias, endpoint)
             usage = resolve_usage(ctx.profile, upstream_usage)
             await ctx.finalize(
                 usage,

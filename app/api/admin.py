@@ -54,6 +54,7 @@ from app.registry.writer import (
     registry_writable,
     render_yaml,
     set_enabled_in_file,
+    set_field_in_file,
     validate_definition,
     write_model,
 )
@@ -1293,6 +1294,88 @@ async def set_model_enabled(
         "alias": alias,
         "endpoint": endpoint_name,
         "enabled": wanted,
+        "path": str(path),
+        "registry_errors": snapshot.errors,
+    }
+
+
+# The two knobs that decide how traffic is shared between the machines behind
+# one alias. Editable on their own because they are what an operator reaches for
+# when a backend is coping badly, and the full editor rewrites the whole file.
+TUNABLE = {"priority": (0, 1000), "weight": (1, 100), "max_concurrency": (1, 4096)}
+
+
+@router.patch("/models/{alias}/endpoints/{endpoint_name}")
+async def tune_endpoint(
+    alias: str,
+    endpoint_name: str,
+    payload: dict[str, Any],
+    request: Request,
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """Change how much work one backend takes, without touching the rest.
+
+    `priority` picks the tier: the highest tier that still has room takes
+    everything, and the ones below it are standby. Give two machines the *same*
+    priority and they share the work — the router sends each request to whichever
+    is carrying less, so one being busy no longer makes the next person wait.
+
+    `max_concurrency` is what makes a lower tier useful even while the top one is
+    healthy: once the top tier is full, requests spill down instead of queueing.
+    """
+    definition = state.registry.snapshot.models.get(alias)
+    if definition is None:
+        raise GatewayError(ErrorCode.MODEL_NOT_FOUND, f"Unknown model '{alias}'.")
+
+    updated = definition.model_copy(deep=True)
+    target = next((e for e in updated.spec.endpoints if e.name == endpoint_name), None)
+    if target is None:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST, f"'{alias}' has no endpoint named '{endpoint_name}'."
+        )
+
+    changes: dict[str, int] = {}
+    for key, (low, high) in TUNABLE.items():
+        if key not in payload:
+            continue
+        try:
+            value = int(payload[key])
+        except (TypeError, ValueError):
+            raise GatewayError(
+                ErrorCode.INVALID_REQUEST, f"{key} must be a whole number."
+            ) from None
+        if not low <= value <= high:
+            raise GatewayError(
+                ErrorCode.INVALID_REQUEST, f"{key} must be between {low} and {high}."
+            )
+        setattr(target, key, value)
+        changes[key] = value
+
+    if not changes:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            f"Send at least one of: {', '.join(sorted(TUNABLE))}.",
+        )
+
+    validate_definition(updated.model_dump(mode="json"))
+
+    path = model_path(state.settings.config_dir, alias)
+    for key, value in changes.items():
+        if not set_field_in_file(path, key, value, endpoint_name):
+            path = write_model(state.settings.config_dir, updated)
+            break
+    snapshot = state.registry.reload()
+    await audit(
+        session, request, actor, "model.endpoint.tune", "model", alias,
+        {"endpoint": endpoint_name, **changes},
+    )
+    await session.commit()
+    return {
+        "alias": alias,
+        "endpoint": endpoint_name,
+        "changed": changes,
         "path": str(path),
         "registry_errors": snapshot.errors,
     }

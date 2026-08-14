@@ -13,7 +13,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -32,6 +32,7 @@ from app.core.capability import (
 from app.core.errors import ErrorCode, GatewayError
 from app.core.multimodal import RequestProfile, profile_openai_request
 from app.core.quota import Consumption
+from app.core.routing import RETRYABLE_ERRORS, is_retryable_status
 from app.core.tokens import TokenUsage, resolve_usage
 from app.db.session import get_session
 from app.registry.schema import Endpoint, ModelDefinition
@@ -43,6 +44,10 @@ log = logging.getLogger(__name__)
 router = APIRouter(tags=["openai"])
 
 CHAT_PATH = "/v1/chat/completions"
+
+# Addresses one request to one backend. Called once per attempt, because the
+# upstream model name and the API key belong to the machine, not the request.
+BuildRequest = Callable[[Endpoint], tuple[dict[str, Any], dict[str, str]]]
 
 
 @router.get("/v1/models")
@@ -131,13 +136,17 @@ async def run_chat(
 
     endpoint = state.router.select(model, profile, "openai")
 
-    payload = dict(body)
-    payload["model"] = upstream_model_for(model, endpoint)
-    if body.get("max_tokens") or body.get("max_completion_tokens"):
-        payload.pop("max_completion_tokens", None)
-        payload["max_tokens"] = effective_max_tokens
+    # Rebuilt per attempt rather than once: the upstream model name and the API
+    # key are properties of the machine, so a request that fails over has to be
+    # re-addressed, not merely re-sent.
+    def build(target: Endpoint) -> tuple[dict[str, Any], dict[str, str]]:
+        payload = dict(body)
+        payload["model"] = upstream_model_for(model, target)
+        if body.get("max_tokens") or body.get("max_completion_tokens"):
+            payload.pop("max_completion_tokens", None)
+            payload["max_tokens"] = effective_max_tokens
+        return payload, upstream.upstream_headers(target, dict(request.headers))
 
-    headers = upstream.upstream_headers(endpoint, dict(request.headers))
     client_agent = request.headers.get("user-agent", "")[:128]
 
     context = _RequestContext(
@@ -154,8 +163,8 @@ async def run_chat(
     )
 
     if body.get("stream"):
-        return await _stream_chat(payload, headers, context)
-    return await _complete_chat(payload, headers, context)
+        return await _stream_chat(build, context)
+    return await _complete_chat(build, context)
 
 
 # ---------------------------------------------------------------------------
@@ -186,10 +195,36 @@ class _RequestContext:
         self.started = started
         self.client_agent = client_agent
         self.protocol = protocol
+        # Which backends this request has already burned. Not a count: the same
+        # machine must never be handed the request twice, and it stays healthy
+        # for two more strikes after the first failure.
+        self.tried: set[str] = set()
 
     @property
     def elapsed_ms(self) -> int:
         return int((time.perf_counter() - self.started) * 1000)
+
+    def another_endpoint(self) -> Endpoint | None:
+        """A backend for this alias that has not been tried yet, or None.
+
+        None covers both "there is only one machine" and "we have been through
+        all of them", which the caller treats the same way: stop and report the
+        failure it already has.
+        """
+        self.tried.add(self.endpoint.name)
+        try:
+            return self.state.router.select(
+                self.model, self.profile, self.protocol, exclude=self.tried
+            )
+        except GatewayError:
+            return None
+
+    def retarget(self, endpoint: Endpoint) -> None:
+        log.info(
+            "failing over %s: %s -> %s (request %s)",
+            self.model.alias, self.endpoint.name, endpoint.name, self.request_id,
+        )
+        self.endpoint = endpoint
 
     async def finalize(
         self,
@@ -234,38 +269,53 @@ class _RequestContext:
 # ---------------------------------------------------------------------------
 # Non-streaming
 # ---------------------------------------------------------------------------
-async def _complete_chat(
-    payload: dict[str, Any], headers: dict[str, str], ctx: _RequestContext
-) -> JSONResponse:
-    state, endpoint, alias = ctx.state, ctx.endpoint, ctx.model.alias
-    state.router.acquire(alias, endpoint)
-    try:
-        response = await upstream.post_json(endpoint, CHAT_PATH, payload, headers)
-    except GatewayError as exc:
-        state.router.report_failure(alias, endpoint, exc.message)
-        await ctx.finalize(
-            resolve_usage(ctx.profile, None),
-            status="error",
-            http_status=exc.http_status,
-            error_code=exc.code,
-        )
-        raise
-    finally:
-        state.router.release(alias, endpoint)
+async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> JSONResponse:
+    """Ask a backend, and if that one is unwell, ask the next one.
 
-    if response.status_code >= 400:
-        body = response.text[:2000]
-        state.router.report_failure(alias, endpoint, f"HTTP {response.status_code}")
-        error = upstream.upstream_error(endpoint, response.status_code, body)
-        await ctx.finalize(
-            resolve_usage(ctx.profile, None),
-            status="error",
-            http_status=error.http_status,
-            error_code=error.code,
-        )
-        raise error
+    Nothing has reached the caller yet at this point, so a retry is invisible to
+    them - which is the whole difference between one machine going down and one
+    conversation breaking.
+    """
+    state, alias = ctx.state, ctx.model.alias
+    while True:
+        endpoint = ctx.endpoint
+        payload, headers = build(endpoint)
+        state.router.acquire(alias, endpoint)
+        try:
+            response = await upstream.post_json(endpoint, CHAT_PATH, payload, headers)
+        except GatewayError as exc:
+            state.router.report_failure(alias, endpoint, exc.message)
+            if exc.code in RETRYABLE_ERRORS and (nxt := ctx.another_endpoint()):
+                ctx.retarget(nxt)
+                continue
+            await ctx.finalize(
+                resolve_usage(ctx.profile, None),
+                status="error",
+                http_status=exc.http_status,
+                error_code=exc.code,
+            )
+            raise
+        finally:
+            state.router.release(alias, endpoint)
 
-    state.router.report_success(alias, endpoint)
+        if response.status_code >= 400:
+            body = response.text[:2000]
+            state.router.report_failure(alias, endpoint, f"HTTP {response.status_code}")
+            if is_retryable_status(response.status_code) and (nxt := ctx.another_endpoint()):
+                ctx.retarget(nxt)
+                continue
+            error = upstream.upstream_error(endpoint, response.status_code, body)
+            await ctx.finalize(
+                resolve_usage(ctx.profile, None),
+                status="error",
+                http_status=error.http_status,
+                error_code=error.code,
+            )
+            raise error
+
+        state.router.report_success(alias, endpoint)
+        break
+
     try:
         data = response.json()
     except json.JSONDecodeError as exc:
@@ -288,6 +338,9 @@ async def _complete_chat(
             # read x-edullm-model.
             "x-edullm-model": alias,
             "x-litegate-endpoint": endpoint.name,
+            # Names the machines that were tried and failed before this one, so
+            # a slow reply has a visible reason rather than an unexplained one.
+            **({"x-litegate-failed-over": ",".join(sorted(ctx.tried))} if ctx.tried else {}),
         },
     )
 
@@ -312,74 +365,99 @@ def _augment_usage_payload(data: dict[str, Any], usage: TokenUsage) -> None:
 # ---------------------------------------------------------------------------
 # Streaming
 # ---------------------------------------------------------------------------
-async def _stream_chat(
-    payload: dict[str, Any], headers: dict[str, str], ctx: _RequestContext
-) -> StreamingResponse:
-    # Ask the backend for a final usage chunk so accounting stays authoritative.
-    # If the caller did not request it, we strip that chunk before forwarding so
-    # the response shape matches exactly what the caller asked for.
-    client_wants_usage = bool((payload.get("stream_options") or {}).get("include_usage"))
-    payload = dict(payload)
-    payload["stream_options"] = {
-        **(payload.get("stream_options") or {}),
-        "include_usage": True,
-    }
-
+async def _stream_chat(build: BuildRequest, ctx: _RequestContext) -> StreamingResponse:
     async def generator() -> AsyncIterator[bytes]:
-        state, endpoint, alias = ctx.state, ctx.endpoint, ctx.model.alias
+        state, alias = ctx.state, ctx.model.alias
         upstream_usage: dict | None = None
         ttft_ms: int | None = None
         status, error_code, http_status = "success", None, 200
+        # Once a chunk has left for the caller, failing over would replay the
+        # answer from the top and they would read it twice. Before that, the
+        # switch is invisible - so this flag is the whole retry policy here.
+        emitted = False
 
-        state.router.acquire(alias, endpoint)
         try:
-            async with upstream.stream_json(
-                endpoint, CHAT_PATH, payload, headers
-            ) as response:
-                if response.status_code >= 400:
-                    body = await upstream.read_error_body(response)
-                    state.router.report_failure(
-                        alias, endpoint, f"HTTP {response.status_code}"
-                    )
-                    error = upstream.upstream_error(endpoint, response.status_code, body)
-                    status, error_code, http_status = "error", error.code, error.http_status
-                    yield format_sse(json.dumps(error.to_openai(ctx.request_id)))
-                    yield format_sse(DONE)
+            while True:
+                endpoint = ctx.endpoint
+                payload, headers = build(endpoint)
+                # Ask for a final usage chunk so accounting stays authoritative.
+                # If the caller did not want it, it is stripped before
+                # forwarding so the shape matches what they asked for.
+                client_wants_usage = bool(
+                    (payload.get("stream_options") or {}).get("include_usage")
+                )
+                payload["stream_options"] = {
+                    **(payload.get("stream_options") or {}),
+                    "include_usage": True,
+                }
+
+                retry: Endpoint | None = None
+                state.router.acquire(alias, endpoint)
+                try:
+                    async with upstream.stream_json(
+                        endpoint, CHAT_PATH, payload, headers
+                    ) as response:
+                        if response.status_code >= 400:
+                            body = await upstream.read_error_body(response)
+                            state.router.report_failure(
+                                alias, endpoint, f"HTTP {response.status_code}"
+                            )
+                            if not emitted and is_retryable_status(response.status_code):
+                                retry = ctx.another_endpoint()
+                            if retry is None:
+                                error = upstream.upstream_error(
+                                    endpoint, response.status_code, body
+                                )
+                                status = "error"
+                                error_code, http_status = error.code, error.http_status
+                                yield format_sse(json.dumps(error.to_openai(ctx.request_id)))
+                                yield format_sse(DONE)
+                                return
+                        else:
+                            state.router.report_success(alias, endpoint)
+                            async for _event, data in iter_sse_payloads(response.aiter_lines()):
+                                if data.strip() == DONE:
+                                    continue
+                                chunk = parse_chunk(data)
+                                if chunk is None:
+                                    emitted = True
+                                    yield format_sse(data)
+                                    continue
+
+                                if ttft_ms is None:
+                                    ttft_ms = ctx.elapsed_ms
+
+                                if isinstance(chunk.get("usage"), dict):
+                                    upstream_usage = chunk["usage"]
+                                    if not client_wants_usage and not chunk.get("choices"):
+                                        continue  # usage-only chunk nobody asked for
+
+                                chunk["model"] = alias
+                                emitted = True
+                                yield format_sse(json.dumps(chunk, ensure_ascii=False))
+
+                            yield format_sse(DONE)
+                            return
+
+                except GatewayError as exc:
+                    state.router.report_failure(alias, endpoint, exc.message)
+                    if not emitted and exc.code in RETRYABLE_ERRORS:
+                        retry = ctx.another_endpoint()
+                    if retry is None:
+                        status, error_code, http_status = "error", exc.code, exc.http_status
+                        yield format_sse(json.dumps(exc.to_openai(ctx.request_id)))
+                        yield format_sse(DONE)
+                        return
+                except Exception as exc:  # client disconnect, backend reset, ...
+                    log.exception("stream failed for request %s", ctx.request_id)
+                    state.router.report_failure(alias, endpoint, str(exc))
+                    status, error_code, http_status = "aborted", ErrorCode.UPSTREAM_ERROR, 502
                     return
+                finally:
+                    state.router.release(alias, endpoint)
 
-                state.router.report_success(alias, endpoint)
-                async for _event, data in iter_sse_payloads(response.aiter_lines()):
-                    if data.strip() == DONE:
-                        continue
-                    chunk = parse_chunk(data)
-                    if chunk is None:
-                        yield format_sse(data)
-                        continue
-
-                    if ttft_ms is None:
-                        ttft_ms = ctx.elapsed_ms
-
-                    if isinstance(chunk.get("usage"), dict):
-                        upstream_usage = chunk["usage"]
-                        if not client_wants_usage and not chunk.get("choices"):
-                            continue  # usage-only chunk the caller never asked for
-
-                    chunk["model"] = alias
-                    yield format_sse(json.dumps(chunk, ensure_ascii=False))
-
-                yield format_sse(DONE)
-
-        except GatewayError as exc:
-            state.router.report_failure(alias, endpoint, exc.message)
-            status, error_code, http_status = "error", exc.code, exc.http_status
-            yield format_sse(json.dumps(exc.to_openai(ctx.request_id)))
-            yield format_sse(DONE)
-        except Exception as exc:  # client disconnect, backend reset, ...
-            log.exception("stream failed for request %s", ctx.request_id)
-            state.router.report_failure(alias, endpoint, str(exc))
-            status, error_code, http_status = "aborted", ErrorCode.UPSTREAM_ERROR, 502
+                ctx.retarget(retry)
         finally:
-            state.router.release(alias, endpoint)
             usage = resolve_usage(ctx.profile, upstream_usage)
             await ctx.finalize(
                 usage,

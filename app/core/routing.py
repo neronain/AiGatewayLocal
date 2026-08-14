@@ -14,6 +14,7 @@ import asyncio
 import itertools
 import logging
 import random
+from collections.abc import Collection
 from dataclasses import dataclass, field
 
 import httpx
@@ -25,6 +26,17 @@ from app.registry.schema import Endpoint, ModelDefinition
 from app.registry.store import RegistryStore, endpoint_key
 
 log = logging.getLogger(__name__)
+
+
+# Failures where sending the same request to a different machine is a fair bet.
+# A 4xx is the backend's verdict on the request itself, and every other backend
+# will reach the same one - retrying that is just a slower way to fail twice.
+RETRYABLE_ERRORS = frozenset({ErrorCode.UPSTREAM_TIMEOUT, ErrorCode.UPSTREAM_UNAVAILABLE})
+
+
+def is_retryable_status(status: int) -> bool:
+    """502/503 mean the machine is unwell; 408 and 429 mean it is out of room."""
+    return status >= 500 or status in (408, 429)
 
 
 @dataclass
@@ -59,10 +71,22 @@ class Router:
 
     # -- selection ---------------------------------------------------------
     def select(
-        self, model: ModelDefinition, profile: RequestProfile, protocol: str
+        self,
+        model: ModelDefinition,
+        profile: RequestProfile,
+        protocol: str,
+        exclude: Collection[str] = (),
     ) -> Endpoint:
+        """Pick a backend, optionally skipping ones already tried and failed.
+
+        `exclude` is how failover asks for "another one": a backend that just
+        refused the connection is still marked healthy for two more strikes, so
+        without it the retry would land on the same dead machine.
+        """
         compatible = [
-            e for e in model.spec.endpoints if endpoint_supports(e, profile, protocol)
+            e
+            for e in model.spec.endpoints
+            if e.name not in exclude and endpoint_supports(e, profile, protocol)
         ]
         if not compatible:
             raise GatewayError(

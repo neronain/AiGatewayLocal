@@ -322,9 +322,16 @@ async function loadModels() {
       <td>${e.enabled === false
             ? '<span class="pill mute">ปิดไว้</span>'
             : `<span class="pill ${dead ? 'err' : 'ok'}">${dead ? 'down' : 'up'}</span>`}</td>
-      <td class="hint">priority ${esc(e.priority)} ·
-          พร้อมกันได้ ${esc(e.max_concurrency)}${e.health?.in_flight
-            ? ` · กำลังวิ่ง ${esc(e.health.in_flight)}` : ''}</td>
+      <td class="ep-tune">
+        <label>priority
+          <input type="number" min="0" max="1000" value="${esc(e.priority)}"
+            data-tune="priority" data-model="${esc(m.alias)}" data-ep="${esc(e.name)}"></label>
+        <label>พร้อมกัน
+          <input type="number" min="1" max="4096" value="${esc(e.max_concurrency)}"
+            data-tune="max_concurrency" data-model="${esc(m.alias)}"
+            data-ep="${esc(e.name)}"></label>
+        ${e.health?.in_flight ? `<span class="hint">กำลังวิ่ง ${esc(e.health.in_flight)}</span>` : ''}
+      </td>
       <td><button class="ghost small" data-ep-model="${esc(m.alias)}" data-ep="${esc(e.name)}"
             data-ep-to="${e.enabled === false ? '1' : '0'}"
             >${e.enabled === false ? 'เปิดเครื่องนี้' : 'ปิดเครื่องนี้'}</button></td>
@@ -404,6 +411,24 @@ async function loadModels() {
     btn.onclick = () => setEnabled(btn.dataset.epModel, {
       enabled: btn.dataset.epTo === '1', endpoint: btn.dataset.ep,
     });
+  }
+  // Saved on blur, not on every keystroke: each save rewrites the registry file
+  // and reloads it, and typing "100" would do that three times.
+  for (const input of $('model-table').querySelectorAll('[data-tune]')) {
+    const original = input.value;
+    input.onchange = async () => {
+      const { model, ep, tune } = input.dataset;
+      try {
+        await patch(
+          `/admin/models/${encodeURIComponent(model)}/endpoints/${encodeURIComponent(ep)}`,
+          { [tune]: Number(input.value) },
+        );
+        await loadModels();
+      } catch (e) {
+        input.value = original;
+        showError(e.message);
+      }
+    };
   }
   for (const btn of $('model-table').querySelectorAll('[data-del]')) {
     btn.onclick = async () => {

@@ -240,6 +240,17 @@ tr.ep-row > td {
 tr.ep-row.ep-last > td { border-bottom: 1px solid var(--line); }
 tr.ep-row > td:first-child { padding-left: 2.2em; position: relative; }
 .ep-mark { color: var(--fg3); margin-right: 2px; }
+
+/* priority and concurrency decide how traffic is shared, so they belong on the
+   row you are looking at when you decide to change them - not behind the full
+   editor, which rewrites the file and drops its comments. */
+.ep-tune { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ep-tune label {
+  display: flex; align-items: center; gap: 5px; margin: 0;
+  font-size: 0.6875rem; color: var(--fg3); white-space: nowrap;
+}
+.ep-tune input { width: 4.5em; padding: 3px 6px; font-size: 0.75rem; }
+.ep-tune .hint { margin: 0; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .scroll { overflow-x: auto; }
 

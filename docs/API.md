@@ -277,6 +277,7 @@ network at the proxy (SEC-5).
 | GET | `/admin/quota-policies` | manager | List policies |
 | GET | `/admin/models` | admin | Registry incl. upstream names, endpoints, health |
 | PATCH | `/admin/models/{alias}/enabled` | admin | Take an alias or one endpoint out of service |
+| PATCH | `/admin/models/{alias}/endpoints/{name}` | admin | `priority`, `weight`, `max_concurrency` |
 | POST | `/admin/registry/reload` | admin | Reload YAML (see the worker caveat below) |
 | POST | `/admin/models/{alias}/compatibility` | admin | Record a test result |
 | GET | `/admin/models/{alias}/compatibility` | manager | READY / DEGRADED roll-up |
@@ -391,6 +392,22 @@ Only that one `enabled:` line in the YAML is rewritten. The full re-render used
 by `POST /admin/models` regenerates the document from the parsed model and
 drops every comment in it — a fair trade for a form submission, a bad one for a
 switch.
+
+### `PATCH /admin/models/{alias}/endpoints/{name}`
+
+How much work one backend takes, changed on its own.
+
+```json
+{ "priority": 100, "max_concurrency": 8 }
+```
+
+`priority` picks the tier: the highest tier with room takes everything, the
+rest are standby. Give two machines the **same** priority and they share — each
+request goes to whichever is carrying less, so one being busy does not make the
+next person wait. `max_concurrency` is what makes a lower tier useful while the
+top one is healthy: once the top tier is full, requests spill down.
+
+Only the lines you send are rewritten, so the comments in the file survive.
 
 ### `POST /admin/models/{alias}/apply-fix`
 
