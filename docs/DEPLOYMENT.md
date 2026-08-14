@@ -287,6 +287,27 @@ A manager who is in no workspace manages nothing, which is the opposite default
 from model access and deliberate: promoting somebody should not quietly hand
 them the whole institution. Put them in their classes and they can work.
 
+**Changing what a key may call, after it is in circulation.** The scope was set
+once when the key was issued and could never be revisited, so adding a model
+meant revoking a working credential and asking everybody to paste a new one.
+People responded rationally, by issuing keys wide enough that they would never
+have to — which is the opposite of what the scope is for.
+
+```bash
+curl -s -X PATCH $GW/admin/api-keys/<key id> -H "Authorization: Bearer $ADMIN_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"models":["claude-opus-4.8","claude-sonnet-4.8","claude-haiku-4.8"]}'
+```
+
+Or **Access & Keys → the key's `model` button**, which lists what is in the
+registry as checkboxes — a mistyped alias is a key that reaches nothing and says
+nothing until somebody tries to use it.
+
+Send the whole list you want, not a delta. `[]` removes the restriction, which
+*widens* the key, so the console spells that out before saving. `days` and
+`models` travel in the same request and neither disturbs the other. A manager is
+held to the same bar as when issuing: only models they could call themselves.
+
 **Handing the same models to many classes.** Ticking four models into twenty
 courses means eighty clicks, and adding a fifth means visiting all twenty again.
 Name the set once instead:
@@ -386,6 +407,35 @@ curl -s -X POST $GW/admin/quota-policies -H "Authorization: Bearer $ADMIN_KEY" \
        "max_requests":300,"max_input_tokens":1000000,
        "max_output_tokens":200000,"max_images":50}'
 ```
+
+#### Handing an allowance back
+
+A limit that was right can still leave the wrong person stuck: one runaway agent
+loop spends a term's quota in an afternoon. Raising the limit to unblock them
+changes the rule for everyone, permanently, because of one accident.
+
+```bash
+curl -s -X POST $GW/admin/users/<user id>/quota/reset \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+Or **Access & Keys → People → คืนโควตา**, which is where you will actually reach
+for it.
+
+It clears the counter for the current window and nothing else. Usage records are
+a separate ledger and are what the reports read, so what was spent still shows
+in `/admin/usage/summary` afterwards. The reset is written to the audit log with
+the figures it cleared.
+
+Admin only. A manager can already relax a limit for their own class with a dated
+policy; returning an allowance somebody has already spent is a different act and
+belongs at the top.
+
+> With Redis configured, the reset clears **both** ledgers. Clearing only Redis
+> does nothing lasting: the next read misses, decides an earlier outage may have
+> left counts in the database, and reseeds from there — the number returns and
+> the button looks broken. If Redis is unreachable the call fails rather than
+> reporting a success it cannot deliver.
 
 ### 2.3b Stop a burst, not just a spree
 

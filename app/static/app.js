@@ -1252,10 +1252,31 @@ async function loadAccess() {
             ${spare.map((c) => `<option value="${esc(c.id)}">${esc(c.code)}</option>`).join('')}
           </select>` : ''}
         </td>
-        <td>${quotaCell(quotaOf[u.id])}</td>
+        <td>${quotaCell(quotaOf[u.id])}${myRole !== 'admin' || !quotaOf[u.id] ? ''
+          : `<button class="link small" data-reset-quota="${esc(u.id)}"
+               data-who="${esc(u.external_id)}"
+               title="คืนโควตารอบนี้ให้ ${esc(u.external_id)} · ประวัติการใช้งานยังอยู่ครบ"
+               >คืนโควตา</button>`}</td>
         <td><span class="pill ${u.status === 'active' ? 'ok' : 'mute'}">${esc(u.status || 'active')}</span></td>
       </tr>`;
     }).join('') || '<tr><td class="empty">No people yet.</td></tr>'}`;
+
+  // คืนโควตารอบนี้ · เคสจริงคือคนเผลอรันลูปแล้วโควตาทั้งเทอมหมดในบ่ายเดียว แล้วทางออก
+  // มีแค่ขยายเพดานถาวร (ทั้งที่เพดานไม่ผิด) หรือบอกให้รอรอบใหม่ (ทั้งที่ติดอยู่ตอนนี้)
+  for (const btn of $('user-table').querySelectorAll('[data-reset-quota]')) {
+    btn.onclick = async () => {
+      const q = quotaOf[btn.dataset.resetQuota];
+      if (!confirm(`คืนโควตารอบ${q?.window || ''}ให้ ${btn.dataset.who}?\n\n`
+        + 'ตัวนับกลับไปเป็นศูนย์ · ประวัติการใช้งานและรายงานยังอยู่ครบ '
+        + 'และการคืนครั้งนี้จะถูกบันทึกว่าใครเป็นคนทำ')) return;
+      try {
+        const out = await post(`/admin/users/${btn.dataset.resetQuota}/quota/reset`, {});
+        await loadAccess();
+        banner('error', 'ok',
+          `คืนโควตาให้ ${btn.dataset.who} แล้ว · ล้างไป ${num(out.cleared.requests)} ครั้ง`);
+      } catch (e) { showError(e.message); }
+    };
+  }
 
   for (const sel of $('user-table').querySelectorAll('[data-join]')) {
     sel.onchange = async () => {
@@ -1315,6 +1336,10 @@ async function loadAccess() {
           : `<button class="ghost small" data-extend="${esc(k.id)}"
                data-name="${esc(k.name || k.key_prefix)}"
                title="เลื่อนวันหมดอายุ · ตัว key เดิมใช้ต่อได้เลย">ต่ออายุ</button>
+             <button class="ghost small" data-scope="${esc(k.id)}"
+               data-name="${esc(k.name || k.key_prefix)}"
+               title="เพิ่ม/ลด model ที่ key ใบนี้เรียกได้ · ไม่ต้องออกใบใหม่">
+               ${icon('models')} model</button>
              ${myRole !== 'admin' ? '' : k.revealable
                ? `<button class="ghost small" data-reveal="${esc(k.id)}"
                     data-label="${esc(k.name || k.key_prefix)}"
@@ -1373,6 +1398,52 @@ async function loadAccess() {
       } catch (e) { showError(e.message); }
     };
   }
+  // เพิ่ม/ลด model ของ key ที่แจกไปแล้ว · ก่อนหน้านี้ตั้งได้ตอนออกครั้งเดียว การเพิ่ม
+  // model หนึ่งตัวจึงแปลว่าต้องเพิกถอนใบที่ใช้งานอยู่แล้วตามไปแก้ทุกที่ที่แปะไว้ —
+  // คนเลยออก key แบบกว้างไว้ก่อน ซึ่งตรงข้ามกับเหตุผลที่มี scope
+  //
+  // เป็นช่องติ๊กไม่ใช่ช่องพิมพ์ เพราะพิมพ์ชื่อผิดหนึ่งตัวอักษร = key ที่เรียกไม่ได้
+  // และไม่มีอะไรบอกจนกว่าจะไปลองใช้จริง
+  for (const btn of $('key-table').querySelectorAll('[data-scope]')) {
+    btn.onclick = async () => {
+      const id = btn.dataset.scope;
+      const key = keys.data.find((k) => k.id === id);
+      const current = new Set(key?.models || []);
+      const all = state.cache.models || [];
+      if (!all.length) { showError('ยังไม่มีโมเดลใน registry'); return; }
+
+      showModal(`model ที่ "${btn.dataset.name}" เรียกได้`, `
+        <div class="checks" id="scope-checks">${all.map((m) => `
+          <label><input type="checkbox" class="scope-model" value="${esc(m.alias)}"
+            ${current.has(m.alias) ? 'checked' : ''}> ${esc(m.alias)}</label>`).join('')}</div>
+        <p class="hint" id="scope-note"></p>
+        <button class="primary" id="scope-save">บันทึก</button>`);
+
+      // ไม่ติ๊กเลย = ไม่จำกัด ซึ่งกว้างกว่าเดิม ไม่ใช่แคบกว่า · ต้องเห็นก่อนกดบันทึก
+      const note = () => {
+        const n = $('scope-checks').querySelectorAll('.scope-model:checked').length;
+        $('scope-note').textContent = n
+          ? `เรียกได้ ${n} ตัวนี้เท่านั้น`
+          : 'ไม่ติ๊กเลย = เรียกได้ทุก model ที่คนถือ key มีสิทธิ์ (ไม่จำกัด)';
+      };
+      $('scope-checks').onchange = note;
+      note();
+
+      $('scope-save').onclick = async () => {
+        const models = [...$('scope-checks').querySelectorAll('.scope-model:checked')]
+          .map((c) => c.value);
+        try {
+          await patch(`/admin/api-keys/${id}`, { models });
+          $('modal').close();
+          await loadAccess();
+          banner('error', 'ok', models.length
+            ? `key ใบนี้เรียกได้: ${models.join(', ')}`
+            : 'เอาข้อจำกัด model ออกแล้ว');
+        } catch (e) { $('scope-note').textContent = e.message; }
+      };
+    };
+  }
+
   for (const btn of $('key-table').querySelectorAll('[data-revoke]')) {
     btn.onclick = async () => {
       if (!confirm('Revoke this key? Any client using it stops working immediately.')) return;

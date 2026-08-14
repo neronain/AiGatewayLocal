@@ -135,6 +135,15 @@ class CounterStore(ABC):
     @abstractmethod
     async def increment(self, key: str, window: str, delta: Consumption) -> None: ...
 
+    @abstractmethod
+    async def reset(self, key: str, window: str) -> None:
+        """Put this subject's current window back to zero.
+
+        Only the counter. Usage records are a separate ledger and are what the
+        reports are built from — clearing a quota must not erase the evidence
+        of what was spent.
+        """
+
 
 class DatabaseCounterStore(CounterStore):
     def __init__(self, session_factory) -> None:
@@ -179,6 +188,14 @@ class DatabaseCounterStore(CounterStore):
             row.output_tokens += delta.output_tokens
             row.images += delta.images
             await session.commit()
+
+    async def reset(self, key: str, window: str) -> None:
+        start, _ = window_bounds(window)
+        async with self._session_factory() as session:
+            row = await self._fetch(session, key, start)
+            if row is not None:
+                await session.delete(row)
+                await session.commit()
 
     @staticmethod
     async def _fetch(session: AsyncSession, key: str, start: datetime):
@@ -225,6 +242,10 @@ class RedisCounterStore(CounterStore):
         ttl = max(int((end - datetime.now(UTC)).total_seconds()), 60)
         pipe.expire(redis_key, ttl)
         await pipe.execute()
+
+    async def reset(self, key: str, window: str) -> None:
+        start, _ = window_bounds(window)
+        await self._redis.delete(self._redis_key(key, start))
 
 
 class ResilientCounterStore(CounterStore):
@@ -325,6 +346,31 @@ class ResilientCounterStore(CounterStore):
             except Exception as exc:
                 self._mark_down(exc)
         await self._database.increment(key, window, delta)
+
+    async def reset(self, key: str, window: str) -> None:
+        """Both ledgers, always — clearing one is worse than clearing neither.
+
+        Redis alone does not work: the next read misses, sees that an earlier
+        outage may have left counts in the database, and reseeds from it. The
+        number the admin just cleared comes straight back, and the button looks
+        broken for reasons nobody can see.
+
+        Clearing the database alone leaves Redis serving the old figure until
+        the window ends. So both, and Redis is attempted even while it is marked
+        down: it may have recovered, and stale counts sitting there outlive the
+        outage that caused the fallback.
+        """
+        await self._database.reset(key, window)
+        try:
+            await self._redis.reset(key, window)
+        except Exception as exc:
+            self._mark_down(exc)
+            # ล้างไม่ครบแล้วบอกว่าสำเร็จ = ผู้ดูแลเห็นตัวเลขเดิมโผล่กลับมาโดยไม่รู้ว่าทำไม
+            raise GatewayError(
+                ErrorCode.UPSTREAM_ERROR,
+                "Cleared the stored counters, but Redis is unreachable and may "
+                "still hold this window's count. Try again once it is back.",
+            ) from exc
 
 
 class QuotaService:
@@ -487,6 +533,18 @@ class QuotaService:
         except Exception:
             # Never fail a completed request because bookkeeping failed.
             log.exception("failed to record quota consumption for user %s", user_id)
+
+    async def reset(self, user_id: str, limits: ResolvedLimits) -> None:
+        """Give this person their window back.
+
+        Unlike `record`, a failure here is not swallowed. Bookkeeping that fails
+        quietly costs a few tokens of accuracy; a reset that fails quietly
+        leaves somebody locked out while the console says it worked.
+        """
+        key = self.subject_key(user_id)
+        await self._store.reset(key, limits.window)
+        if limits.rate_limited:
+            await self._store.reset(key, "minute")
 
     async def usage_snapshot(self, user_id: str, limits: ResolvedLimits) -> dict:
         used = await self._store.get(self.subject_key(user_id), limits.window)

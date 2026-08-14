@@ -287,6 +287,51 @@ async def update_user(
     return _user_dict(user)
 
 
+@router.post("/users/{user_id}/quota/reset")
+async def reset_user_quota(
+    user_id: str,
+    request: Request,
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """Give somebody their allowance back before the window turns over.
+
+    Someone burns a term's quota on one runaway loop on a Tuesday, and the only
+    remedies were to raise their limit permanently or tell them to wait until
+    the window rolls. Both are the wrong shape: the limit was right, and the
+    person is blocked now.
+
+    This clears the counter, not the ledger. Usage records stay exactly as they
+    were, so the reports still show what was spent and this shows up in the
+    audit log as a decision somebody made — a reset that erased its own evidence
+    would be a quiet way to give unlimited access.
+
+    Admin only. A manager can already lift a limit for their own class through a
+    quota policy; handing back a spent allowance is a different act, and it
+    should be visible at the top.
+    """
+    user = await session.get(User, user_id)
+    if user is None:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "User not found.")
+
+    limits = await state.quota.resolve_limits(session, user_id, None, "")
+    before = await state.quota.usage_snapshot(user_id, limits)
+    await state.quota.reset(user_id, limits)
+
+    await audit(
+        session, request, actor, "quota.reset", "user", user_id,
+        {"window": limits.window, "cleared": before["used"]},
+    )
+    await session.commit()
+    return {
+        "user_id": user_id,
+        "window": limits.window,
+        "cleared": before["used"],
+        "usage": await state.quota.usage_snapshot(user_id, limits),
+    }
+
+
 def _user_dict(user: User) -> dict[str, Any]:
     return {
         "id": user.id,
@@ -1194,23 +1239,34 @@ async def list_api_keys(
 
 
 @router.patch("/api-keys/{key_id}")
-async def extend_api_key(
+async def amend_api_key(
     key_id: str,
     payload: dict[str, Any],
     request: Request,
     actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
-    """Move a key's expiry, including one that has already passed.
+    """Change a live key's expiry or its model list, without reissuing it.
 
     An expired key stops working and is not deleted, which is right - but until
     now the only way to answer "the work is not finished, can we have another
     week" was to issue a new key and have somebody paste it everywhere again.
     The credential is fine; only the date was wrong.
 
+    The same was true of scope, and worse: a key issued for two aliases could
+    not be given a third. Adding a model meant revoking a working credential and
+    chasing down everywhere it had been pasted - so in practice people issued
+    wide keys up front, which is the opposite of what the scope is for.
+
     `days` counts from now, not from the old expiry, so extending something that
     lapsed last month gives the full period rather than a date already gone.
     `null` removes the expiry entirely.
+
+    `models` replaces the list outright - send the whole list you want, not a
+    delta. `[]` means unrestricted, and is a decision rather than a blank: a key
+    is narrowed and widened through the same field, so "no list" has to mean
+    something definite.
     """
     api_key = await session.get(ApiKey, key_id)
     if api_key is None:
@@ -1223,28 +1279,60 @@ async def extend_api_key(
             ErrorCode.INVALID_REQUEST,
             "This key was revoked, which is not reversible. Issue a new one.",
         )
-    if "days" not in payload:
-        raise GatewayError(ErrorCode.INVALID_REQUEST, "Send {'days': <number|null>}.")
+    if "days" not in payload and "models" not in payload:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            "Send {'days': <number|null>} and/or {'models': [<alias>, ...]}.",
+        )
 
-    days = payload["days"]
-    if days is None:
-        api_key.expires_at = None
-    else:
-        try:
-            days = int(days)
-        except (TypeError, ValueError):
+    changes: dict[str, Any] = {}
+
+    if "days" in payload:
+        days = payload["days"]
+        if days is None:
+            api_key.expires_at = None
+        else:
+            try:
+                days = int(days)
+            except (TypeError, ValueError):
+                raise GatewayError(
+                    ErrorCode.INVALID_REQUEST, "days must be a whole number."
+                ) from None
+            if days < 1:
+                raise GatewayError(ErrorCode.INVALID_REQUEST, "days must be at least 1.")
+            api_key.expires_at = utcnow() + timedelta(days=days)
+        changes["days"] = days
+
+    if "models" in payload:
+        models = payload["models"]
+        if not isinstance(models, list) or any(not isinstance(a, str) for a in models):
             raise GatewayError(
-                ErrorCode.INVALID_REQUEST, "days must be a whole number."
-            ) from None
-        if days < 1:
-            raise GatewayError(ErrorCode.INVALID_REQUEST, "days must be at least 1.")
-        api_key.expires_at = utcnow() + timedelta(days=days)
+                ErrorCode.INVALID_REQUEST, "models must be a list of model aliases."
+            )
+        models = list(dict.fromkeys(a.strip() for a in models if a.strip()))
 
-    await audit(session, request, actor, "apikey.extend", "apikey", key_id, {"days": days})
+        # ตรวจตอนแก้ด้วยเกณฑ์เดียวกับตอนออก key — alias ที่ไม่มีอยู่จริงคือ key ที่
+        # เรียกไม่ได้และไม่มีอะไรบอกจนกว่าจะลอง
+        known = set(state.registry.snapshot.models)
+        unknown = [a for a in models if a not in known]
+        if unknown:
+            raise GatewayError(
+                ErrorCode.MODEL_NOT_FOUND,
+                f"Unknown model alias(es): {', '.join(unknown)}.",
+                details={"known_models": sorted(known)},
+            )
+        # แก้ scope คือการให้สิทธิ์ ไม่ต่างจากตอนออก key · ผู้จัดการจึงกว้างเกินตัวเองไม่ได้
+        await _assert_may_grant(session, actor, models, state)
+
+        changes["models"] = {"from": list(api_key.models or []), "to": models}
+        api_key.models = models
+
+    await audit(session, request, actor, "apikey.amend", "apikey", key_id, changes)
     await session.commit()
     return {
         "id": key_id,
         "expires_at": api_key.expires_at.isoformat() if api_key.expires_at else None,
+        "models": list(api_key.models or []),
     }
 
 

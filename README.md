@@ -306,6 +306,19 @@ Consequences that are easy to get wrong, and are tested:
   days from today, so something that lapsed last month gets a full period.
   Quota policies expire too: a limit nobody removes is a limit still in force
   next term.
+- **A key's models can be changed after it is issued.** Both directions, from
+  the same button, on a credential already in circulation. Without it, adding
+  one model meant revoking something that worked and chasing down everywhere it
+  had been pasted — so people issued wide keys up front, which is the opposite
+  of what the scope is for. No list means unrestricted, and the dialog says so
+  before you save, because that is the one change that widens rather than
+  narrows.
+- **A spent allowance can be handed back** without raising anyone's limit. One
+  runaway loop can burn a term's quota on a Tuesday afternoon; the limit was not
+  wrong and the person is blocked now. Admin only, written to the audit log with
+  what was cleared, and the usage records are untouched — the reports still show
+  what was spent. A reset that erased its own evidence would be a quiet way to
+  grant unlimited access.
 - **Enrolling thirty people is not thirty decisions.** A workspace carries the
   models, key lifetime and groups a new key starts with, and the console reports
   which defaults it applied — a default nobody sees is a setting nobody knows
