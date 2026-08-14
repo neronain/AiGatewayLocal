@@ -87,11 +87,30 @@ async def _bootstrap_admin(app: FastAPI) -> None:
     settings = get_settings()
     try:
         async with session_scope() as session:
-            existing = await session.execute(select(User).where(User.role == "admin"))
-            if existing.scalars().first() is not None:
-                return
-
             from app.core.passwords import hash_password
+
+            existing = await session.execute(select(User).where(User.role == "admin"))
+            current = existing.scalars().first()
+            if current is not None:
+                # An administrator that predates password sign-in has no hash, so
+                # nobody can reach the console at all — not a policy, just a gap
+                # left by an upgrade. Give it one and announce it exactly the way
+                # a fresh install does, because a credential nobody is told about
+                # is the same as no credential.
+                if current.password_hash:
+                    return
+                recovered = settings.admin_password or secrets.token_urlsafe(12)
+                current.password_hash = hash_password(recovered)
+                current.must_change_password = not settings.admin_password
+                await session.commit()
+                log.warning(
+                    "\n%s\nCONSOLE SIGN-IN RESTORED (shown once)\n"
+                    "  This administrator existed without a password, which no\n"
+                    "  release before console sign-in could set.\n"
+                    "  username: %s\n  password: %s\n%s",
+                    "=" * 72, current.external_id, recovered, "=" * 72,
+                )
+                return
 
             password = settings.admin_password or secrets.token_urlsafe(12)
             admin_user = User(
