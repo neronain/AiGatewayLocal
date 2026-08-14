@@ -218,8 +218,34 @@ async function loadModels() {
       .catch(() => ({ status: 'NOT TESTED', results: [] }))),
   );
 
+  // แถวบนคือสิ่งที่ client เรียก · แถวย่อยคือเครื่องจริงที่ตอบให้ สองอย่างนี้เคยอัดอยู่ใน
+  // เซลล์เดียวกัน พออ่านแล้วแยกไม่ออกว่าอะไรเป็นของ alias อะไรเป็นของเครื่อง
+  const endpointRow = (m, e, isLast) => {
+    const dead = !e.health?.healthy;
+    const speaks = [
+      e.protocols?.openai ? 'OpenAI' : '',
+      e.protocols?.anthropic ? 'Anthropic' : '',
+      e.modalities?.image ? 'images' : '',
+    ].filter(Boolean);
+    return `<tr class="ep-row${isLast ? ' ep-last' : ''}">
+      <td><span class="ep-mark">↳</span> <code>${esc(e.name)}</code>
+          <div class="hint">${esc(e.server_type)}</div></td>
+      <td class="mono">${esc(e.base_url)}</td>
+      <td>${speaks.map((s) => `<span class="badge">${esc(s)}</span>`).join(' ')}</td>
+      <td>${e.enabled === false
+            ? '<span class="pill mute">ปิดไว้</span>'
+            : `<span class="pill ${dead ? 'err' : 'ok'}">${dead ? 'down' : 'up'}</span>`}</td>
+      <td class="hint">priority ${esc(e.priority)} ·
+          พร้อมกันได้ ${esc(e.max_concurrency)}${e.health?.in_flight
+            ? ` · กำลังวิ่ง ${esc(e.health.in_flight)}` : ''}</td>
+      <td><button class="ghost small" data-ep-model="${esc(m.alias)}" data-ep="${esc(e.name)}"
+            data-ep-to="${e.enabled === false ? '1' : '0'}"
+            >${e.enabled === false ? 'เปิดเครื่องนี้' : 'ปิดเครื่องนี้'}</button></td>
+    </tr>`;
+  };
+
   $('model-table').innerHTML = `
-    <tr><th>Alias</th><th>Upstream / backends</th><th>Capabilities · declared</th>
+    <tr><th>Alias / backend</th><th>Upstream / address</th><th>Capabilities · declared</th>
         <th>Health</th><th>Test status · measured</th><th></th></tr>
     ${registry.data.map((m, i) => {
       // นับเฉพาะเครื่องที่เปิดอยู่ — เครื่องที่ถูกปิดไว้ไม่ได้รับงาน การนับรวมเข้าไป
@@ -237,16 +263,11 @@ async function loadModels() {
       const times = results.map((r) => r.tested_at).filter(Boolean).map((t) => stamp(t));
       const last = times.length ? new Date(Math.max(...times)) : null;
       const failed = results.filter((r) => r.status === 'fail').map((r) => r.feature);
-      return `<tr>
+      return `<tr class="alias-row">
         <td><code>${esc(m.alias)}</code>${m.enabled === false
               ? ' <span class="pill mute">off</span>' : ''}
             <div class="hint">${esc(m.display_name)}</div></td>
-        <td><code>${esc(m.upstream_model)}</code>
-            ${m.endpoints.map((e) => `<div class="hint">${esc(e.server_type)} ·
-              ${esc(e.base_url)} ${e.health?.healthy ? '' : '<span class="pill err">down</span>'}
-              <button class="linkish" data-ep-model="${esc(m.alias)}" data-ep="${esc(e.name)}"
-                data-ep-to="${e.enabled === false ? '1' : '0'}"
-                >${e.enabled === false ? 'ปิดอยู่ · เปิด' : 'ปิดเครื่องนี้'}</button></div>`).join('')}</td>
+        <td><code>${esc(m.upstream_model)}</code></td>
         <td>${m.badges.map((b) => `<span class="badge">${esc(b)}</span>`).join(' ')}</td>
         <td><span class="pill ${cls}">${healthy}/${total} up</span>
             ${off ? `<div class="hint">ปิดไว้ ${off}</div>` : ''}</td>
@@ -266,7 +287,8 @@ async function loadModels() {
             data-to="${m.enabled === false ? '1' : '0'}"
             >${m.enabled === false ? 'Enable' : 'Disable'}</button>
           <button class="danger small" data-del="${esc(m.alias)}">Delete</button>
-        </td></tr>`;
+        </td></tr>
+        ${m.endpoints.map((e, n) => endpointRow(m, e, n === m.endpoints.length - 1)).join('')}`;
     }).join('')}`;
 
   for (const btn of $('model-table').querySelectorAll('[data-verify]')) {
