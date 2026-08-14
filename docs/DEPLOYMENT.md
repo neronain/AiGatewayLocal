@@ -506,6 +506,24 @@ List **every** name the gateway will be reached by. A certificate for the
 hostname does not cover the IP, and clients differ in which they send —
 `install_tls.sh` defaults to the hostname plus every non-loopback address.
 
+### One gateway, two addresses, one cookie jar
+
+Cookies are scoped by host — not by port, and not by scheme. `https://host` and
+`http://host:8080` therefore share a jar, and the https session cookie carries
+`Secure`. A browser will not let an insecure page overwrite a Secure cookie of
+the same name: it drops the new one and reports nothing.
+
+The symptom, before this was fixed, was a sign-in that returned 200 and then
+answered every following call with `MISSING_API_KEY: No API key provided`,
+displayed next to the password box. It reads as a rejected password and is
+precisely the one thing it is not.
+
+The session cookie is now named per scheme — `litegate_session` over HTTPS,
+`litegate_session_http` over plain HTTP — so neither address can shadow the
+other, and either cookie is accepted if the matching one is absent (a
+TLS-terminating proxy makes a request look secure while the browser stored the
+other name). Signing out clears both.
+
 ### HSTS is off unless the certificate is publicly trusted
 
 HSTS tells a browser "this host is HTTPS-only" and it is believed for a year.

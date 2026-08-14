@@ -8,6 +8,7 @@ import pytest
 
 from app.core.passwords import (
     MIN_PASSWORD_LENGTH,
+    SESSION_COOKIE_INSECURE,
     PasswordError,
     hash_password,
     issue_session,
@@ -101,7 +102,8 @@ def test_login_and_session_identifies_the_caller(client):
     )
     assert response.status_code == 200
     assert response.json()["role"] == "member"
-    assert "litegate_session" in response.cookies
+    # ชื่อคุกกี้ผูกกับ scheme — TestClient เป็น http จึงได้ใบที่ไม่ติด Secure
+    assert SESSION_COOKIE_INSECURE in response.cookies
 
     # The cookie alone now authenticates - no API key involved.
     me = client.get("/v1/me")
@@ -151,7 +153,7 @@ def test_logout_clears_the_session(client):
 def test_changing_a_password_signs_other_sessions_out(client):
     _make_user("member", "somchai")
     client.post("/auth/login", json={"username": "somchai", "password": GOOD_PASSWORD})
-    stolen = client.cookies.get("litegate_session")
+    stolen = client.cookies.get(SESSION_COOKIE_INSECURE)
 
     changed = client.post(
         "/auth/password",
@@ -164,7 +166,7 @@ def test_changing_a_password_signs_other_sessions_out(client):
 
     # A session captured before the change no longer works.
     client.cookies.clear()
-    client.cookies.set("litegate_session", stolen)
+    client.cookies.set(SESSION_COOKIE_INSECURE, stolen)
     assert client.get("/v1/me").status_code == 401
 
 

@@ -34,7 +34,34 @@ _KEY_LEN = 32
 _MAXMEM = 128 * _SCRYPT_N * _SCRYPT_R * 2
 
 SESSION_COOKIE = "litegate_session"
+
+# The same gateway answers on https://host and on http://host:8080, and cookies
+# are not scoped by port or scheme - both addresses see one cookie jar. The
+# https cookie carries `Secure`, and a browser refuses to let an insecure page
+# overwrite a Secure cookie of the same name: it drops the new one silently, so
+# signing in over :8080 returns 200 and then every call says "no API key". Two
+# names, one per scheme, means neither address can shadow the other.
+SESSION_COOKIE_INSECURE = "litegate_session_http"
 SESSION_TTL_SECONDS = 8 * 3600
+
+
+def session_cookie_name(secure: bool) -> str:
+    return SESSION_COOKIE if secure else SESSION_COOKIE_INSECURE
+
+
+def read_session_cookie(cookies, secure: bool) -> str:
+    """The cookie for this scheme, falling back to the other one.
+
+    The fallback matters behind a proxy that terminates TLS: a request can
+    arrive marked secure while the browser stored the cookie under the other
+    name, and asking someone to sign in twice for that is not an explanation
+    anyone wants to hear.
+    """
+    return (
+        cookies.get(session_cookie_name(secure))
+        or cookies.get(session_cookie_name(not secure))
+        or ""
+    )
 
 MIN_PASSWORD_LENGTH = 10
 

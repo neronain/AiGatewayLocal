@@ -243,6 +243,84 @@ tr.ep-row > td:first-child { padding-left: 2.2em; position: relative; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .scroll { overflow-x: auto; }
 
+/* ── model list ─────────────────────────────────────────────────────────
+   A catalogue is a list of things you scan, then read one of. Cards forced
+   every model to carry its full description at all times, so five models
+   filled the screen and none of them could be compared at a glance. One row
+   each, opened on demand. */
+.model-section {
+  display: flex; align-items: baseline; gap: 10px;
+  margin: 24px 0 10px; font-size: 0.9375rem;
+}
+.model-section .hint { margin: 0; }
+
+.model-list {
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  background: var(--card); box-shadow: var(--shadow); overflow: hidden;
+}
+
+.model-row + .model-row { border-top: 1px solid var(--line); }
+
+.model-row > summary {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 16px; cursor: pointer; list-style: none;
+  transition: background .12s ease;
+}
+.model-row > summary::-webkit-details-marker { display: none; }
+.model-row > summary:hover { background: var(--sunken); }
+.model-row > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* The open row keeps a coloured edge so it stays findable once the list has
+   scrolled and the detail panel fills the screen. */
+.model-row[open] > summary { background: var(--sunken); }
+.model-row[open] { border-left: 3px solid transparent; border-image: var(--g-mix) 1; }
+
+.model-glyph {
+  flex: none; display: grid; place-items: center; width: 38px; height: 38px;
+  border-radius: 10px; background: var(--accent-bg); color: var(--accent);
+}
+.model-name { flex: none; min-width: 190px; display: grid; gap: 3px; justify-items: start; }
+.model-name strong { font-size: 0.875rem; }
+/* The alias is what a member types into their client, so it stays monospaced -
+   but as plain text. A grid item stretches, and the boxed `code` chip became a
+   wide grey slab under every name. */
+.model-name code {
+  background: none; border: 0; padding: 0;
+  color: var(--fg3); font-size: 0.7188rem;
+}
+.model-badges { flex: 1; display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; }
+.model-meta {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  color: var(--fg2); font-size: 0.7812rem; white-space: nowrap;
+}
+.model-chevron { flex: none; color: var(--fg3); display: grid; transition: transform .15s ease; }
+.model-row[open] .model-chevron { transform: rotate(180deg); }
+@media (prefers-reduced-motion: reduce) {
+  .model-row > summary, .model-chevron { transition: none; }
+}
+
+.model-detail { padding: 4px 16px 18px 68px; border-top: 1px solid var(--line); }
+.model-desc { color: var(--fg2); margin: 12px 0 14px; max-width: 68ch; }
+
+.model-facts {
+  display: grid; gap: 10px 26px; margin: 0 0 14px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+.model-facts dt {
+  color: var(--fg3); font-size: 0.6875rem; text-transform: uppercase;
+  letter-spacing: .07em; margin-bottom: 2px;
+}
+.model-facts dd { margin: 0; font-size: 0.8125rem; }
+
+/* The one thing a member actually needs from this page: what to paste. */
+.model-use {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  padding: 10px 12px; border-radius: var(--r-sm);
+  background: var(--sunken); border: 1px solid var(--line);
+}
+.model-use .hint { margin: 0; }
+.model-use button { display: inline-flex; align-items: center; gap: 5px; }
+
 /* ── status ─────────────────────────────────────────────────────────── */
 .badges { display: flex; flex-wrap: wrap; gap: 5px; margin: 9px 0 6px; }
 .badge {

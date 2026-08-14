@@ -166,9 +166,9 @@ async def _principal_from_session(
     request: Request, session: AsyncSession
 ) -> Principal | None:
     """The browser's cookie, if it carries a session this server still honours."""
-    from app.core.passwords import SESSION_COOKIE, read_session
+    from app.core.passwords import read_session, read_session_cookie
 
-    raw = request.cookies.get(SESSION_COOKIE)
+    raw = read_session_cookie(request.cookies, request.url.scheme == "https")
     if not raw:
         return None
     payload = read_session(raw)

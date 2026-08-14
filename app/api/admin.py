@@ -30,7 +30,7 @@ from app.core.modeltest import (
     resolve_commands,
     suggest_tool_parser,
 )
-from app.core.passwords import SESSION_COOKIE
+from app.core.passwords import read_session_cookie
 from app.db.models import (
     ASSISTANT_MODEL_KEY,
     ApiKey,
@@ -1508,7 +1508,9 @@ async def start_model_test(
         api_key = extract_bearer_token(request)
     except GatewayError:
         api_key = ""
-    session_cookie = "" if api_key else request.cookies.get(SESSION_COOKIE, "")
+    session_cookie = "" if api_key else read_session_cookie(
+        request.cookies, request.url.scheme == "https"
+    )
     # Deliberately the server's own address, not request.base_url: the console
     # may be reached through a proxy or port-forward whose hostname means
     # nothing on this host.

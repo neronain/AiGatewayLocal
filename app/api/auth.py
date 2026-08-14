@@ -28,10 +28,13 @@ from app.core.auth import Principal, authenticate, generate_api_key, normalise_r
 from app.core.errors import ErrorCode, GatewayError
 from app.core.passwords import (
     SESSION_COOKIE,
+    SESSION_COOKIE_INSECURE,
     SESSION_TTL_SECONDS,
     PasswordError,
     hash_password,
     issue_session,
+    read_session_cookie,
+    session_cookie_name,
     verify_password,
 )
 from app.db.models import ApiKey, User, utcnow
@@ -53,14 +56,17 @@ class SetupRequest(Credentials):
 
 def _set_session_cookie(response: Response, request: Request, token: str) -> None:
     # Secure only over TLS: on a plain-HTTP lab deployment a Secure cookie is
-    # simply never sent, which looks like a broken login.
+    # simply never sent, which looks like a broken login. The name follows the
+    # scheme too, so the two addresses this gateway answers on cannot shadow
+    # each other's cookie - see the note in app/core/passwords.py.
+    secure = request.url.scheme == "https"
     response.set_cookie(
-        SESSION_COOKIE,
+        session_cookie_name(secure),
         token,
         max_age=SESSION_TTL_SECONDS,
         httponly=True,
         samesite="lax",
-        secure=request.url.scheme == "https",
+        secure=secure,
         path="/",
     )
 
@@ -85,7 +91,7 @@ async def auth_status(
     from app.core.passwords import read_session
 
     signed_in = None
-    raw = request.cookies.get(SESSION_COOKIE)
+    raw = read_session_cookie(request.cookies, request.url.scheme == "https")
     if raw:
         payload = read_session(raw)
         if payload:
@@ -173,7 +179,10 @@ async def login(
 
 @router.post("/auth/logout")
 async def logout(response: Response) -> dict[str, Any]:
-    response.delete_cookie(SESSION_COOKIE, path="/")
+    # Clear both names. Signing out over one scheme should not leave a live
+    # session behind on the other address of the same gateway.
+    for name in (SESSION_COOKIE, SESSION_COOKIE_INSECURE):
+        response.delete_cookie(name, path="/")
     return {"signed_out": True}
 
 

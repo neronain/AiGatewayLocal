@@ -141,20 +141,107 @@ function renderQuotaInto(target, me) {
       resets ${new Date(me.quota.window_end).toLocaleString()}</td></tr>`;
 }
 
+// Inline because a gateway may run air-gapped: no icon font, no CDN, no build.
+// Stroked rather than filled so one set reads correctly in both themes.
+const ICONS = {
+  image: '<circle cx="8.5" cy="9.5" r="1.5"/><path d="M3 15l4.5-4.5L15 18"/>'
+       + '<rect x="3" y="3" width="18" height="18" rx="2"/>',
+  code: '<path d="M15.5 18L21 12l-5.5-6M8.5 6L3 12l5.5 6"/>',
+  agent: '<rect x="5" y="8" width="14" height="12" rx="2"/><path d="M12 8V4M9 14h.01M15 14h.01"/>'
+       + '<circle cx="12" cy="3" r="1.5"/>',
+  reasoning: '<path d="M9 20h6M10 23h4"/>'
+           + '<path d="M12 2a6.5 6.5 0 0 0-4 11.6V17h8v-3.4A6.5 6.5 0 0 0 12 2z"/>',
+  chat: '<path d="M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6.4A8 8 0 1 1 21 12z"/>',
+  chevron: '<path d="M6 9l6 6 6-6"/>',
+  copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
+};
+
+const icon = (name, size = 20) =>
+  `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor"
+        stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+        aria-hidden="true">${ICONS[name] || ICONS.chat}</svg>`;
+
+// What a model is *for*, in one glyph. Read from what it can do rather than
+// from its name, so a model added later gets the right icon without an edit.
+function modelGlyph(model) {
+  const badges = new Set(model.badges || []);
+  if (model.supports_images || badges.has('Image')) return 'image';
+  if (badges.has('Agent')) return 'agent';
+  if (badges.has('Reasoning')) return 'reasoning';
+  if (badges.has('Code')) return 'code';
+  return 'chat';
+}
+
+// One row per model, closed by default. `details` rather than a click handler:
+// the browser gives keyboard access, the open state and the semantics for free,
+// and it still works if the script fails.
+function modelRow(model) {
+  const facts = [
+    ['Context', model.context_tokens ? `${num(model.context_tokens)} tokens` : model.context],
+    ['Max output', model.max_output_tokens ? `${num(model.max_output_tokens)} tokens` : '—'],
+    ['Protocols', (model.protocols || []).join(' · ') || '—'],
+    ['Images', model.supports_images ? 'ได้' : 'ไม่ได้'],
+    ['Tools', model.supports_tools ? 'ได้' : 'ไม่ได้'],
+    ['Streaming', model.supports_streaming ? 'ได้' : 'ไม่ได้'],
+  ];
+  return `<details class="model-row">
+    <summary>
+      <span class="model-glyph">${icon(modelGlyph(model))}</span>
+      <span class="model-name">
+        <strong>${esc(model.name)}</strong>
+        <code>${esc(model.id)}</code>
+      </span>
+      <span class="model-badges">
+        ${(model.badges || []).map((b) => `<span class="badge">${esc(b)}</span>`).join('')}
+      </span>
+      <span class="model-meta">
+        ${esc(model.context)}
+        ${model.claude_code_ready ? '<span class="pill ok">Claude Code Ready</span>' : ''}
+      </span>
+      <span class="model-chevron">${icon('chevron', 18)}</span>
+    </summary>
+    <div class="model-detail">
+      ${model.description ? `<p class="model-desc">${esc(model.description)}</p>` : ''}
+      <dl class="model-facts">
+        ${facts.map(([label, value]) => `<div><dt>${label}</dt><dd>${esc(value)}</dd></div>`).join('')}
+      </dl>
+      <div class="model-use">
+        <span class="hint">เรียกใช้โดยตั้ง</span>
+        <code class="mono">model = "${esc(model.id)}"</code>
+        <span class="hint">ที่</span>
+        <code class="mono">${esc(location.origin)}/v1</code>
+        <button class="ghost small" data-copy-model="${esc(model.id)}"
+          >${icon('copy', 14)} คัดลอกชื่อ</button>
+      </div>
+    </div>
+  </details>`;
+}
+
+function modelList(models, empty) {
+  return models.length
+    ? `<div class="model-list">${models.map(modelRow).join('')}</div>`
+    : `<div class="empty">${empty}</div>`;
+}
+
+// Delegated once, on the document: both the dashboard catalogue and the
+// account page re-render their lists, and a handler per button would have to
+// be re-attached every time one of them did.
+document.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-copy-model]');
+  if (!button) return;
+  event.preventDefault();
+  navigator.clipboard.writeText(button.dataset.copyModel);
+  const was = button.innerHTML;
+  button.textContent = 'คัดลอกแล้ว';
+  setTimeout(() => { button.innerHTML = was; }, 1200);
+});
+
 function renderCatalog(data) {
   $('catalog').innerHTML = data.sections.map((s) => `
-    <h3 style="margin:18px 0 10px">${esc(s.title)}</h3>
-    <div class="grid">
-      ${s.models.map((m) => `
-        <div class="card">
-          <h3>${esc(m.name)}</h3>
-          <div class="mono" style="color:var(--fg3)">${esc(m.id)}</div>
-          ${m.description ? `<p class="hint">${esc(m.description)}</p>` : ''}
-          <div class="badges">${m.badges.map((b) => `<span class="badge">${esc(b)}</span>`).join('')}</div>
-          <div class="sub">${esc(m.context)}
-            ${m.claude_code_ready ? ' <span class="pill ok">Claude Code Ready</span>' : ''}</div>
-        </div>`).join('')}
-    </div>`).join('') || '<div class="empty">No models available.</div>';
+    <h3 class="model-section">${esc(s.title)}
+      <span class="hint">${s.models.length} โมเดล</span></h3>
+    ${modelList(s.models, 'ไม่มีโมเดลในหมวดนี้')}`).join('')
+    || '<div class="empty">No models available.</div>';
 }
 
 function renderHealth(report) {
@@ -1152,15 +1239,14 @@ async function loadAccount() {
     };
   }
 
-  const models = catalog.sections.flatMap((section) => section.models);
-  $('my-models').innerHTML = models.length ? `<div class="grid">
-    ${models.map((m) => `<div class="card">
-      <h3>${esc(m.name)}</h3>
-      <div class="mono" style="color:var(--fg3)">${esc(m.id)}</div>
-      <div class="badges">${m.badges.map((b) => `<span class="badge">${esc(b)}</span>`).join('')}</div>
-      <div class="sub">${esc(m.context)}${m.claude_code_ready ? ' · <span class="pill ok">Claude Code Ready</span>' : ''}</div>
-    </div>`).join('')}</div>`
-    : '<div class="empty">No models are enabled for you yet. Ask your manager.</div>';
+  // A model can sit in more than one section of the catalogue; here it is a
+  // flat list of what this person may call, so each one appears once.
+  const seen = new Set();
+  const models = catalog.sections.flatMap((section) => section.models)
+    .filter((m) => !seen.has(m.id) && seen.add(m.id));
+  $('my-models').innerHTML = modelList(
+    models, 'ยังไม่มีโมเดลที่เปิดให้คุณใช้ · ติดต่อผู้ดูแลของคุณ',
+  );
 }
 
 $('new-key').onclick = async () => {
@@ -1214,17 +1300,59 @@ $('signin').onclick = async () => {
     password: $('password').value,
   };
   if (state.needsSetup) body.display_name = $('display-name').value.trim();
+
+  // Signing in and loading the page are two different things that fail for two
+  // different reasons. They used to share a catch, so anything that went wrong
+  // while loading was reported next to the password box - the console telling
+  // someone their correct password was wrong.
   try {
     await post(state.needsSetup ? '/auth/setup' : '/auth/login', body);
-    $('password').value = '';
-    flash('signin-status', '', '');
-    document.querySelector('#tabs').hidden = false;
+  } catch (e) {
+    flash('signin-status', 'err', e.message.replace(/^[A-Z_]+: /, ''));
+    return;
+  }
+  $('password').value = '';
+
+  if (!await sessionTook()) return;
+
+  flash('signin-status', '', '');
+  document.querySelector('#tabs').hidden = false;
+  try {
     await load();
     showTab('dashboard');
   } catch (e) {
-    flash('signin-status', 'err', e.message.replace(/^[A-Z_]+: /, ''));
+    showError(e.message);
   }
 };
+
+/** Did the browser actually keep the cookie the server just set?
+ *
+ * It can refuse, and say nothing. A gateway reachable at both https://host and
+ * http://host:8080 sets one cookie name over both; the https one carries
+ * `Secure`, and a browser will not let an insecure page overwrite a Secure
+ * cookie of the same name. So the sign-in returns 200, the cookie is dropped on
+ * the floor, and the next call comes back "No API key provided" - which reads
+ * like the password was wrong, and is the one thing it was not.
+ */
+async function sessionTook() {
+  let status;
+  try {
+    status = await api('/auth/status');
+  } catch {
+    return true;   // ตอบไม่ได้ว่าเกิดอะไร อย่าเดา ปล่อยให้ load() รายงานเอง
+  }
+  if (status.session) return true;
+
+  const secure = location.protocol === 'https:';
+  const other = secure
+    ? `http://${location.hostname}:8080/console/`
+    : `https://${location.hostname}/console/`;
+  flash('signin-status', 'err',
+    'รหัสผ่านถูกต้อง แต่เบราว์เซอร์ไม่ยอมเก็บคุกกี้ของรอบนี้ — มักเกิดเมื่อเคยเข้าผ่าน'
+    + ` ${secure ? 'http' : 'https'} ของเครื่องเดียวกันมาก่อน ให้เข้าผ่าน ${other}`
+    + ' หรือล้างคุกกี้ของโฮสต์นี้แล้วลองใหม่');
+  return false;
+}
 for (const id of ['username', 'password']) {
   $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') $('signin').click(); });
 }
@@ -1436,14 +1564,24 @@ $('refresh').onclick = () => {
 };
 
 (async function boot() {
+  let status;
   try {
-    const status = await api('/auth/status');
-    if (!status.session) { showSignIn(status.needs_setup); return; }
-    document.querySelector('#tabs').hidden = false;
-    await load();
-    showTab('dashboard');
+    status = await api('/auth/status');
   } catch (e) {
     showSignIn(false);
     flash('signin-status', 'err', e.message);
+    return;
+  }
+  if (!status.session) { showSignIn(status.needs_setup); return; }
+
+  // Signed in already. If a panel fails to load, say so on the page rather than
+  // throwing the sign-in card back up — being asked to log in again is a bad
+  // way to learn that one endpoint was unhappy.
+  document.querySelector('#tabs').hidden = false;
+  try {
+    await load();
+    showTab('dashboard');
+  } catch (e) {
+    showError(e.message);
   }
 })();
