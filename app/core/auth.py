@@ -28,10 +28,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.core.errors import ErrorCode, GatewayError
 from app.db.models import (
+    AccessGroup,
     ApiKey,
     Membership,
     User,
     Workspace,
+    WorkspaceAccessGroup,
     WorkspaceModel,
     utcnow,
 )
@@ -75,6 +77,8 @@ class Principal:
     scopes: list[str]
     # alias ที่ key ใบนี้ระบุไว้เอง · ว่าง = ไม่จำกัดเพิ่ม (ดู assert_model_permitted)
     key_models: list[str] = field(default_factory=list)
+    # bundle ที่ระบุไว้บน key · อ่านคู่กับ key_models ทั้งคู่ตอบคำถามเดียวกัน
+    key_access_groups: list[str] = field(default_factory=list)
     # "key" for a program, "session" for a signed-in human. Self-service actions
     # that mint credentials require a session: a leaked key must not be able to
     # mint more keys for itself.
@@ -164,6 +168,7 @@ async def authenticate(
         workspace_id=api_key.workspace_id,
         scopes=list(api_key.scopes or []),
         key_models=list(api_key.models or []),
+        key_access_groups=list(api_key.access_groups or []),
         via="key",
     )
 
@@ -272,18 +277,41 @@ async def permitted_aliases(
         if scope is not None:
             reason = "the workspaces you belong to"
 
-    # The list on the key applies to everyone, admins included. The workspace
-    # rules above are about who you are; this one is about what the person
-    # issuing the key meant it for - a key made for one script should stay
-    # limited even if its owner is later promoted.
-    if principal.key_models:
-        on_key = set(principal.key_models)
+    # The limits written on the key apply to everyone, admins included. The
+    # workspace rules above are about who you are; this one is about what the
+    # person issuing the key meant it for - a key made for one script should
+    # stay limited even if its owner is later promoted.
+    #
+    # A named bundle and a hand-written list answer the same question, so they
+    # add up with each other before narrowing what the workspaces allowed.
+    on_key = set(principal.key_models)
+    if principal.key_access_groups:
+        on_key |= await _group_models(session, principal.key_access_groups)
+    if on_key:
         scope = on_key if scope is None else scope & on_key
         reason = (
             f"{reason}, and the list on this key" if reason else "the model list on this key"
         )
 
     return Permission(aliases=scope, reason=reason)
+
+
+async def _group_models(session: AsyncSession, group_ids) -> set[str]:
+    """Expand bundles into the aliases they name.
+
+    A disabled bundle expands to nothing rather than being ignored: turning one
+    off is meant to take its models away everywhere at once, which is the whole
+    reason for putting them in a bundle.
+    """
+    ids = list(group_ids or [])
+    if not ids:
+        return set()
+    rows = await session.execute(
+        select(AccessGroup.models).where(
+            AccessGroup.id.in_(ids), AccessGroup.enabled.is_(True)
+        )
+    )
+    return {alias for (models,) in rows for alias in (models or [])}
 
 
 async def managed_workspaces(
@@ -350,7 +378,8 @@ async def _models_via_membership(session: AsyncSession, user_id: str) -> set[str
     pairs = rows.all()
     if not pairs:
         return None
-    return {alias for _, alias in pairs if alias is not None}
+    aliases = {alias for _, alias in pairs if alias is not None}
+    return aliases | await _bundles_of(session, {ws for ws, _ in pairs})
 
 
 async def _workspace_models(session: AsyncSession, workspaces: list[str]) -> set[str]:
@@ -370,7 +399,33 @@ async def _workspace_models(session: AsyncSession, workspaces: list[str]) -> set
             Workspace.status == "active",
         )
     )
-    return {row[0] for row in rows}
+    return {row[0] for row in rows} | await _bundles_of(session, workspaces)
+
+
+async def _bundles_of(session: AsyncSession, workspaces) -> set[str]:
+    """Aliases the bundles attached to these workspaces expand to.
+
+    Bundles add to the models ticked on the workspace: both answer "what may
+    this class call", so they are two ways of writing one list rather than two
+    rules that have to be reconciled.
+    """
+    rows = await session.execute(
+        select(AccessGroup.models)
+        .join(
+            WorkspaceAccessGroup,
+            WorkspaceAccessGroup.access_group_id == AccessGroup.id,
+        )
+        .join(Workspace, Workspace.id == WorkspaceAccessGroup.workspace_id)
+        .where(
+            WorkspaceAccessGroup.workspace_id.in_(list(workspaces)),
+            AccessGroup.enabled.is_(True),
+            Workspace.status == "active",
+        )
+    )
+    aliases: set[str] = set()
+    for (models,) in rows:
+        aliases |= set(models or [])
+    return aliases
 
 
 async def assert_model_permitted(

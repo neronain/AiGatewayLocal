@@ -287,6 +287,27 @@ A manager who is in no workspace manages nothing, which is the opposite default
 from model access and deliberate: promoting somebody should not quietly hand
 them the whole institution. Put them in their classes and they can work.
 
+**Handing the same models to many classes.** Ticking four models into twenty
+courses means eighty clicks, and adding a fifth means visiting all twenty again.
+Name the set once instead:
+
+```bash
+curl -s -X POST $GW/admin/access-groups -H "Authorization: Bearer $ADMIN_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"coding-set","models":["coding","coder-next"]}'
+```
+
+Then give the bundle to a class alongside (or instead of) individual models —
+`POST /admin/workspaces/{id}/models` takes `access_groups` in the same call.
+Editing the bundle reaches every class holding it, which the response counts for
+you; disabling it takes its models away everywhere at once, reversibly.
+
+A bundle is a shorter way of *writing* a rule, never a new one: what it expands
+to is added to the models ticked on the class, and then narrowed by everything
+that narrowed before. Only an admin can define one, and a manager can only hand
+out bundles whose models they could call themselves — otherwise granting
+yourself a bundle would be the way around every other check.
+
 **Putting a class on hold.** `PATCH /admin/workspaces/{id}/status` with
 `suspended` stops it granting any models; `active` brings it back. Nobody's key
 is touched, which is the difference from revoking them — end of term, a course

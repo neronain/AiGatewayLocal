@@ -397,6 +397,18 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .model-use .hint { margin: 0; }
 .model-use button { display: inline-flex; align-items: center; gap: 5px; }
 
+/* Bundles sit under the individual models on a workspace row, separated,
+   because "these four by name" and "whatever this bundle holds" read as one
+   list only when you can see which is which. */
+.ws-bundles {
+  display: flex; flex-wrap: wrap; gap: 8px 16px;
+  margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line2);
+  flex-basis: 100%;
+}
+.ws-bundles label { gap: 5px; }
+.ws-bundles .hint { margin: 0; }
+.ws-bundles svg { color: var(--c2); vertical-align: -2px; }
+
 /* A held class stays in the list, legibly on hold — it is coming back, which
    is the difference between suspending it and revoking everybody's keys. */
 tr.ws-suspended > td { opacity: .62; }

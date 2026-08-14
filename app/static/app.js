@@ -194,6 +194,7 @@ const ICONS = {
         + '<path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1'
         + 'M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/>',
   trending: '<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
+  bundle: '<path d="M3 8l9-4 9 4-9 4z"/><path d="M3 8v8l9 4 9-4V8"/><path d="M12 12v8"/>',
 };
 
 const icon = (name, size = 20) =>
@@ -1001,12 +1002,62 @@ $('as-save').onclick = async () => {
   } catch (e) { showError(e.message); }
 };
 
+// A bundle is edited in place: the models are checkboxes on its own row, and
+// saving reaches every class holding it — which is the whole point and also the
+// thing to be careful about, so the row says how many that is.
+function renderAccessGroups(groups, aliases) {
+  $('access-group-table').innerHTML = `
+    <tr><th>Name</th><th>Models</th><th>Used by</th><th></th></tr>
+    ${groups.map((g) => `<tr${g.enabled ? '' : ' class="ws-suspended"'}>
+      <td><code>${esc(g.name)}</code>${g.enabled ? '' : ' <span class="pill mute">ปิดอยู่</span>'}
+          ${g.description ? `<div class="hint">${esc(g.description)}</div>` : ''}</td>
+      <td class="checks">${aliases.map((a) => `
+        <label><input type="checkbox" data-group="${esc(g.id)}" value="${esc(a)}"${
+          (g.models || []).includes(a) ? ' checked' : ''}> ${esc(a)}</label>`).join('')
+        || '<span class="hint">ยังไม่มีโมเดลใน registry</span>'}</td>
+      <td class="hint">${g.used_by} วิชา</td>
+      <td style="white-space:nowrap">
+        <button class="ghost small" data-savegroup="${esc(g.id)}">Save</button>
+        <button class="ghost small" data-togglegroup="${esc(g.id)}"
+          data-to="${g.enabled ? '0' : '1'}">${g.enabled ? 'ปิด' : 'เปิด'}</button>
+        <button class="danger small" data-delgroup="${esc(g.id)}"
+          data-name="${esc(g.name)}" data-used="${g.used_by}">Delete</button>
+      </td></tr>`).join('')
+      || '<tr><td class="empty">ยังไม่มีมัดโมเดล · กด + New group เพื่อสร้างชุดแรก</td></tr>'}`;
+
+  const save = async (id, body) => {
+    try { await patch(`/admin/access-groups/${id}`, body); await loadAccess(); }
+    catch (e) { showError(e.message); }
+  };
+  for (const btn of $('access-group-table').querySelectorAll('[data-savegroup]')) {
+    btn.onclick = () => save(btn.dataset.savegroup, {
+      models: [...document.querySelectorAll(
+        `input[data-group="${btn.dataset.savegroup}"]:checked`)].map((i) => i.value),
+    });
+  }
+  for (const btn of $('access-group-table').querySelectorAll('[data-togglegroup]')) {
+    btn.onclick = () => save(btn.dataset.togglegroup, { enabled: btn.dataset.to === '1' });
+  }
+  for (const btn of $('access-group-table').querySelectorAll('[data-delgroup]')) {
+    btn.onclick = async () => {
+      const { name, used } = btn.dataset;
+      if (!confirm(`ลบมัด "${name}"?\n\n`
+        + (Number(used) ? `ยังมี ${used} วิชาถืออยู่ — ต้องเอาออกจากวิชาเหล่านั้นก่อน\n\n` : '')
+        + 'ถ้าแค่อยากหยุดให้สิทธิ์ชั่วคราว ใช้ปุ่ม "ปิด" แทน ซึ่งย้อนกลับได้')) return;
+      try { await del(`/admin/access-groups/${btn.dataset.delgroup}`); await loadAccess(); }
+      catch (e) { showError(e.message); }
+    };
+  }
+}
+
 async function loadAccess() {
-  const [users, workspaces, keys] = await Promise.all([
+  const [users, workspaces, keys, groups] = await Promise.all([
     api('/admin/users'), api('/admin/workspaces'), api('/admin/api-keys'),
+    api('/admin/access-groups'),
   ]);
   state.cache.users = users.data;
   state.cache.workspaces = workspaces.data;
+  state.cache.accessGroups = groups.data;
 
   const userOpts = users.data
     .map((u) => `<option value="${esc(u.id)}">${esc(u.external_id)} — ${esc(u.display_name || u.role)}</option>`)
@@ -1148,6 +1199,9 @@ async function loadAccess() {
   }
 
   const aliases = (state.cache.models || []).map((m) => m.alias);
+  renderAccessGroups(groups.data, aliases);
+
+  const groupName = Object.fromEntries(groups.data.map((g) => [g.id, g]));
   $('workspace-table').innerHTML = `
     <tr><th>Code</th><th>Name</th><th>Term</th><th>Allowed models</th><th></th></tr>
     ${workspaces.data.map((c) => {
@@ -1159,7 +1213,14 @@ async function loadAccess() {
       <td class="checks">${aliases.map((a) => `
         <label><input type="checkbox" data-workspace="${esc(c.id)}" value="${esc(a)}"${
           (c.models || []).includes(a) ? ' checked' : ''}> ${esc(a)}</label>
-      `).join('') || '<span class="hint">ยังไม่มีโมเดลใน registry</span>'}</td>
+      `).join('') || '<span class="hint">ยังไม่มีโมเดลใน registry</span>'}
+        ${groups.data.length ? `<div class="ws-bundles">${groups.data.map((g) => `
+          <label><input type="checkbox" data-wsgroup="${esc(c.id)}" value="${esc(g.id)}"${
+            (c.access_groups || []).includes(g.id) ? ' checked' : ''}>
+            <span data-icon="bundle" data-icon-size="13" aria-hidden="true"></span>
+            ${esc(g.name)}
+            <span class="hint">${(groupName[g.id]?.models || []).join(', ') || '—'}</span>
+          </label>`).join('')}</div>` : ''}</td>
       <td style="white-space:nowrap">
         <button class="ghost small" data-saveworkspace="${esc(c.id)}">Save</button>
         <button class="ghost small" data-holdworkspace="${esc(c.id)}"
@@ -1170,6 +1231,7 @@ async function loadAccess() {
     }).join('') || '<tr><td class="empty">No workspaces yet.</td></tr>'}`;
 
   // ระงับ ≠ เพิกถอน · คำในปุ่มและในคำถามยืนยันต้องบอกให้ชัดว่าอันนี้ย้อนกลับได้
+  paintIcons($('workspace-table'));
   for (const btn of $('workspace-table').querySelectorAll('[data-holdworkspace]')) {
     btn.onclick = async () => {
       const { holdworkspace: id, to, code } = btn.dataset;
@@ -1188,13 +1250,18 @@ async function loadAccess() {
       const id = btn.dataset.saveworkspace;
       const models = [...document.querySelectorAll(`input[data-workspace="${id}"]:checked`)]
         .map((i) => i.value);
+      const access_groups = [...document.querySelectorAll(`input[data-wsgroup="${id}"]:checked`)]
+        .map((i) => i.value);
       // ไม่ติ๊กอะไรเลย = workspace นี้เรียกโมเดลไม่ได้สักตัว (ไม่มีแถว = ไม่อนุญาต)
       // ซึ่งต่างจาก "ยังไม่ได้ตั้ง" อย่างสิ้นเชิง — key ที่ผูกกับมันจะใช้ไม่ได้ทันที
-      if (!models.length && !confirm('ไม่ได้เลือกโมเดลเลย\n\n'
+      if (!models.length && !access_groups.length && !confirm('ไม่ได้เลือกโมเดลหรือมัดเลย\n\n'
         + 'key ที่ผูกกับ workspace นี้จะเรียกโมเดลไม่ได้สักตัว ยืนยันไหม?')) return;
       try {
-        await post(`/admin/workspaces/${id}/models`, { models });
-        banner('error', 'ok', `Updated allowed models: ${models.join(', ') || 'none'}`);
+        await post(`/admin/workspaces/${id}/models`, { models, access_groups });
+        await loadAccess();
+        banner('error', 'ok',
+          `บันทึกแล้ว · โมเดล: ${models.join(', ') || 'ไม่มี'}`
+          + (access_groups.length ? ` · มัด: ${access_groups.length}` : ''));
       } catch (e) { showError(e.message); }
     };
   }
@@ -1239,6 +1306,18 @@ $('create-workspace').onclick = async () => {
     });
     $('c-code').value = ''; $('c-name').value = '';
     await loadAccess();
+  } catch (e) { showError(e.message); }
+};
+
+$('new-access-group').onclick = async () => {
+  const name = prompt('ชื่อมัด (เช่น coding-set, vision-set)');
+  if (name === null || !name.trim()) return;
+  try {
+    // สร้างเปล่าไว้ก่อน แล้วติ๊กโมเดลในแถวของมัน — ช่องติ๊กในตารางอ่านง่ายกว่า
+    // การให้พิมพ์รายชื่อโมเดลใส่กล่อง prompt
+    await post('/admin/access-groups', { name: name.trim(), models: [] });
+    await loadAccess();
+    banner('error', 'ok', `สร้างมัด "${name.trim()}" แล้ว · ติ๊กโมเดลในแถวแล้วกด Save`);
   } catch (e) { showError(e.message); }
 };
 

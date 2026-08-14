@@ -36,6 +36,7 @@ from app.core.modeltest import (
 from app.core.passwords import read_session_cookie
 from app.db.models import (
     ASSISTANT_MODEL_KEY,
+    AccessGroup,
     ApiKey,
     AuditLog,
     GatewaySetting,
@@ -47,6 +48,7 @@ from app.db.models import (
     UsageLog,
     User,
     Workspace,
+    WorkspaceAccessGroup,
     WorkspaceModel,
     utcnow,
 )
@@ -329,6 +331,159 @@ async def create_workspace(
     }
 
 
+# ---------------------------------------------------------------------------
+# Access groups — a named bundle of aliases, handed out whole
+# ---------------------------------------------------------------------------
+class AccessGroupIn(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    description: str = ""
+    models: list[str] = Field(default_factory=list)
+    enabled: bool = True
+
+
+async def _known_aliases(state: AppState, models: list[str]) -> None:
+    unknown = [a for a in models if a not in state.registry.snapshot.models]
+    if unknown:
+        raise GatewayError(
+            ErrorCode.MODEL_NOT_FOUND,
+            f"Unknown model alias(es): {', '.join(unknown)}.",
+            details={"known_models": sorted(state.registry.snapshot.models)},
+        )
+
+
+def _group_dict(group: AccessGroup, used_by: int = 0) -> dict[str, Any]:
+    return {
+        "id": group.id,
+        "name": group.name,
+        "description": group.description,
+        "models": list(group.models or []),
+        "enabled": group.enabled,
+        "used_by": used_by,
+    }
+
+
+@router.post("/access-groups", status_code=201)
+async def create_access_group(
+    payload: AccessGroupIn,
+    request: Request,
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """Name a set of models once so it can be handed out whole.
+
+    Only an admin defines a bundle. A manager may hand out bundles they can use
+    themselves, but inventing one is how you would otherwise grant yourself a
+    model — the bundle would be the loophole rather than the shortcut.
+    """
+    existing = await session.execute(
+        select(AccessGroup).where(AccessGroup.name == payload.name)
+    )
+    if existing.scalar_one_or_none():
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST, f"An access group named '{payload.name}' already exists."
+        )
+    await _known_aliases(state, payload.models)
+
+    group = AccessGroup(**payload.model_dump())
+    session.add(group)
+    await audit(session, request, actor, "access_group.create", "access_group",
+                payload.name, {"models": payload.models})
+    await session.commit()
+    return _group_dict(group)
+
+
+@router.get("/access-groups")
+async def list_access_groups(
+    actor: Principal = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    groups = list((await session.execute(
+        select(AccessGroup).order_by(AccessGroup.name)
+    )).scalars())
+
+    used: dict[str, int] = {}
+    if groups:
+        rows = await session.execute(
+            select(WorkspaceAccessGroup.access_group_id, func.count())
+            .group_by(WorkspaceAccessGroup.access_group_id)
+        )
+        used = {gid: count for gid, count in rows}
+    return {"data": [_group_dict(g, used.get(g.id, 0)) for g in groups]}
+
+
+@router.patch("/access-groups/{group_id}")
+async def update_access_group(
+    group_id: str,
+    payload: dict[str, Any],
+    request: Request,
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """Editing the bundle changes what every workspace holding it may call.
+
+    That is the point of a bundle, and also the thing to be careful about: the
+    response says how many workspaces just changed.
+    """
+    group = await session.get(AccessGroup, group_id)
+    if group is None:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "Access group not found.")
+
+    if "models" in payload:
+        models = [str(a) for a in payload["models"]]
+        await _known_aliases(state, models)
+        group.models = models
+    for field_name in ("name", "description", "enabled"):
+        if field_name in payload:
+            setattr(group, field_name, payload[field_name])
+
+    used = await session.execute(
+        select(func.count()).select_from(WorkspaceAccessGroup).where(
+            WorkspaceAccessGroup.access_group_id == group_id
+        )
+    )
+    await audit(session, request, actor, "access_group.update", "access_group",
+                group.name, payload)
+    await session.commit()
+    return _group_dict(group, int(used.scalar() or 0))
+
+
+@router.delete("/access-groups/{group_id}")
+async def delete_access_group(
+    group_id: str,
+    request: Request,
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Deleting a bundle takes its models away from every workspace holding it,
+    so it is refused while anyone still holds it. Disable it instead if that is
+    what you meant — same effect, and reversible."""
+    group = await session.get(AccessGroup, group_id)
+    if group is None:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "Access group not found.")
+
+    used = await session.execute(
+        select(func.count()).select_from(WorkspaceAccessGroup).where(
+            WorkspaceAccessGroup.access_group_id == group_id
+        )
+    )
+    holders = int(used.scalar() or 0)
+    if holders:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            f"'{group.name}' is still given to {holders} workspace(s). Take it away "
+            "from them first, or disable it — which stops it granting anything "
+            "without losing the list.",
+            details={"used_by": holders},
+        )
+
+    await session.delete(group)
+    await audit(session, request, actor, "access_group.delete", "access_group", group.name)
+    await session.commit()
+    return {"id": group_id, "deleted": True}
+
+
 WORKSPACE_STATUSES = ("active", "suspended")
 
 
@@ -395,6 +550,7 @@ async def list_workspaces(
     # โมเดลที่อนุญาตไว้ต้องมากับรายการนี้ ไม่งั้นหน้าเว็บวาด checkbox เป็นว่างทุกครั้ง
     # แล้วกด Save ทีเดียวรายการที่ตั้งไว้หายหมด — UI ที่โกหกสถานะปัจจุบันอันตรายกว่าไม่มี
     allowed: dict[str, list[str]] = {}
+    held: dict[str, list[str]] = {}
     if spaces:
         rows = await session.execute(
             select(WorkspaceModel.workspace_id, WorkspaceModel.model_alias)
@@ -402,6 +558,11 @@ async def list_workspaces(
         )
         for workspace_id, alias in rows:
             allowed.setdefault(workspace_id, []).append(alias)
+        bundles = await session.execute(
+            select(WorkspaceAccessGroup.workspace_id, WorkspaceAccessGroup.access_group_id)
+        )
+        for workspace_id, group_id in bundles:
+            held.setdefault(workspace_id, []).append(group_id)
 
     return {
         "data": [
@@ -412,6 +573,7 @@ async def list_workspaces(
                 "term": c.term,
                 "status": c.status,
                 "models": sorted(allowed.get(c.id, [])),
+                "access_groups": sorted(held.get(c.id, [])),
             }
             for c in spaces
         ]
@@ -421,7 +583,7 @@ async def list_workspaces(
 @router.post("/workspaces/{workspace_id}/models")
 async def set_workspace_models(
     workspace_id: str,
-    payload: dict[str, list[str]],
+    payload: dict[str, Any],
     request: Request,
     actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
@@ -448,9 +610,41 @@ async def set_workspace_models(
     # for a workspace you are in, and you have granted yourself access to it.
     await _assert_may_grant(session, actor, aliases, state)
 
+    # Bundles are set through the same call because they answer the same
+    # question. Omitting the field leaves them alone, so a caller that predates
+    # bundles does not wipe them by not mentioning them.
+    groups: list[str] | None = None
+    if "access_groups" in payload:
+        groups = [str(g) for g in (payload.get("access_groups") or [])]
+        found = list((await session.execute(
+            select(AccessGroup).where(AccessGroup.id.in_(groups))
+        )).scalars()) if groups else []
+        missing = set(groups) - {g.id for g in found}
+        if missing:
+            raise GatewayError(
+                ErrorCode.INVALID_REQUEST,
+                f"Unknown access group(s): {', '.join(sorted(missing))}.",
+            )
+        # Handing out a bundle is handing out its models, so it is held to the
+        # same rule: nobody gives away what they cannot use themselves.
+        bundled = sorted({a for g in found for a in (g.models or [])})
+        await _assert_may_grant(session, actor, bundled, state)
+
     await session.execute(delete(WorkspaceModel).where(WorkspaceModel.workspace_id == workspace_id))
     for alias in aliases:
         session.add(WorkspaceModel(workspace_id=workspace_id, model_alias=alias, enabled=True))
+
+    if groups is not None:
+        await session.execute(
+            delete(WorkspaceAccessGroup).where(
+                WorkspaceAccessGroup.workspace_id == workspace_id
+            )
+        )
+        for group_id in groups:
+            session.add(
+                WorkspaceAccessGroup(workspace_id=workspace_id, access_group_id=group_id)
+            )
+
     await audit(
         session,
         request,
@@ -458,7 +652,7 @@ async def set_workspace_models(
         "workspace.models.set",
         "workspace",
         workspace_id,
-        {"models": aliases},
+        {"models": aliases, "access_groups": groups},
     )
     await session.commit()
     return {"workspace_id": workspace_id, "models": aliases}
@@ -527,6 +721,8 @@ class ApiKeyIn(BaseModel):
     scopes: list[str] = Field(default_factory=list)
     # จำกัด key ใบนี้ให้ใช้ได้เฉพาะ alias เหล่านี้ · ว่าง = ไม่จำกัดเพิ่ม
     models: list[str] = Field(default_factory=list)
+    # มัดที่ระบุบน key · รวมกับ models ข้างบนก่อน แล้วจึงไปตัดกับสิทธิ์ของเจ้าของ
+    access_groups: list[str] = Field(default_factory=list)
 
 
 @router.post("/api-keys", status_code=201)
@@ -571,6 +767,20 @@ async def create_api_key(
             )
     await _assert_may_grant(session, actor, payload.models, state)
 
+    if payload.access_groups:
+        found = list((await session.execute(
+            select(AccessGroup).where(AccessGroup.id.in_(payload.access_groups))
+        )).scalars())
+        missing = set(payload.access_groups) - {g.id for g in found}
+        if missing:
+            raise GatewayError(
+                ErrorCode.INVALID_REQUEST,
+                f"Unknown access group(s): {', '.join(sorted(missing))}.",
+            )
+        await _assert_may_grant(
+            session, actor, sorted({a for g in found for a in (g.models or [])}), state
+        )
+
     plaintext, prefix, digest = generate_api_key()
     expires_at = (
         utcnow() + timedelta(days=payload.expires_in_days)
@@ -585,6 +795,7 @@ async def create_api_key(
         key_hash=digest,
         scopes=payload.scopes,
         models=payload.models,
+        access_groups=payload.access_groups,
         expires_at=expires_at,
     )
     session.add(api_key)
@@ -656,6 +867,7 @@ async def list_api_keys(
                 "name": k.name,
                 "key_prefix": k.key_prefix,
                 "models": list(k.models or []),
+                "access_groups": list(k.access_groups or []),
                 "revoked": k.revoked_at is not None,
                 "expires_at": k.expires_at.isoformat() if k.expires_at else None,
                 "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,

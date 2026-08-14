@@ -128,6 +128,10 @@ class ApiKey(Base, TimestampMixin):
     # ใช้ **แคบลงเท่านั้น** ไม่เคยกว้างขึ้น: key ที่ระบุโมเดลซึ่ง workspace ไม่อนุญาต
     # จะยังถูกปฏิเสธ ไม่งั้นการออก key จะกลายเป็นทางลัดข้ามนโยบายของ workspace
     models: Mapped[list] = mapped_column(JSON, default=list)
+    # Bundles named on the key. Read together with `models`: both answer "what
+    # was this key issued for", so they add up with each other and then narrow
+    # what the owner's workspaces already allow.
+    access_groups: Mapped[list] = mapped_column(JSON, default=list)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -187,6 +191,38 @@ class WorkspaceModel(Base, TimestampMixin):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
     workspace: Mapped[Workspace] = relationship(back_populates="allowed_models")
+
+
+class AccessGroup(Base, TimestampMixin):
+    """A named bundle of aliases, handed out whole.
+
+    Without it, giving twenty classes the same four models means ticking four
+    boxes twenty times, and adding a fifth model means visiting all twenty
+    again. The bundle is a way of *writing* the rule once; it never widens
+    anything, because what it expands to is intersected with the rules that
+    already applied.
+    """
+
+    __tablename__ = "access_groups"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    description: Mapped[str] = mapped_column(String(255), default="")
+    models: Mapped[list] = mapped_column(JSON, default=list)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class WorkspaceAccessGroup(Base, TimestampMixin):
+    """Which bundles a workspace has been given."""
+
+    __tablename__ = "workspace_access_groups"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "access_group_id", name="uq_workspace_access_group"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("courses.id"), index=True)
+    access_group_id: Mapped[str] = mapped_column(ForeignKey("access_groups.id"), index=True)
 
 
 class ModelCompatibility(Base):
