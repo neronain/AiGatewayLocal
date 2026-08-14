@@ -1231,11 +1231,15 @@ async function loadAccess() {
           : `<button class="ghost small" data-extend="${esc(k.id)}"
                data-name="${esc(k.name || k.key_prefix)}"
                title="เลื่อนวันหมดอายุ · ตัว key เดิมใช้ต่อได้เลย">ต่ออายุ</button>
-             ${k.revealable && myRole === 'admin'
+             ${myRole !== 'admin' ? '' : k.revealable
                ? `<button class="ghost small" data-reveal="${esc(k.id)}"
                     data-label="${esc(k.name || k.key_prefix)}"
                     title="เปิดดู key ใบนี้ — ทุกครั้งถูกบันทึกว่าใครดูเมื่อไร">
-                    ${icon('eye')} ดู key</button>` : ''}
+                    ${icon('eye')} ดู key</button>`
+               // ไม่มีปุ่มโดยไม่บอกอะไรเลย = ผู้ดูแลหาฟีเจอร์ไม่เจอแล้วคิดว่าไม่มี
+               // (เกิดจริง) · บอกไปตรง ๆ ว่าทำไมใบนี้เปิดดูไม่ได้
+               : `<span class="hint" title="ตอนออก key ใบนี้ ระบบเก็บแค่ hash จึงไม่มีตัวจริงให้เปิดดู${
+                    ''} · key ที่ออกหลังจากนี้จะมีปุ่มให้">ดูไม่ได้</span>`}
              <button class="danger small" data-revoke="${esc(k.id)}">Revoke</button>`}</td>
       </tr>`;
     }).join('') || '<tr><td class="empty">No keys issued yet.</td></tr>'}`;
