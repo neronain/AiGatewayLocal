@@ -458,6 +458,13 @@ Two things to know before promising it to anyone:
   console strips what it recognises; the real fix is the flag. Run
   `litegate model-test <alias>` and look for `reasoning_not_separated`, which
   carries the command.
+* **Reasoning models need a bigger `max_tokens` than you would guess.** They
+  spend the budget thinking first, so too small a number returns
+  `stop_reason: end_turn` with an *empty* answer — which reads as a broken
+  gateway and is the model running out of room. Measured on Muse-Glimmer with a
+  three-line prompt: nothing at 128, the full answer at 256. Give reasoning
+  models at least 256, and suspect this first whenever a reply comes back empty
+  with no error.
 
 ---
 

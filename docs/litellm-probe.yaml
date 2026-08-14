@@ -1,0 +1,15 @@
+# ชื่อ upstream ถามจาก /v1/models ของแต่ละเครื่องโดยตรง ไม่ใช่เดาจาก registry
+model_list:
+  - model_name: muse                       # reasoning · llama.cpp on spark-head
+    litellm_params:
+      model: openai/muse-glimmer-30b-gguf
+      api_base: http://100.124.77.93:8000/v1
+      api_key: none
+  - model_name: coder-next                 # not reasoning · vLLM on msi-6
+    litellm_params:
+      model: openai/qwen3-coder-next-nvfp4-gb10
+      api_base: http://100.80.132.102:8000/v1
+      api_key: none
+
+litellm_settings:
+  drop_params: true
