@@ -104,7 +104,11 @@ for (const btn of document.querySelectorAll('#tabs button')) {
   btn.onclick = () => showTab(btn.dataset.tab);
 }
 
+// บทบาทของคนที่ล็อกอินอยู่ — ตารางบางอันตัดสินใจวาดปุ่มจากตรงนี้ ไม่ใช่จากการซ่อนแท็บ
+let myRole = '';
+
 function applyRole(role) {
+  myRole = role;
   const admin = role === 'admin';
   const staff = admin || role === 'manager';
   for (const btn of document.querySelectorAll('#tabs button')) {
@@ -144,6 +148,8 @@ function renderQuotaInto(target, me) {
 // Inline because a gateway may run air-gapped: no icon font, no CDN, no build.
 // Stroked rather than filled so one set reads correctly in both themes.
 const ICONS = {
+  eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/>'
+     + '<circle cx="12" cy="12" r="3"/>',
   image: '<circle cx="8.5" cy="9.5" r="1.5"/><path d="M3 15l4.5-4.5L15 18"/>'
        + '<rect x="3" y="3" width="18" height="18" rx="2"/>',
   code: '<path d="M15.5 18L21 12l-5.5-6M8.5 6L3 12l5.5 6"/>',
@@ -1225,9 +1231,39 @@ async function loadAccess() {
           : `<button class="ghost small" data-extend="${esc(k.id)}"
                data-name="${esc(k.name || k.key_prefix)}"
                title="เลื่อนวันหมดอายุ · ตัว key เดิมใช้ต่อได้เลย">ต่ออายุ</button>
+             ${k.revealable && myRole === 'admin'
+               ? `<button class="ghost small" data-reveal="${esc(k.id)}"
+                    data-label="${esc(k.name || k.key_prefix)}"
+                    title="เปิดดู key ใบนี้ — ทุกครั้งถูกบันทึกว่าใครดูเมื่อไร">
+                    ${icon('eye')} ดู key</button>` : ''}
              <button class="danger small" data-revoke="${esc(k.id)}">Revoke</button>`}</td>
       </tr>`;
     }).join('') || '<tr><td class="empty">No keys issued yet.</td></tr>'}`;
+
+  // เปิดดู key ที่ออกไปแล้ว — มีเฉพาะเมื่อผู้ดูแลเปิดใช้ (GW_KEY_REVEAL_SECRET)
+  // และเฉพาะ admin · ทุกครั้งถูกบันทึก และประวัตินั้นแสดงให้เห็นตรงนี้เลย เพราะการ
+  // บันทึกที่ต้องไปขุดจากไฟล์ log ไม่ได้ทำให้ใครระวังตัวขึ้น
+  for (const btn of $('key-table').querySelectorAll('[data-reveal]')) {
+    btn.onclick = async () => {
+      const id = btn.dataset.reveal;
+      try {
+        const out = await post(`/admin/api-keys/${id}/reveal`, {});
+        let history = [];
+        try { history = (await api(`/admin/api-keys/${id}/reveals`)).data || []; } catch { /* ไม่สำคัญพอจะล้มทั้งกล่อง */ }
+        const earlier = history.slice(1);
+        $('key-out').innerHTML = `<div class="secret">
+          <strong>${esc(btn.dataset.label)}</strong>
+          <code class="mono">${esc(out.api_key)}</code>
+          <button class="ghost small" id="copy-key">Copy</button>
+          <div class="hint">การเปิดดูครั้งนี้ถูกบันทึกไว้แล้ว${earlier.length
+            ? ` · ก่อนหน้านี้เปิดดูไปแล้ว ${earlier.length} ครั้ง ล่าสุด `
+              + esc(new Date(earlier[0].at).toLocaleString())
+            : ' · เป็นการเปิดดูครั้งแรกของใบนี้'}</div></div>`;
+        $('copy-key').onclick = () => navigator.clipboard.writeText(out.api_key);
+        $('key-out').scrollIntoView({ block: 'nearest' });
+      } catch (e) { showError(e.message); }
+    };
+  }
 
   // หมดอายุแล้วไม่ได้แปลว่าใช้ไม่ได้ตลอดไป · งานที่ยังไม่จบควรต่อได้โดยไม่ต้องออกใบใหม่
   // แล้วให้ทุกคนไปแก้ config กันใหม่
@@ -1437,7 +1473,9 @@ $('issue-key').onclick = async () => {
       models: [...document.querySelectorAll('.k-model:checked')].map((i) => i.value),
     });
     $('key-out').innerHTML = `<div class="secret">
-      <strong>Store this key now — it cannot be retrieved again.</strong>
+      <strong>${result.revealable
+        ? 'เก็บ key นี้ไว้ — ผู้ดูแลเปิดดูซ้ำได้ทีหลัง และทุกครั้งถูกบันทึก'
+        : 'Store this key now — it cannot be retrieved again.'}</strong>
       <code class="mono">${esc(result.api_key)}</code>
       <button class="ghost small" id="copy-key">Copy</button></div>`;
     $('copy-key').onclick = () => navigator.clipboard.writeText(result.api_key);

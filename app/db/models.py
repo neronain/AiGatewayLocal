@@ -130,6 +130,10 @@ class ApiKey(Base, TimestampMixin):
     # First 12 chars ("edu_sk_ab12"), shown in UI so a key can be identified.
     key_prefix: Mapped[str] = mapped_column(String(24), index=True)
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # สำเนาที่ปิดผนึกไว้ให้ผู้ดูแลเปิดดูซ้ำได้ · ว่างเสมอเมื่อไม่ได้ตั้ง
+    # GW_KEY_REVEAL_SECRET ซึ่งเป็นค่าตั้งต้น · key ที่ออกก่อนเปิดฟีเจอร์จะว่างตลอดไป
+    # เพราะตอนนั้นไม่มีใครเก็บตัวจริงไว้ — เรียกดูย้อนหลังไม่ได้ ต้องบอกให้ชัด
+    key_sealed: Mapped[str] = mapped_column(Text, default="")
     scopes: Mapped[list] = mapped_column(JSON, default=list)
     # อนุญาตเฉพาะ alias เหล่านี้ · ว่าง = ไม่จำกัดเพิ่มจากที่ workspace/role ให้อยู่แล้ว
     #

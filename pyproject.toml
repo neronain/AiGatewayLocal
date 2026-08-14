@@ -22,6 +22,9 @@ dependencies = [
     "structlog>=24.4",
     "prometheus-client>=0.21",
     "python-multipart>=0.0.12",
+    # ใช้ปิดผนึก API key ที่ออกไปแล้ว เพื่อให้ admin เรียกดูซ้ำได้ (AES-GCM)
+    # เปิดใช้ก็ต่อเมื่อตั้ง GW_KEY_REVEAL_SECRET เท่านั้น — ดู app/core/keyvault.py
+    "cryptography>=42",
 ]
 
 [project.optional-dependencies]

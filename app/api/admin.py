@@ -27,6 +27,7 @@ from app.core.auth import (
 )
 from app.core.capability import compatibility_badges, upstream_model_for
 from app.core.errors import ErrorCode, GatewayError
+from app.core.keyvault import reveal_enabled, seal, unseal
 from app.core.modeltest import (
     ModelTestSuite,
     probe_backend,
@@ -1032,6 +1033,8 @@ async def create_api_key(
         name=payload.name,
         key_prefix=prefix,
         key_hash=digest,
+        # ว่างเสมอเมื่อยังไม่ได้เปิดใช้ — seal() ตัดสินเอง ที่นี่ไม่ต้องรู้ว่าเปิดอยู่ไหม
+        key_sealed=seal(plaintext),
         scopes=payload.scopes,
         models=payload.models,
         access_groups=payload.access_groups,
@@ -1044,6 +1047,9 @@ async def create_api_key(
     return {
         "id": api_key.id,
         "api_key": plaintext,
+        # หน้าเว็บบอกผู้ใช้ว่า "เก็บไว้เดี๋ยวนี้ เรียกดูอีกไม่ได้" ซึ่งเป็นจริงเฉพาะตอน
+        # ปิดผนึกไม่ได้ · ปล่อยให้พูดประโยคนั้นทั้งที่เรียกดูได้ คือสอนให้คนไม่เชื่อคำเตือน
+        "revealable": bool(api_key.key_sealed),
         "key_prefix": prefix,
         "user_id": payload.user_id,
         "workspace_id": payload.workspace_id,
@@ -1090,6 +1096,67 @@ async def leave(
     return {"workspace_id": workspace_id, "user_id": user_id, "status": "removed"}
 
 
+@router.post("/api-keys/{key_id}/reveal")
+async def reveal_api_key(
+    key_id: str,
+    request: Request,
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """เปิดดู key ที่ออกไปแล้ว — ผู้ดูแลเท่านั้น และทุกครั้งถูกบันทึก
+
+    `require_admin` ไม่ใช่ `require_manager` โดยตั้งใจ: manager ออก key ให้คนใน
+    กลุ่มตัวเองได้อยู่แล้ว แต่การอ่านความลับที่ออกไปแล้วเป็นคนละอำนาจ — คนที่ดูแล
+    คนไม่จำเป็นต้องอ่านความลับของคนที่ตัวเองดูแล
+
+    บันทึกก่อนคืนค่า ไม่ใช่หลัง · ถ้าเขียน log ไม่สำเร็จต้องไม่มีใครได้ key ไป
+    """
+    row = await session.get(ApiKey, key_id)
+    if row is None:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "No API key with that id.")
+    if row.revoked_at is not None:
+        # เพิกถอนแล้วคือตั้งใจให้ใช้ไม่ได้ · การเปิดดูจะกลายเป็นทางกลับที่ไม่ได้ตั้งใจให้มี
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            "That key was revoked, so it cannot be revealed. Issue a new one.",
+        )
+
+    plaintext = unseal(row.key_sealed)
+    if plaintext is None:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            "Only this key's hash was stored, so there is nothing to reveal — it "
+            "was issued before reveal was switched on, or GW_KEY_REVEAL_SECRET is "
+            "unset. Issue a replacement instead.",
+        )
+
+    await audit(session, request, actor, "apikey.reveal", "apikey", key_id,
+                {"key_prefix": row.key_prefix, "owner": row.user_id})
+    await session.commit()
+    return {"id": row.id, "api_key": plaintext, "key_prefix": row.key_prefix}
+
+
+@router.get("/api-keys/{key_id}/reveals")
+async def api_key_reveals(
+    key_id: str,
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """ใครเปิดดูใบนี้ไปแล้วบ้าง — การบันทึกที่ไม่มีใครอ่านได้ไม่ใช่การบันทึก"""
+    rows = await session.execute(
+        select(AuditLog)
+        .where(AuditLog.action == "apikey.reveal", AuditLog.target_id == key_id)
+        .order_by(AuditLog.ts.desc())
+        .limit(50)
+    )
+    return {
+        "data": [
+            {"at": r.ts.isoformat(), "by": r.actor_user_id, "ip": r.ip}
+            for r in rows.scalars()
+        ]
+    }
+
+
 @router.get("/api-keys")
 async def list_api_keys(
     user_id: str | None = None,
@@ -1117,6 +1184,9 @@ async def list_api_keys(
                 "revoked": k.revoked_at is not None,
                 "expires_at": k.expires_at.isoformat() if k.expires_at else None,
                 "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
+                # ใบที่ออกก่อนเปิดฟีเจอร์จะเป็น false ตลอดไป · หน้าเว็บต้องรู้ก่อนวาดปุ่ม
+                # ไม่ใช่ให้กดแล้วค่อยบอกว่าทำไม่ได้
+                "revealable": bool(k.key_sealed) and reveal_enabled(),
             }
             for k in result.scalars()
         ]

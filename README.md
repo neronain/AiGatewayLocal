@@ -9,7 +9,7 @@ Members get an alias and a key; you keep the machines, the limits and the audit 
 
 [![CI](https://github.com/neronain/AiGatewayLocal/actions/workflows/ci.yml/badge.svg)](https://github.com/neronain/AiGatewayLocal/actions/workflows/ci.yml)
 [![version](https://img.shields.io/badge/version-1.3.0-1f5fbf)](pyproject.toml)
-[![tests](https://img.shields.io/badge/tests-378-17703f)](tests/)
+[![tests](https://img.shields.io/badge/tests-397-17703f)](tests/)
 [![python](https://img.shields.io/badge/python-3.11%2B-3776ab)](pyproject.toml)
 [![APIs](https://img.shields.io/badge/API-OpenAI%20%C2%B7%20Anthropic-8b5cf6)](docs/API.md)
 [![license](https://img.shields.io/badge/license-MIT-17703f)](LICENSE)
@@ -149,6 +149,44 @@ The line is deliberate: **a manager decides who may use what; an admin decides
 what exists.** Adding a model touches GPUs and machine configuration, which is
 not a people-management decision. A manager's reach stops at the workspaces they
 actually run — they cannot see, quota or issue keys for anyone outside them.
+
+### Reading a key back after it was issued
+
+A key is stored as a digest, so by default there is nothing to show when
+somebody loses theirs — the only remedy is a replacement, and every config file
+and CI secret that held the old one has to be found. For a class of thirty that
+is a morning's work caused by one mislaid note.
+
+Set `GW_KEY_REVEAL_SECRET` and a sealed second copy is kept, which an
+**administrator** — not a manager — can open from the console. The trade is
+worth stating plainly:
+
+| | |
+|---|---|
+| A leaked database dump, on its own | still reveals nothing — the seal key is not in it |
+| A host compromise reaching both the dump and the environment | reveals every sealed key at once |
+
+That is why it is off unless switched on. Moving to a weaker posture should be
+something somebody did, not something that happened.
+
+What stays true when it is on:
+
+- **Administrators only.** A manager issues keys for people in their workspaces;
+  reading a secret that has already gone out is a different power.
+- **Never for a revoked key.** Revoking is meant to be one-way, and reveal must
+  not become the way back.
+- **Every opening is recorded** — who, when, from where — and the console shows
+  that history beside the key, because an audit trail nobody reads is not one.
+- **Keys issued before it was switched on stay unreadable**, and say so rather
+  than failing strangely. Only their hash was ever stored.
+- The console stops telling people a key "cannot be retrieved again" when it can.
+
+```bash
+GW_KEY_REVEAL_SECRET=$(openssl rand -base64 32)   # keep it out of the database
+```
+
+Rotating that secret locks every key sealed under the old one. They keep
+working; they just cannot be read back any more.
 
 ---
 
@@ -471,7 +509,7 @@ and the parsers LiteGate reports as missing being exactly the knobs LMDS exposes
 
 ```bash
 make dev      # install with dev dependencies
-make test     # 378 tests
+make test     # 397 tests
 make lint
 make check    # what CI runs
 make run      # reload server on :8080

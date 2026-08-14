@@ -25,6 +25,12 @@ class Settings(BaseSettings):
 
     # Security
     api_key_pepper: str = "dev-only-insecure-pepper"
+    # ตั้งค่านี้ = เก็บสำเนาของ API key ที่ปิดผนึกไว้ เพื่อให้ผู้ดูแลเรียกดูซ้ำได้
+    # ว่าง (ค่าตั้งต้น) = เก็บแค่ hash เหมือนเดิม และไม่มีอะไรให้เรียกดู
+    #
+    # ต้องมาจาก environment ไม่ใช่ฐานข้อมูล — เก็บกุญแจไว้ในกล่องเดียวกับของที่ล็อก
+    # แล้วการเข้ารหัสไม่ได้ซื้ออะไรเลย · ดู app/core/keyvault.py
+    key_reveal_secret: str = ""
     # Kept as a raw string: pydantic-settings JSON-decodes complex types straight
     # from the environment, before any validator runs, so a plain
     # "a,b" - or an empty value - would fail to parse as list[str].

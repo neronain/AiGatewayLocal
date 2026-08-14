@@ -965,3 +965,27 @@ that changes a column will say so in its notes and ship a migration.
 
 Roll back by checking out the previous tag and repeating. The database schema is
 additive, so an older gateway runs against a newer database.
+
+
+## Reading an issued key back (optional)
+
+By default only a digest of each API key is stored, so a lost key can only be
+replaced, never recovered. Set `GW_KEY_REVEAL_SECRET` to keep a sealed copy that
+an **administrator** can open from the console.
+
+```bash
+GW_KEY_REVEAL_SECRET=$(openssl rand -base64 32)
+```
+
+- Keep it in the environment or a secrets manager — **never in the database**,
+  which is where the sealed values live. Together in one place, the encryption
+  buys nothing.
+- Include it in the same rotation policy as any other credential. Rotating it
+  leaves existing keys working but no longer readable.
+- Back it up with the same care as the database. Losing it does not break the
+  gateway; it permanently removes the ability to read keys back.
+- Every reveal is written to `audit_logs` with action `apikey.reveal`, and shown
+  in the console next to the key.
+
+Leaving it unset keeps the original behaviour, which is the stronger posture: a
+stolen database dump contains no usable credentials.
