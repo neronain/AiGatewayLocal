@@ -204,7 +204,40 @@ const ICONS = {
   gauge: '<path d="M4.5 18a8 8 0 1 1 15 0"/><path d="M12 14l4-3.5"/><circle cx="12" cy="14" r="1.2"/>',
   pulse: '<path d="M3 12h3.5L9 5l4 14 2.5-7H21"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
+  text: '<path d="M4 6.5V5h16v1.5M12 5v14M9 19h6"/>',
+  tools: '<path d="M14.7 6.3a4 4 0 0 0 5.2 5.2l-7.4 7.4a2.5 2.5 0 0 1-3.5-3.5z"/>'
+       + '<path d="M14.7 6.3 12 3.6M6.5 14.5 3.8 11.8"/>',
+  audio: '<path d="M11 5 6.5 9H3v6h3.5L11 19z"/><path d="M15.5 9.5a3.5 3.5 0 0 1 0 5"/>'
+       + '<path d="M18 7a7 7 0 0 1 0 10"/>',
+  plug: '<path d="M9 3v6M15 3v6"/><path d="M6 9h12v3a6 6 0 0 1-12 0z"/><path d="M12 18v3"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  minus: '<path d="M5 12h14"/>',
 };
+
+// ป้ายความสามารถมาจากเซิร์ฟเวอร์เป็นคำเดียว ๆ (Text/Code/Tools/…) — ไอคอนช่วยให้
+// กวาดตาทั้งตารางแล้วเห็นว่าโมเดลไหนทำอะไรได้ โดยไม่ต้องอ่านทีละคำ
+// กางไว้แล้วรีเฟรชทีเดียวยุบหมด แปลว่าต้องไปไล่กดใหม่ทุกครั้งที่แก้อะไรสักอย่าง
+// แล้วกด Reload registry · เก็บไว้ในเบราว์เซอร์ ไม่ใช่ที่เซิร์ฟเวอร์ เพราะเป็น
+// มุมมองของคนที่นั่งอยู่ ไม่ใช่การตั้งค่าของระบบ
+const OPEN_KEY = 'litegate:models:open';
+
+function openAliases() {
+  try { return new Set(JSON.parse(localStorage.getItem(OPEN_KEY) || '[]')); }
+  catch { return new Set(); }
+}
+
+function rememberOpen(set) {
+  try { localStorage.setItem(OPEN_KEY, JSON.stringify([...set])); } catch { /* โหมดส่วนตัว */ }
+}
+
+const BADGE_ICONS = {
+  Text: 'text', Image: 'image', Audio: 'audio', Code: 'code',
+  Tools: 'tools', Reasoning: 'reasoning', Agent: 'agent',
+  OpenAI: 'plug', Anthropic: 'plug', images: 'image',
+};
+
+const badgeChip = (label) =>
+  `<span class="badge chip">${BADGE_ICONS[label] ? icon(BADGE_ICONS[label], 12) : ''}${esc(label)}</span>`;
 
 const icon = (name, size = 20) =>
   `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor"
@@ -383,11 +416,13 @@ async function loadModels() {
       e.protocols?.anthropic ? 'Anthropic' : '',
       e.modalities?.image ? 'images' : '',
     ].filter(Boolean);
-    return `<tr class="ep-row${isLast ? ' ep-last' : ''}">
+    const shown = openAliases().has(m.alias);
+    return `<tr class="ep-row${isLast ? ' ep-last' : ''}" data-under="${esc(m.alias)}"${
+      shown ? '' : ' hidden'}>
       <td><span class="ep-mark">↳</span> <code>${esc(e.name)}</code>
           <div class="hint">${esc(e.server_type)}</div></td>
       <td class="mono">${esc(e.base_url)}</td>
-      <td>${speaks.map((s) => `<span class="badge">${esc(s)}</span>`).join(' ')}</td>
+      <td><div class="badges tight">${speaks.map(badgeChip).join('')}</div></td>
       <td>${e.enabled === false
             ? '<span class="pill mute">ปิดไว้</span>'
             : `<span class="pill ${dead ? 'err' : 'ok'}">${dead ? 'down' : 'up'}</span>`}</td>
@@ -426,12 +461,20 @@ async function loadModels() {
       const times = results.map((r) => r.tested_at).filter(Boolean).map((t) => stamp(t));
       const last = times.length ? new Date(Math.max(...times)) : null;
       const failed = results.filter((r) => r.status === 'fail').map((r) => r.feature);
-      return `<tr class="alias-row">
-        <td><code>${esc(m.alias)}</code>${m.enabled === false
-              ? ' <span class="pill mute">off</span>' : ''}
-            <div class="hint">${esc(m.display_name)}</div></td>
+      return `<tr class="alias-row${openAliases().has(m.alias) ? ' open' : ''}">
+        <td><div class="alias-cell">
+              <button class="expand" data-expand="${esc(m.alias)}"
+                aria-expanded="${openAliases().has(m.alias)}"
+                title="ดูเครื่องที่รองรับ alias นี้">${
+                  icon(openAliases().has(m.alias) ? 'minus' : 'plus', 13)}</button>
+              <div>
+                <code>${esc(m.alias)}</code>${m.enabled === false
+                  ? ' <span class="pill mute">off</span>' : ''}
+                <div class="hint">${esc(m.display_name)}</div>
+                <div class="hint">${total} เครื่อง${off ? ` · ปิดไว้ ${off}` : ''}</div>
+              </div></div></td>
         <td><code>${esc(m.upstream_model)}</code></td>
-        <td>${m.badges.map((b) => `<span class="badge">${esc(b)}</span>`).join(' ')}</td>
+        <td><div class="badges tight">${m.badges.map(badgeChip).join('')}</div></td>
         <td><span class="pill ${cls}">${healthy}/${total} up</span>
             ${off ? `<div class="hint">ปิดไว้ ${off}</div>` : ''}</td>
         <td><span class="pill ${ccls}">${esc(c.status)}</span>
@@ -453,6 +496,47 @@ async function loadModels() {
         </td></tr>
         ${m.endpoints.map((e, n) => endpointRow(m, e, n === m.endpoints.length - 1)).join('')}`;
     }).join('')}`;
+
+  // ยุบไว้ก่อนเป็นค่าตั้งต้น · 7 โมเดล x 2 เครื่อง = 21 แถวรวด ซึ่งอ่านไม่ออกว่า
+  // แถวไหนเป็นของใคร · กางทีละตัวเมื่อจะดูจริง
+  const setOpen = (alias, opening) => {
+    for (const row of $('model-table').querySelectorAll(`[data-under="${alias}"]`)) {
+      row.hidden = !opening;
+    }
+    const btn = $('model-table').querySelector(`[data-expand="${alias}"]`);
+    if (!btn) return;
+    btn.setAttribute('aria-expanded', String(opening));
+    btn.innerHTML = icon(opening ? 'minus' : 'plus', 13);
+    btn.closest('tr').classList.toggle('open', opening);
+  };
+
+  for (const btn of $('model-table').querySelectorAll('[data-expand]')) {
+    btn.onclick = () => {
+      const alias = btn.dataset.expand;
+      const opening = btn.getAttribute('aria-expanded') !== 'true';
+      setOpen(alias, opening);
+      const open = openAliases();
+      opening ? open.add(alias) : open.delete(alias);
+      rememberOpen(open);
+    };
+  }
+
+  const all = $('models-expand-all');
+  if (all) {
+    const aliases = [...$('model-table').querySelectorAll('[data-expand]')]
+      .map((b) => b.dataset.expand);
+    const paint = () => {
+      const anyClosed = aliases.some((a) => !openAliases().has(a));
+      all.textContent = anyClosed ? 'กางทั้งหมด' : 'ยุบทั้งหมด';
+    };
+    all.onclick = () => {
+      const anyClosed = aliases.some((a) => !openAliases().has(a));
+      for (const a of aliases) setOpen(a, anyClosed);
+      rememberOpen(anyClosed ? new Set(aliases) : new Set());
+      paint();
+    };
+    paint();
+  }
 
   for (const btn of $('model-table').querySelectorAll('[data-verify]')) {
     btn.onclick = () => verifyModel(btn.dataset.verify, btn);

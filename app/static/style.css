@@ -660,3 +660,27 @@ nav button[aria-selected="true"] .ti { opacity: 1; }
   margin-right: 7px; color: var(--c2);
 }
 .sub .hi { margin-right: 5px; vertical-align: -2px; }
+
+
+/* ── Models: หนึ่งกรอบต่อหนึ่ง alias, เครื่องที่รองรับซ่อนไว้ก่อน ────────────
+   เดิมทุกเครื่องกางออกหมด · 7 alias x 2 เครื่อง = 21 แถวติดกัน แล้วแถวไหนเป็น
+   ของใครต้องนับเอาเอง · กางทีละตัวตอนจะดูจริงอ่านง่ายกว่ามาก */
+.alias-cell { display: flex; align-items: flex-start; gap: 9px; }
+.expand {
+  flex: none; width: 22px; height: 22px; margin-top: 1px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line2); border-radius: 6px;
+  background: var(--sunken); color: var(--fg2); cursor: pointer;
+}
+.expand:hover { color: var(--fg); border-color: var(--fg3); }
+.alias-row.open .expand { color: var(--accent); border-color: var(--accent); }
+/* กรอบสีคาดซ้ายตอนกาง — บอกว่าแถวที่ตามมาข้างล่างเป็นของ alias นี้ */
+.alias-row.open > td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+
+/* ป้ายความสามารถแบบมีไอคอน */
+.badges.tight { gap: 4px; margin: 0; }
+.badge.chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px 2px 6px; white-space: nowrap;
+}
+.badge.chip svg { flex: none; opacity: .85; }
