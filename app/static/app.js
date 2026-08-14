@@ -1150,15 +1150,39 @@ async function loadAccess() {
   const aliases = (state.cache.models || []).map((m) => m.alias);
   $('workspace-table').innerHTML = `
     <tr><th>Code</th><th>Name</th><th>Term</th><th>Allowed models</th><th></th></tr>
-    ${workspaces.data.map((c) => `<tr>
-      <td><code>${esc(c.code)}</code></td><td>${esc(c.name)}</td><td>${esc(c.term)}</td>
+    ${workspaces.data.map((c) => {
+      const held = c.status === 'suspended';
+      return `<tr${held ? ' class="ws-suspended"' : ''}>
+      <td><code>${esc(c.code)}</code>${held
+        ? ' <span class="pill mute">ระงับอยู่</span>' : ''}</td>
+      <td>${esc(c.name)}</td><td>${esc(c.term)}</td>
       <td class="checks">${aliases.map((a) => `
         <label><input type="checkbox" data-workspace="${esc(c.id)}" value="${esc(a)}"${
           (c.models || []).includes(a) ? ' checked' : ''}> ${esc(a)}</label>
       `).join('') || '<span class="hint">ยังไม่มีโมเดลใน registry</span>'}</td>
-      <td><button class="ghost small" data-saveworkspace="${esc(c.id)}">Save</button></td>
-    </tr>`).join('') || '<tr><td class="empty">No workspaces yet.</td></tr>'}`;
+      <td style="white-space:nowrap">
+        <button class="ghost small" data-saveworkspace="${esc(c.id)}">Save</button>
+        <button class="ghost small" data-holdworkspace="${esc(c.id)}"
+          data-to="${held ? 'active' : 'suspended'}" data-code="${esc(c.code)}"
+          >${held ? 'เปิดใช้' : 'ระงับ'}</button>
+      </td>
+    </tr>`;
+    }).join('') || '<tr><td class="empty">No workspaces yet.</td></tr>'}`;
 
+  // ระงับ ≠ เพิกถอน · คำในปุ่มและในคำถามยืนยันต้องบอกให้ชัดว่าอันนี้ย้อนกลับได้
+  for (const btn of $('workspace-table').querySelectorAll('[data-holdworkspace]')) {
+    btn.onclick = async () => {
+      const { holdworkspace: id, to, code } = btn.dataset;
+      if (to === 'suspended' && !confirm(
+        `ระงับ ${code} ชั่วคราว?\n\n`
+        + 'สมาชิกจะเรียกโมเดลของวิชานี้ไม่ได้จนกว่าจะเปิดใช้อีกครั้ง · '
+        + 'key ของทุกคนยังอยู่ครบ ไม่ถูกเพิกถอน')) return;
+      try {
+        await patch(`/admin/workspaces/${id}/status`, { status: to });
+        await loadAccess();
+      } catch (e) { showError(e.message); }
+    };
+  }
   for (const btn of $('workspace-table').querySelectorAll('[data-saveworkspace]')) {
     btn.onclick = async () => {
       const id = btn.dataset.saveworkspace;

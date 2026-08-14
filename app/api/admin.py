@@ -329,6 +329,57 @@ async def create_workspace(
     }
 
 
+WORKSPACE_STATUSES = ("active", "suspended")
+
+
+@router.patch("/workspaces/{workspace_id}/status")
+async def set_workspace_status(
+    workspace_id: str,
+    payload: dict[str, Any],
+    request: Request,
+    actor: Principal = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Put a class on hold, or take it off hold.
+
+    `Workspace.status` shipped in the first release and nothing ever read it -
+    the same shape of problem as membership before v1.5, a field that looks like
+    a switch and is wired to nothing. A suspended workspace now grants no models.
+
+    Different from revoking its members' keys in the way that matters: it can be
+    undone. End of term, a class under investigation, a course paused between
+    intakes - none of those should destroy credentials people will need again.
+    """
+    workspace = await session.get(Workspace, workspace_id)
+    if workspace is None:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "Workspace not found.")
+    await _assert_owns(session, actor, workspace_id)
+
+    wanted = str(payload.get("status", "")).strip()
+    if wanted not in WORKSPACE_STATUSES:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            f"status must be one of {', '.join(WORKSPACE_STATUSES)}.",
+        )
+
+    workspace.status = wanted
+    await audit(session, request, actor, "workspace.status", "workspace",
+                workspace_id, {"status": wanted})
+    await session.commit()
+
+    members = await session.execute(
+        select(func.count()).select_from(Membership).where(
+            Membership.workspace_id == workspace_id
+        )
+    )
+    return {
+        "id": workspace_id,
+        "code": workspace.code,
+        "status": wanted,
+        "members_affected": int(members.scalar() or 0),
+    }
+
+
 @router.get("/workspaces")
 async def list_workspaces(
     actor: Principal = Depends(require_manager),

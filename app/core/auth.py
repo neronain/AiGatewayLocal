@@ -27,7 +27,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.errors import ErrorCode, GatewayError
-from app.db.models import ApiKey, Membership, User, WorkspaceModel, utcnow
+from app.db.models import (
+    ApiKey,
+    Membership,
+    User,
+    Workspace,
+    WorkspaceModel,
+    utcnow,
+)
 from app.db.session import get_session
 
 log = logging.getLogger(__name__)
@@ -325,12 +332,18 @@ async def _models_via_membership(session: AsyncSession, user_id: str) -> set[str
     in groups that allow nothing: the first is unrestricted, the second is a
     deliberate empty allow-list.
     """
+    # The suspension is applied to the *models* side, never to the membership
+    # side. Filtering out the membership row would make a suspended workspace
+    # read as "this person is in no group", which is the unrestricted case -
+    # suspending a class would hand its students the whole catalogue.
     rows = await session.execute(
         select(Membership.workspace_id, WorkspaceModel.model_alias)
+        .join(Workspace, Workspace.id == Membership.workspace_id)
         .outerjoin(
             WorkspaceModel,
             (WorkspaceModel.workspace_id == Membership.workspace_id)
-            & (WorkspaceModel.enabled.is_(True)),
+            & (WorkspaceModel.enabled.is_(True))
+            & (Workspace.status == "active"),
         )
         .where(Membership.user_id == user_id)
     )
@@ -341,10 +354,20 @@ async def _models_via_membership(session: AsyncSession, user_id: str) -> set[str
 
 
 async def _workspace_models(session: AsyncSession, workspaces: list[str]) -> set[str]:
+    """A suspended workspace grants nothing.
+
+    `Workspace.status` has existed since the first release and nothing ever read
+    it - the same shape of problem as `Membership` before v1.5: a field that
+    looks like a switch and is not wired to anything. Suspending a class now
+    means what it says, and unlike revoking its members' keys it can be undone.
+    """
     rows = await session.execute(
-        select(WorkspaceModel.model_alias).where(
+        select(WorkspaceModel.model_alias)
+        .join(Workspace, Workspace.id == WorkspaceModel.workspace_id)
+        .where(
             WorkspaceModel.workspace_id.in_(workspaces),
             WorkspaceModel.enabled.is_(True),
+            Workspace.status == "active",
         )
     )
     return {row[0] for row in rows}

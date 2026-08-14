@@ -397,6 +397,11 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .model-use .hint { margin: 0; }
 .model-use button { display: inline-flex; align-items: center; gap: 5px; }
 
+/* A held class stays in the list, legibly on hold — it is coming back, which
+   is the difference between suspending it and revoking everybody's keys. */
+tr.ws-suspended > td { opacity: .62; }
+tr.ws-suspended > td:first-child { opacity: 1; }
+
 /* ── status ─────────────────────────────────────────────────────────── */
 .badges { display: flex; flex-wrap: wrap; gap: 5px; margin: 9px 0 6px; }
 .badge {

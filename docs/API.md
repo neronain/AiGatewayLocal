@@ -270,6 +270,7 @@ network at the proxy (SEC-5).
 | GET | `/admin/workspaces` | manager | List workspaces |
 | POST | `/admin/workspaces/{id}/models` | manager | Replace the allowed alias list |
 | POST | `/admin/workspaces/{id}/join` | manager | Enroll a user |
+| PATCH | `/admin/workspaces/{id}/status` | manager | `active` / `suspended` — reversible |
 | POST | `/admin/api-keys` | manager | Issue a key (**plaintext returned once**) |
 | GET | `/admin/api-keys?user_id=` | manager | List keys (prefix only) |
 | DELETE | `/admin/api-keys/{id}` | manager | Revoke |

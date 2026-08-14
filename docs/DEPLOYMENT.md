@@ -287,6 +287,13 @@ A manager who is in no workspace manages nothing, which is the opposite default
 from model access and deliberate: promoting somebody should not quietly hand
 them the whole institution. Put them in their classes and they can work.
 
+**Putting a class on hold.** `PATCH /admin/workspaces/{id}/status` with
+`suspended` stops it granting any models; `active` brings it back. Nobody's key
+is touched, which is the difference from revoking them — end of term, a course
+between intakes, or a class under investigation should not destroy credentials
+that will be needed again. Somebody who is also in another class keeps that
+one.
+
 Two consequences worth knowing before you use it:
 
 * **A workspace with no models allows nothing.** Adding someone to an empty one
