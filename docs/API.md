@@ -279,9 +279,11 @@ network at the proxy (SEC-5).
 | DELETE | `/admin/access-groups/{id}` | admin | Refused while any workspace holds it |
 | POST | `/admin/api-keys` | manager | Issue a key (**plaintext returned once**) — `models`, `access_groups`, `kind`; blanks filled from the workspace defaults |
 | GET | `/admin/api-keys?user_id=` | manager | List keys (prefix only) |
+| PATCH | `/admin/api-keys/{id}` | manager | Move the expiry — `{"days": n}` from today, `null` to remove |
 | DELETE | `/admin/api-keys/{id}` | manager | Revoke |
 | POST | `/admin/quota-policies` | admin | Create a policy — `name`, window limits, per-minute limits, `expires_in_days`, and either `model_alias` or `access_group_id` |
 | GET | `/admin/quota-policies` | manager | List policies |
+| PATCH | `/admin/quota-policies/{id}` | admin | Move the expiry — same shape |
 | GET | `/admin/models` | admin | Registry incl. upstream names, endpoints, health |
 | PATCH | `/admin/models/{alias}/enabled` | admin | Take an alias or one endpoint out of service |
 | PATCH | `/admin/models/{alias}/endpoints/{name}` | admin | `priority`, `weight`, `max_concurrency` |

@@ -423,6 +423,15 @@ somebody has to remember to delete — and remembering is what does not happen.
 An expired policy is skipped, not deleted: the row is the record of what was
 granted and when, which is the first thing anyone asks afterwards.
 
+**When the time runs out and the work has not.** An expired key stops working
+and is kept, which is right, but re-issuing means everybody pastes a new key
+into their configuration again — the credential was never the problem, the date
+was. `PATCH /admin/api-keys/{id}` with `{"days": 7}` moves it, counting from
+today so a key that lapsed last month gets a full week rather than a date
+already gone. `null` removes the expiry. A revoked key cannot be brought back
+this way: revoking is meant to be final, and an extend that undid it would make
+it something else. Quota policies extend the same way.
+
 Two questions that look alike and are not. *Which models may this person call*
 is answered by their workspace and by the list on their key. *How much may they
 use* is the quota. A per-person quota normally leaves the model field on **all

@@ -427,6 +427,19 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .roles-body table { box-shadow: none; margin-bottom: 10px; }
 .roles-body td { vertical-align: top; }
 
+/* Collapsed by default: a control whose right answer is almost always the
+   default reads, sitting open in a form, as a decision somebody has to make. */
+.advanced { margin: 0 0 12px; }
+.advanced > summary {
+  cursor: pointer; color: var(--fg2); font-size: 0.8125rem;
+  padding: 6px 0; list-style: none;
+}
+.advanced > summary::-webkit-details-marker { display: none; }
+.advanced > summary::before { content: "▸ "; color: var(--fg3); }
+.advanced[open] > summary::before { content: "▾ "; }
+.advanced > summary:hover { color: var(--fg); }
+.advanced .field { max-width: 30em; }
+
 /* A short reference where a choice is made, not in a manual nobody opens. */
 .note {
   margin: -4px 0 14px; padding: 11px 14px; border-radius: var(--r);

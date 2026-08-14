@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.20.0">
+<link rel="stylesheet" href="style.css?v=1.21.0">
 </head>
 <body>
 
@@ -504,10 +504,6 @@
           <select id="q-user"></select>
         </div>
         <div class="field">
-          <label for="q-model">Model (optional)</label>
-          <select id="q-model"><option value="">— all models —</option></select>
-        </div>
-        <div class="field">
           <label for="q-window">Window</label>
           <select id="q-window">
             <option value="day">day</option>
@@ -561,6 +557,19 @@
           หรือที่ workspace ของเขา · โควตาตอบแค่ว่า<em>ใช้ได้มากแค่ไหน</em>
         </span>
       </div>
+      <details class="advanced">
+        <summary>ตัวเลือกขั้นสูง — จำกัดเฉพาะบางโมเดล</summary>
+        <div class="field" style="margin-top:10px">
+          <label for="q-model">ใช้กับโมเดล</label>
+          <select id="q-model"><option value="">— ทุกโมเดลที่คนนั้นเรียกได้ —</option></select>
+          <span class="hint">
+            ปกติไม่ต้องแตะ · โควตาคุมรวมทุกโมเดลที่คนนั้นเรียกได้อยู่แล้ว ·
+            เลือกที่นี่เมื่อจะคุม<em>เฉพาะ</em>ตัวที่กิน GPU หนัก เช่นจำกัด vision ไว้
+            50 ครั้ง/วัน ทั้งที่โมเดลอื่นยังใช้ได้ตามปกติ
+          </span>
+        </div>
+      </details>
+
       <button id="create-quota" class="primary">Add policy</button>
     </div>
 
@@ -664,6 +673,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.20.0"></script>
+<script src="app.js?v=1.21.0"></script>
 </body>
 </html>

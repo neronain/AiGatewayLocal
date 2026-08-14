@@ -1123,6 +1123,98 @@ async def list_api_keys(
     }
 
 
+@router.patch("/api-keys/{key_id}")
+async def extend_api_key(
+    key_id: str,
+    payload: dict[str, Any],
+    request: Request,
+    actor: Principal = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Move a key's expiry, including one that has already passed.
+
+    An expired key stops working and is not deleted, which is right - but until
+    now the only way to answer "the work is not finished, can we have another
+    week" was to issue a new key and have somebody paste it everywhere again.
+    The credential is fine; only the date was wrong.
+
+    `days` counts from now, not from the old expiry, so extending something that
+    lapsed last month gives the full period rather than a date already gone.
+    `null` removes the expiry entirely.
+    """
+    api_key = await session.get(ApiKey, key_id)
+    if api_key is None:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "API key not found.")
+    visible = await _visible_users(session, actor)
+    if visible is not None and api_key.user_id not in visible:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "API key not found.")
+    if api_key.revoked_at is not None:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            "This key was revoked, which is not reversible. Issue a new one.",
+        )
+    if "days" not in payload:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "Send {'days': <number|null>}.")
+
+    days = payload["days"]
+    if days is None:
+        api_key.expires_at = None
+    else:
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            raise GatewayError(
+                ErrorCode.INVALID_REQUEST, "days must be a whole number."
+            ) from None
+        if days < 1:
+            raise GatewayError(ErrorCode.INVALID_REQUEST, "days must be at least 1.")
+        api_key.expires_at = utcnow() + timedelta(days=days)
+
+    await audit(session, request, actor, "apikey.extend", "apikey", key_id, {"days": days})
+    await session.commit()
+    return {
+        "id": key_id,
+        "expires_at": api_key.expires_at.isoformat() if api_key.expires_at else None,
+    }
+
+
+@router.patch("/quota-policies/{policy_id}")
+async def extend_quota_policy(
+    policy_id: str,
+    payload: dict[str, Any],
+    request: Request,
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Same for a temporary allowance whose work ran long."""
+    policy = await session.get(QuotaPolicy, policy_id)
+    if policy is None:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "Quota policy not found.")
+    if "days" not in payload:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "Send {'days': <number|null>}.")
+
+    days = payload["days"]
+    if days is None:
+        policy.expires_at = None
+    else:
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            raise GatewayError(
+                ErrorCode.INVALID_REQUEST, "days must be a whole number."
+            ) from None
+        if days < 1:
+            raise GatewayError(ErrorCode.INVALID_REQUEST, "days must be at least 1.")
+        policy.expires_at = utcnow() + timedelta(days=days)
+
+    await audit(session, request, actor, "quota.extend", "quota", policy_id, {"days": days})
+    await session.commit()
+    return {
+        "id": policy_id,
+        "expires_at": policy.expires_at.isoformat() if policy.expires_at else None,
+    }
+
+
 @router.delete("/api-keys/{key_id}")
 async def revoke_api_key(
     key_id: str,

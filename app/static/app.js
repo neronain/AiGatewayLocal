@@ -1163,15 +1163,41 @@ async function loadAccess() {
           ? `<div class="hint">เฉพาะ ${(k.models || []).map(esc).join(', ')}</div>` : ''}${
           (k.access_groups || []).length
           ? `<div class="hint">มัด ${(k.access_groups || []).length} ชุด</div>` : ''}</td>
-        <td class="hint">${k.expires_at ? new Date(k.expires_at).toLocaleDateString() : 'never'}</td>
+        <td class="hint">${k.expires_at
+          ? `${stamp(k.expires_at).toLocaleDateString()}${stamp(k.expires_at) < new Date()
+              ? '<div class="hint" style="color:var(--bad)">หมดอายุแล้ว</div>' : ''}`
+          : 'never'}</td>
         <td class="hint">${k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'never'}</td>
         <td><span class="pill ${k.revoked ? 'err' : 'ok'}">${k.revoked ? 'revoked' : 'active'}</span></td>
-        <td>${k.revoked
+        <td style="white-space:nowrap">${k.revoked
           ? `<button class="small" data-purge="${esc(k.id)}" title="ลบแถวนี้ถาวร — ประวัติการใช้งานยังอยู่">Delete</button>`
-          : `<button class="danger small" data-revoke="${esc(k.id)}">Revoke</button>`}</td>
+          : `<button class="ghost small" data-extend="${esc(k.id)}"
+               data-name="${esc(k.name || k.key_prefix)}"
+               title="เลื่อนวันหมดอายุ · ตัว key เดิมใช้ต่อได้เลย">ต่ออายุ</button>
+             <button class="danger small" data-revoke="${esc(k.id)}">Revoke</button>`}</td>
       </tr>`;
     }).join('') || '<tr><td class="empty">No keys issued yet.</td></tr>'}`;
 
+  // หมดอายุแล้วไม่ได้แปลว่าใช้ไม่ได้ตลอดไป · งานที่ยังไม่จบควรต่อได้โดยไม่ต้องออกใบใหม่
+  // แล้วให้ทุกคนไปแก้ config กันใหม่
+  for (const btn of $('key-table').querySelectorAll('[data-extend]')) {
+    btn.onclick = async () => {
+      const answer = prompt(`ต่ออายุ "${btn.dataset.name}" อีกกี่วัน?\n\n`
+        + 'นับจากวันนี้ · เว้นว่างแล้วกด OK = ไม่มีวันหมดอายุ', '7');
+      if (answer === null) return;
+      const days = answer.trim() === '' ? null : Number(answer);
+      if (days !== null && (!Number.isFinite(days) || days < 1)) {
+        showError('ใส่จำนวนวันเป็นตัวเลขตั้งแต่ 1 ขึ้นไป'); return;
+      }
+      try {
+        const out = await patch(`/admin/api-keys/${btn.dataset.extend}`, { days });
+        await loadAccess();
+        banner('error', 'ok', out.expires_at
+          ? `ต่ออายุถึง ${stamp(out.expires_at).toLocaleDateString()}`
+          : 'เอาวันหมดอายุออกแล้ว');
+      } catch (e) { showError(e.message); }
+    };
+  }
   for (const btn of $('key-table').querySelectorAll('[data-revoke]')) {
     btn.onclick = async () => {
       if (!confirm('Revoke this key? Any client using it stops working immediately.')) return;
@@ -1453,11 +1479,29 @@ async function loadQuota() {
         ? `${lim(p.max_requests_per_minute)} req<div class="hint">${
             lim(p.max_tokens_per_minute)} tok</div>`
         : '<span class="hint">ไม่จำกัด</span>'}</td>
-      <td><button class="danger small" data-del-policy="${esc(p.id)}">Delete</button></td>
+      <td style="white-space:nowrap">${p.expires_at
+        ? `<button class="ghost small" data-extend-policy="${esc(p.id)}"
+             data-name="${esc(p.name || p.scope)}">ต่ออายุ</button>` : ''}
+        <button class="danger small" data-del-policy="${esc(p.id)}">Delete</button></td>
     </tr>`).join('') || '<tr><td class="empty">No policies — the gateway.yaml defaults apply.</td></tr>'}`;
 
   // นโยบายที่เจาะจงกว่าชนะเสมอ (user > workspace > global) การลบตัวหนึ่งจึงไม่ได้แค่
   // หายไป แต่ทำให้คนที่เคยอยู่ใต้มันเลื่อนไปใช้ตัวถัดไป — ต้องบอกให้เห็นก่อนกด
+  for (const btn of $('quota-table').querySelectorAll('[data-extend-policy]')) {
+    btn.onclick = async () => {
+      const answer = prompt(`ต่ออายุนโยบาย "${btn.dataset.name}" อีกกี่วัน?\n\n`
+        + 'นับจากวันนี้ · เว้นว่างแล้วกด OK = ไม่มีวันหมดอายุ', '7');
+      if (answer === null) return;
+      const days = answer.trim() === '' ? null : Number(answer);
+      if (days !== null && (!Number.isFinite(days) || days < 1)) {
+        showError('ใส่จำนวนวันเป็นตัวเลขตั้งแต่ 1 ขึ้นไป'); return;
+      }
+      try {
+        await patch(`/admin/quota-policies/${btn.dataset.extendPolicy}`, { days });
+        await loadQuota();
+      } catch (e) { showError(e.message); }
+    };
+  }
   for (const btn of $('quota-table').querySelectorAll('[data-del-policy]')) {
     btn.onclick = async () => {
       if (!confirm('ลบนโยบายนี้?\n\nคนที่เคยอยู่ใต้นโยบายนี้จะเลื่อนไปใช้ตัวที่กว้างกว่า '
