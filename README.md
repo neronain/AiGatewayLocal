@@ -198,6 +198,11 @@ internet** for as long as it runs: fine for a test, and the API key is still
 required, but close it afterwards and use a named tunnel with Cloudflare Access
 in front for anything lasting.
 
+**[docs/CLAUDE-TUNNEL.md](docs/CLAUDE-TUNNEL.md)** walks the whole path —
+aliases, a key scoped to them, installing cloudflared, reading its connectivity
+pre-check, the Developer Mode fields, and a table of every error this route
+produces and what it means.
+
 ---
 
 ## Accounts and keys
@@ -581,6 +586,7 @@ and the parsers LiteGate reports as missing being exactly the knobs LMDS exposes
 | **[API.md](docs/API.md)** | Full endpoint reference with examples |
 | **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Pipeline, modules, design decisions and their costs |
 | **[RUNBOOK.md](docs/RUNBOOK.md)** | What to do when an alert fires — one section per alert |
+| **[CLAUDE-TUNNEL.md](docs/CLAUDE-TUNNEL.md)** | Claude Developer Mode through a Cloudflare tunnel — aliases, a scoped key, cloudflared, and every error the route produces |
 | **[PRD.md](docs/PRD.md)** | Requirements, data model, acceptance criteria, decision log |
 | [PRD-v1.4-Access.md](docs/PRD-v1.4-Access.md) | Making workspace membership actually govern access — the options weighed, the decision gate, and the report that had to run first |
 | [PRD-v1.5-Models.md](docs/PRD-v1.5-Models.md) | Models & endpoints measured against a running LiteLLM: what to adopt, what we already had, what not to copy |
