@@ -1102,7 +1102,10 @@ async function loadAccess() {
         <td>
           ${mine.map((code) => {
             const ws = workspaces.data.find((c) => c.code === code);
-            return `<span class="pill mute">${esc(code)}<button class="link small"
+            // วิชาที่ถูกระงับไม่ให้สิทธิ์อะไรเลย · ป้ายที่ดูเหมือนใช้ได้คือป้ายที่โกหก
+            const held = ws && ws.status === 'suspended';
+            return `<span class="pill mute">${esc(code)}${held
+              ? ' <span class="hint">(ระงับ)</span>' : ''}<button class="link small"
               data-leave="${esc(ws ? ws.id : '')}" data-who="${esc(u.id)}"
               title="เอา ${esc(u.external_id)} ออกจาก ${esc(code)}">×</button></span>`;
           }).join(' ') || '<span class="hint">—</span>'}
@@ -1206,13 +1209,33 @@ async function loadAccess() {
 
   const groupName = Object.fromEntries(groups.data.map((g) => [g.id, g]));
   $('workspace-table').innerHTML = `
-    <tr><th>Code</th><th>Name</th><th>Term</th><th>Allowed models</th><th></th></tr>
+    <tr><th>Code</th><th>Name</th><th>Members</th><th>Allowed models</th><th></th></tr>
     ${workspaces.data.map((c) => {
       const held = c.status === 'suspended';
       return `<tr${held ? ' class="ws-suspended"' : ''}>
       <td><code>${esc(c.code)}</code>${held
         ? ' <span class="pill mute">ระงับอยู่</span>' : ''}</td>
-      <td>${esc(c.name)}</td><td>${esc(c.term)}</td>
+      <td>${esc(c.name)}${c.term ? `<div class="hint">${esc(c.term)}</div>` : ''}</td>
+      <td class="ws-members">
+        <details>
+          <summary>${(c.members || []).length} คน</summary>
+          <div class="ws-roster">
+            ${(c.members || []).map((m) => `<span class="pill mute">${esc(m.external_id)}
+              <button class="link small" data-leave="${esc(c.id)}" data-who="${esc(m.id)}"
+                title="เอา ${esc(m.external_id)} ออก">×</button></span>`).join(' ')
+              || '<span class="hint">ยังไม่มีใครอยู่ในวิชานี้</span>'}
+          </div>
+          <label class="ws-add">เพิ่มหลายคนพร้อมกัน
+            <select multiple size="4" data-bulk="${esc(c.id)}">${
+              (state.cache.users || [])
+                .filter((u) => !(c.members || []).some((m) => m.id === u.id))
+                .map((u) => `<option value="${esc(u.id)}">${esc(u.external_id)}${
+                  u.display_name ? ` — ${esc(u.display_name)}` : ''}</option>`).join('')
+              || '<option disabled>ทุกคนอยู่ในวิชานี้แล้ว</option>'}</select></label>
+          <button class="ghost small" data-bulkadd="${esc(c.id)}"
+            data-code="${esc(c.code)}">เพิ่มที่เลือกไว้</button>
+        </details>
+      </td>
       <td class="checks">${aliases.map((a) => `
         <label><input type="checkbox" data-workspace="${esc(c.id)}" value="${esc(a)}"${
           (c.models || []).includes(a) ? ' checked' : ''}> ${esc(a)}</label>
@@ -1263,6 +1286,30 @@ async function loadAccess() {
       try {
         await patch(`/admin/workspaces/${id}/status`, { status: to });
         await loadAccess();
+      } catch (e) { showError(e.message); }
+    };
+  }
+  for (const btn of $('workspace-table').querySelectorAll('[data-leave]')) {
+    btn.onclick = async () => {
+      try {
+        await del(`/admin/workspaces/${btn.dataset.leave}/members/${btn.dataset.who}`);
+        await loadAccess();
+      } catch (e) { showError(e.message); }
+    };
+  }
+  for (const btn of $('workspace-table').querySelectorAll('[data-bulkadd]')) {
+    btn.onclick = async () => {
+      const id = btn.dataset.bulkadd;
+      const picked = [...(document.querySelector(`select[data-bulk="${id}"]`)
+        ?.selectedOptions || [])].map((o) => o.value);
+      if (!picked.length) { showError('ยังไม่ได้เลือกใครเลย'); return; }
+      try {
+        const result = await post(`/admin/workspaces/${id}/members`, { user_ids: picked });
+        await loadAccess();
+        banner('error', result.warning ? 'warn' : 'ok',
+          `${btn.dataset.code}: เพิ่ม ${result.added} คน`
+          + (result.already_in ? ` · อยู่แล้ว ${result.already_in} คน` : '')
+          + (result.warning ? ` · ${result.warning}` : ''));
       } catch (e) { showError(e.message); }
     };
   }
@@ -1398,7 +1445,8 @@ async function loadQuota() {
         ? `<code>${esc(groupNames[p.access_group_id] || 'bundle')}</code>
            <div class="hint">มัด</div>`
         : `<code>${esc(p.model_alias || 'all')}</code>`}</td>
-      <td>${esc(p.window)}</td>
+      <td>${esc(p.window)}${p.expires_at
+        ? `<div class="hint">ถึง ${esc(stamp(p.expires_at).toLocaleDateString())}</div>` : ''}</td>
       <td class="num">${lim(p.max_requests)}</td><td class="num">${lim(p.max_input_tokens)}</td>
       <td class="num">${lim(p.max_output_tokens)}</td><td class="num">${lim(p.max_images)}</td>
       <td class="num">${p.max_requests_per_minute || p.max_tokens_per_minute
@@ -1442,6 +1490,7 @@ $('create-quota').onclick = async () => {
         ? $('q-model').value.slice(6) : null,
       window: $('q-window').value,
       name: $('q-name').value.trim(),
+      expires_in_days: Number($('q-days').value) || null,
       max_requests: Number($('q-req').value) || 0,
       max_input_tokens: Number($('q-in').value) || 0,
       max_output_tokens: Number($('q-outt').value) || 0,

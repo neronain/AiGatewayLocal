@@ -484,6 +484,87 @@ async def delete_access_group(
     return {"id": group_id, "deleted": True}
 
 
+@router.post("/workspaces/{workspace_id}/members")
+async def add_members(
+    workspace_id: str,
+    payload: dict[str, Any],
+    request: Request,
+    actor: Principal = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Put several people in a class at once.
+
+    Enrolling thirty students one dropdown at a time is thirty chances to skip
+    one, and the one skipped is found weeks later by a person who cannot call
+    what their classmates can.
+
+    Names already present are counted, not rejected: re-running the same list
+    after a partial failure has to be safe, or nobody will dare re-run it.
+    """
+    workspace = await session.get(Workspace, workspace_id)
+    if workspace is None:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "Workspace not found.")
+    await _assert_owns(session, actor, workspace_id)
+
+    wanted = [str(u) for u in (payload.get("user_ids") or [])]
+    if not wanted:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "Send {'user_ids': [...]}.")
+
+    known = {
+        uid for (uid,) in await session.execute(
+            select(User.id).where(User.id.in_(wanted))
+        )
+    }
+    unknown = sorted(set(wanted) - known)
+    if unknown:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            f"Unknown user id(s): {', '.join(unknown[:5])}"
+            + (f" and {len(unknown) - 5} more" if len(unknown) > 5 else ""),
+        )
+
+    already = {
+        uid for (uid,) in await session.execute(
+            select(Membership.user_id).where(
+                Membership.workspace_id == workspace_id,
+                Membership.user_id.in_(known),
+            )
+        )
+    }
+    added = sorted(known - already)
+    for user_id in added:
+        session.add(Membership(workspace_id=workspace_id, user_id=user_id))
+
+    await audit(session, request, actor, "workspace.members.add", "workspace",
+                workspace_id, {"added": len(added), "already": len(already)})
+    await session.commit()
+
+    allowed = int((await session.execute(
+        select(func.count()).select_from(WorkspaceModel).where(
+            WorkspaceModel.workspace_id == workspace_id,
+            WorkspaceModel.enabled.is_(True),
+        )
+    )).scalar() or 0)
+    bundles = int((await session.execute(
+        select(func.count()).select_from(WorkspaceAccessGroup).where(
+            WorkspaceAccessGroup.workspace_id == workspace_id
+        )
+    )).scalar() or 0)
+    return {
+        "workspace_id": workspace_id,
+        "code": workspace.code,
+        "added": len(added),
+        "already_in": len(already),
+        # The same warning the single join gives: joining an empty class takes
+        # access away rather than granting any.
+        "warning": (
+            "This workspace has no models enabled, so its members can call "
+            "nothing. Set its models before anyone tries to use it."
+            if not allowed and not bundles else ""
+        ),
+    }
+
+
 @router.delete("/workspaces/{workspace_id}")
 async def delete_workspace(
     workspace_id: str,
@@ -611,6 +692,7 @@ async def list_workspaces(
     # แล้วกด Save ทีเดียวรายการที่ตั้งไว้หายหมด — UI ที่โกหกสถานะปัจจุบันอันตรายกว่าไม่มี
     allowed: dict[str, list[str]] = {}
     held: dict[str, list[str]] = {}
+    members: dict[str, list[dict[str, str]]] = {}
     if spaces:
         rows = await session.execute(
             select(WorkspaceModel.workspace_id, WorkspaceModel.model_alias)
@@ -623,6 +705,17 @@ async def list_workspaces(
         )
         for workspace_id, group_id in bundles:
             held.setdefault(workspace_id, []).append(group_id)
+        # Who is in each class, from the class's side. Asking "who is in CS101"
+        # by reading down a list of two hundred people is not an answer.
+        roster = await session.execute(
+            select(Membership.workspace_id, User.id, User.external_id, User.display_name)
+            .join(User, User.id == Membership.user_id)
+            .order_by(User.external_id)
+        )
+        for workspace_id, uid, external_id, display_name in roster:
+            members.setdefault(workspace_id, []).append(
+                {"id": uid, "external_id": external_id, "display_name": display_name}
+            )
 
     return {
         "data": [
@@ -637,6 +730,7 @@ async def list_workspaces(
                 "default_member_models": list(c.default_member_models or []),
                 "default_access_groups": list(c.default_access_groups or []),
                 "default_key_days": c.default_key_days or 0,
+                "members": members.get(c.id, []),
             }
             for c in spaces
         ]
@@ -1139,6 +1233,8 @@ class QuotaPolicyIn(BaseModel):
     # ลิมิตต่อนาที นับต่อคน · 0 = ไม่จำกัด ซึ่งเป็นค่าตั้งต้น
     max_requests_per_minute: int = 0
     max_tokens_per_minute: int = 0
+    # ให้สิทธิ์ชั่วคราว · ครบกำหนดแล้วนโยบายเลิกมีผลเอง ไม่ต้องจำไปลบ
+    expires_in_days: int | None = None
 
 
 @router.post("/quota-policies", status_code=201)
@@ -1160,11 +1256,20 @@ async def create_quota_policy(
         AccessGroup, payload.access_group_id
     ):
         raise GatewayError(ErrorCode.INVALID_REQUEST, "Access group not found.")
-    policy = QuotaPolicy(**payload.model_dump())
+    fields = payload.model_dump()
+    days = fields.pop("expires_in_days", None)
+    policy = QuotaPolicy(
+        **fields,
+        expires_at=utcnow() + timedelta(days=days) if days else None,
+    )
     session.add(policy)
     await audit(session, request, actor, "quota.create", "quota", payload.scope)
     await session.commit()
-    return {"id": policy.id, **payload.model_dump()}
+    return {
+        "id": policy.id,
+        **fields,
+        "expires_at": policy.expires_at.isoformat() if policy.expires_at else None,
+    }
 
 
 @router.get("/quota-policies")
@@ -1200,6 +1305,7 @@ async def list_quota_policies(
                 "max_images": p.max_images,
                 "max_requests_per_minute": p.max_requests_per_minute,
                 "max_tokens_per_minute": p.max_tokens_per_minute,
+                "expires_at": p.expires_at.isoformat() if p.expires_at else None,
             }
             for p in result.scalars()
         ]

@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.17.0">
+<link rel="stylesheet" href="style.css?v=1.20.0">
 </head>
 <body>
 
@@ -537,11 +537,30 @@
           <label for="q-tpm">Tokens per minute</label>
           <input id="q-tpm" type="number" value="0" min="0">
         </div>
+        <div class="field">
+          <label for="q-days">หมดอายุใน (วัน)</label>
+          <input id="q-days" type="number" value="0" min="0" placeholder="0 = ไม่หมดอายุ">
+        </div>
       </div>
       <p class="hint" style="margin:-4px 0 12px">
-        โควตาข้างบนกันการใช้เกินระยะยาว · สองช่องนี้กัน burst — ห้องเรียนกดพร้อมกันตอนต้นคาบ ·
-        นับ<strong>ต่อคน</strong>ไม่ใช่ต่อ key · <strong>0 = ไม่จำกัด</strong> ซึ่งเป็นค่าตั้งต้น
+        โควตาข้างบนกันการใช้เกินระยะยาว · Requests/Tokens per minute กัน burst —
+        ห้องเรียนกดพร้อมกันตอนต้นคาบ · นับ<strong>ต่อคน</strong>ไม่ใช่ต่อ key ·
+        <strong>0 = ไม่จำกัด</strong> ซึ่งเป็นค่าตั้งต้น
       </p>
+      <div class="note">
+        <strong>ช่อง Model เลือกอะไรดี</strong>
+        <ul>
+          <li><strong>— all models —</strong> · โควตานี้คุมรวมทุกโมเดลที่คนนั้นเรียกได้ ·
+            <em>เป็นตัวเลือกที่ถูกในเกือบทุกกรณี</em> โดยเฉพาะโควตาราย <code>user</code></li>
+          <li><strong>โมเดลตัวเดียว</strong> · เมื่อจะคุมเฉพาะตัวที่กิน GPU หนัก</li>
+          <li><strong>มัดโมเดล</strong> · เมื่อจะคุมหลายตัวรวมกันเป็นก้อนเดียว</li>
+        </ul>
+        <span class="hint">
+          ส่วนคำถามว่า <strong>คนนั้นเรียกโมเดลอะไรได้บ้าง</strong> ไม่ได้ตอบที่นี่ —
+          ตอบที่ตอนออก key (แท็บ Access &amp; Keys → Models this key may use ซึ่งติ๊กได้หลายตัว)
+          หรือที่ workspace ของเขา · โควตาตอบแค่ว่า<em>ใช้ได้มากแค่ไหน</em>
+        </span>
+      </div>
       <button id="create-quota" class="primary">Add policy</button>
     </div>
 
@@ -645,6 +664,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.17.0"></script>
+<script src="app.js?v=1.20.0"></script>
 </body>
 </html>

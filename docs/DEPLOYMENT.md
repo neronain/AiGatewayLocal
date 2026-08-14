@@ -417,6 +417,18 @@ points at. Name one alias or one bundle, not both. Precedence puts a named alias
 above a bundle containing it, for the same reason a rule about one person beats
 a rule about their class.
 
+A policy can also carry `expires_in_days`. Somebody who needs a bigger
+allowance for three days is one policy that removes itself, rather than one
+somebody has to remember to delete — and remembering is what does not happen.
+An expired policy is skipped, not deleted: the row is the record of what was
+granted and when, which is the first thing anyone asks afterwards.
+
+Two questions that look alike and are not. *Which models may this person call*
+is answered by their workspace and by the list on their key. *How much may they
+use* is the quota. A per-person quota normally leaves the model field on **all
+models**, so it covers whatever they are allowed to call; name one model or one
+bundle only when the limit is really about that model.
+
 Counted **per person**, not per key: ten tabs is still one person, and counting
 per key would make issuing yourself another one a way to get more. `0` means
 unlimited and is the default — a rate limit nobody chose is one that refuses

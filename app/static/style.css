@@ -427,6 +427,26 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .roles-body table { box-shadow: none; margin-bottom: 10px; }
 .roles-body td { vertical-align: top; }
 
+/* A short reference where a choice is made, not in a manual nobody opens. */
+.note {
+  margin: -4px 0 14px; padding: 11px 14px; border-radius: var(--r);
+  background: var(--sunken); border: 1px solid var(--line);
+  font-size: 0.8125rem; color: var(--fg2);
+}
+.note strong { color: var(--fg); }
+.note ul { margin: 7px 0; padding-left: 1.2em; }
+.note li { margin: 3px 0; }
+.note .hint { margin: 7px 0 0; }
+
+/* The roster, from the class's side. Collapsed because a list of two hundred
+   should not push the settings off the screen. */
+.ws-members > details > summary {
+  cursor: pointer; color: var(--fg2); font-size: 0.8125rem; white-space: nowrap;
+}
+.ws-roster { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; max-width: 32em; }
+.ws-add { display: grid; gap: 3px; margin: 8px 0; font-size: 0.6875rem; color: var(--fg3); }
+.ws-add select { min-width: 14em; max-width: 22em; }
+
 /* Defaults for new members sit below the models, because they answer the next
    question rather than the same one. */
 .ws-defaults {

@@ -126,3 +126,41 @@ def test_a_disabled_bundle_stops_applying(client, member_key, upstream):
 
     for _ in range(3):
         assert ask(client, member_key, "coding").status_code == 200
+
+
+def test_a_policy_can_be_given_an_end_date(client):
+    """ให้สิทธิ์ชั่วคราวสามวัน · นโยบายที่ไม่มีใครจำไปลบคือนโยบายที่ยังบังคับใช้เทอมหน้า"""
+    created = policy(client, name="เร่งด่วน 3 วัน", expires_in_days=3, max_requests=5000)
+    assert created.status_code == 201
+    assert created.json()["expires_at"] is not None
+
+
+def test_an_expired_policy_stops_applying(client, member_key, upstream):
+    from datetime import UTC, datetime, timedelta
+
+    from app.db.models import QuotaPolicy
+
+    policy(client, max_requests_per_minute=1, expires_in_days=1)
+    assert ask(client, member_key, "coding").status_code == 200
+    assert ask(client, member_key, "coding").status_code == 429
+
+    # ย้อนวันหมดอายุให้เป็นเมื่อวาน แล้วต้องกลับไปใช้ค่าที่เคยใช้ก่อนหน้า
+    import asyncio
+
+    from app.db.session import session_scope
+
+    async def expire():
+        async with session_scope() as session:
+            from sqlalchemy import select
+            rows = await session.execute(select(QuotaPolicy))
+            for row in rows.scalars():
+                row.expires_at = datetime.now(UTC) - timedelta(days=1)
+            await session.commit()
+
+    asyncio.get_event_loop_policy().new_event_loop().run_until_complete(expire())
+    assert ask(client, member_key, "coding").status_code == 200
+
+
+def test_a_policy_without_an_end_date_never_expires(client):
+    created = policy(client, max_requests=100)
+    assert created.json()["expires_at"] is None

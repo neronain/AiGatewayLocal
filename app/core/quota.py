@@ -354,10 +354,17 @@ class QuotaService:
         person beats a rule about their class: it was written with more
         knowledge of the case.
         """
+        now = datetime.now(UTC)
         result = await session.execute(
             select(QuotaPolicy).where(QuotaPolicy.enabled.is_(True))
         )
-        policies = list(result.scalars())
+        # An expired policy is skipped rather than deleted: the row is the record
+        # of what was granted and when, which is the first thing anyone asks
+        # afterwards.
+        policies = [
+            p for p in result.scalars()
+            if p.expires_at is None or _aware(p.expires_at) > now
+        ]
 
         # Only the bundles some policy actually points at, and only when the
         # alias could match one - a deployment with no bundle quotas asks nothing.
@@ -503,6 +510,11 @@ class QuotaService:
                 "images": used.images,
             },
         }
+
+
+def _aware(value: datetime) -> datetime:
+    """SQLite hands back naive datetimes; normalise before comparing."""
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 def _seconds_to_reset(window: str) -> int:

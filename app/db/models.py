@@ -292,6 +292,10 @@ class QuotaPolicy(Base, TimestampMixin):
     # this term, and how fast may you use it right now.
     max_requests_per_minute: Mapped[int] = mapped_column(Integer, default=0)
     max_tokens_per_minute: Mapped[int] = mapped_column(Integer, default=0)
+    # A policy written for a fortnight that nobody remembers to remove is a
+    # policy still in force next term. Past this the policy is ignored and the
+    # person falls back to whatever applied before it.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
