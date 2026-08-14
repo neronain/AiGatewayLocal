@@ -109,3 +109,36 @@ def test_only_one_worker_announces_the_password(client, chosen_password):
     assert client.post("/auth/login",
                        json={"username": who, "password": chosen_password}
                        ).status_code == 200
+
+
+def test_nothing_happens_while_some_admin_can_still_sign_in(client, chosen_password):
+    """deployment จริงมี admin หลายคน · เจอคนหนึ่งไม่มีรหัสผ่านไม่ได้แปลว่าใครเข้าไม่ได้
+
+    ตั้งรหัสให้เขาทั้งที่คนอื่นเข้าได้อยู่แล้ว = แตะระบบที่ไม่ได้พัง แล้วพิมพ์ความลับ
+    ออก log โดยไม่มีใครต้องการ · เคสจริง: gateway ที่มี 'admin' (มีรหัส) กับ 'it' (ไม่มี)
+    """
+    import asyncio
+
+    from sqlalchemy import select
+
+    from app.db.models import User
+    from app.db.session import session_scope
+    from app.main import _bootstrap_admin
+
+    loop = asyncio.get_event_loop_policy().new_event_loop()
+
+    async def add_second_admin_without_password():
+        async with session_scope() as session:
+            session.add(User(external_id="it", display_name="IT", role="admin",
+                             password_hash=""))
+            await session.commit()
+
+    async def hashes():
+        async with session_scope() as session:
+            rows = (await session.execute(select(User).where(User.role == "admin"))).scalars()
+            return {r.external_id: r.password_hash for r in rows}
+
+    loop.run_until_complete(add_second_admin_without_password())
+    before = loop.run_until_complete(hashes())
+    loop.run_until_complete(_bootstrap_admin(client.app))
+    assert loop.run_until_complete(hashes()) == before, "ไม่ควรแตะอะไรเลย"

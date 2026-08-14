@@ -89,16 +89,24 @@ async def _bootstrap_admin(app: FastAPI) -> None:
         async with session_scope() as session:
             from app.core.passwords import hash_password
 
-            existing = await session.execute(select(User).where(User.role == "admin"))
-            current = existing.scalars().first()
-            if current is not None:
+            existing = await session.execute(
+                select(User).where(User.role == "admin").order_by(User.created_at, User.id)
+            )
+            admins = list(existing.scalars())
+            if admins:
+                # ซ่อมเมื่อ *ไม่มีผู้ดูแลคนไหนเลย* ที่เข้าคอนโซลได้ · deployment จริงมัก
+                # มี admin หลายคน และการเจอคนที่ไม่มีรหัสผ่านหนึ่งคนไม่ได้แปลว่าใครเข้า
+                # ไม่ได้ — ตั้งรหัสให้เขาทั้งที่คนอื่นเข้าได้อยู่แล้ว คือแตะระบบที่ไม่ได้พัง
+                # แล้วพิมพ์ความลับออก log โดยไม่มีใครต้องการ
+                if any(a.password_hash for a in admins):
+                    return
+                # เรียงตามเวลาสร้าง เพื่อให้ทุก worker เลือกคนเดียวกันเสมอ
+                current = admins[0]
                 # An administrator that predates password sign-in has no hash, so
                 # nobody can reach the console at all — not a policy, just a gap
                 # left by an upgrade. Give it one and announce it exactly the way
                 # a fresh install does, because a credential nobody is told about
                 # is the same as no credential.
-                if current.password_hash:
-                    return
                 # uvicorn รัน 4 worker และทุกตัวรัน startup hook นี้ · ถ้าต่างคนต่าง
                 # สุ่มแล้วเขียนทับกัน จะได้รหัสผ่านสี่อันพิมพ์ออก log แต่ใช้ได้อันเดียว
                 # (อันที่ commit ทีหลังสุด) แล้วคนอ่าน log ก็หยิบอันแรกไปลอง — เจอจริง
