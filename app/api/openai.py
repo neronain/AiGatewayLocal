@@ -21,7 +21,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import usage as usage_mod
-from app.core.auth import Principal, assert_model_permitted, authenticate
+from app.core.auth import (
+    Principal,
+    assert_model_permitted,
+    authenticate,
+    permitted_aliases,
+)
 from app.core.capability import (
     compatibility_badges,
     upstream_model_for,
@@ -54,11 +59,20 @@ BuildRequest = Callable[[Endpoint], tuple[dict[str, Any], dict[str, str]]]
 async def list_models(
     principal: Principal = Depends(authenticate),
     state: AppState = Depends(get_state),
+    session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """OpenAI-shaped catalogue. Members only ever see the alias (PRD §6)."""
+    """OpenAI-shaped catalogue. Members only ever see the alias (PRD §6).
+
+    Filtered by the same rule that gates the call. Listing a model that would be
+    refused is worse than not listing it: the client offers it, the person picks
+    it, and the error arrives after they have written their prompt.
+    """
     snapshot = state.registry.snapshot
+    permission = await permitted_aliases(session, principal, snapshot.gateway)
     data = []
     for model in snapshot.visible_to(principal.role):
+        if not permission.allows(model.alias):
+            continue
         entry: dict[str, Any] = {
             "id": model.alias,
             "object": "model",
@@ -118,7 +132,9 @@ async def run_chat(
         )
 
     model = _resolve_model(state, alias, principal)
-    await assert_model_permitted(session, principal, alias)
+    await assert_model_permitted(
+        session, principal, alias, state.registry.snapshot.gateway
+    )
     validate_protocol(model, "openai")
 
     policy = state.registry.snapshot.vision_policy_for(model)

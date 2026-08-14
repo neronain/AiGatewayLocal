@@ -223,6 +223,16 @@ function modelList(models, empty) {
     : `<div class="empty">${empty}</div>`;
 }
 
+// A catalogue that has quietly shrunk reads as models having disappeared, and
+// the first guess is that the gateway is broken. Naming the rule that narrowed
+// it turns "where did they go" into something the reader can act on.
+function accessNote(access) {
+  if (!access?.restricted) return '';
+  return `<p class="hint" style="margin:0 0 12px">
+    เห็นเท่านี้เพราะถูกจำกัดโดย <strong>${esc(access.reason)}</strong> ·
+    ต้องใช้ตัวอื่นให้ติดต่อผู้ดูแลของคุณ</p>`;
+}
+
 // Delegated once, on the document: both the dashboard catalogue and the
 // account page re-render their lists, and a handler per button would have to
 // be re-attached every time one of them did.
@@ -237,11 +247,12 @@ document.addEventListener('click', (event) => {
 });
 
 function renderCatalog(data) {
-  $('catalog').innerHTML = data.sections.map((s) => `
+  const sections = data.sections.map((s) => `
     <h3 class="model-section">${esc(s.title)}
       <span class="hint">${s.models.length} โมเดล</span></h3>
-    ${modelList(s.models, 'ไม่มีโมเดลในหมวดนี้')}`).join('')
-    || '<div class="empty">No models available.</div>';
+    ${modelList(s.models, 'ไม่มีโมเดลในหมวดนี้')}`).join('');
+  $('catalog').innerHTML = accessNote(data.access)
+    + (sections || '<div class="empty">ยังไม่มีโมเดลที่เปิดให้คุณใช้ · ติดต่อผู้ดูแลของคุณ</div>');
 }
 
 function renderHealth(report) {
@@ -1269,7 +1280,7 @@ async function loadAccount() {
   const seen = new Set();
   const models = catalog.sections.flatMap((section) => section.models)
     .filter((m) => !seen.has(m.id) && seen.add(m.id));
-  $('my-models').innerHTML = modelList(
+  $('my-models').innerHTML = accessNote(catalog.access) + modelList(
     models, 'ยังไม่มีโมเดลที่เปิดให้คุณใช้ · ติดต่อผู้ดูแลของคุณ',
   );
 }

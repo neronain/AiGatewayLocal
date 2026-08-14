@@ -41,6 +41,17 @@ rate_limit_defaults:
   concurrent_requests: 4
 
 # ---------------------------------------------------------------------------
+# Access. Does being in a workspace decide which models you may call?
+#
+# true  - it does. What everyone assumes "add to group" means.
+# false - membership is bookkeeping only, which is what every release before
+#         v1.5 did. Set this while upgrading a gateway that already has keys in
+#         circulation: run scripts/access_change_report.py, see who would lose
+#         access, then switch it on.
+# ---------------------------------------------------------------------------
+membership_grants_models: true
+
+# ---------------------------------------------------------------------------
 # Backend health. Hysteresis prevents a single blip from ejecting an endpoint.
 # ---------------------------------------------------------------------------
 health_check_interval_seconds: 15

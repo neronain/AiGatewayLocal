@@ -358,7 +358,28 @@ async def join(
     )
     await audit(session, request, actor, "workspace.join", "workspace", workspace_id, payload)
     await session.commit()
-    return {"workspace_id": workspace_id, "user_id": user_id, "status": "joined"}
+
+    # Membership now decides which models someone may call, so adding a person
+    # to a workspace with an empty allow-list takes their access away rather
+    # than granting any. Say so here, while whoever did it is still looking.
+    allowed = await session.execute(
+        select(func.count()).select_from(WorkspaceModel).where(
+            WorkspaceModel.workspace_id == workspace_id,
+            WorkspaceModel.enabled.is_(True),
+        )
+    )
+    warning = ""
+    if not int(allowed.scalar() or 0):
+        warning = (
+            "This workspace has no models enabled, so its members can call "
+            "nothing. Set its models before anyone tries to use it."
+        )
+    return {
+        "workspace_id": workspace_id,
+        "user_id": user_id,
+        "status": "joined",
+        "warning": warning,
+    }
 
 
 # ---------------------------------------------------------------------------

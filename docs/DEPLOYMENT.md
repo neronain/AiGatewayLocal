@@ -263,6 +263,41 @@ python scripts/seed.py \
 Keys are printed once. Distribute them over a channel members already trust
 (LMS message, not a shared spreadsheet).
 
+**Being in a workspace is what decides which models someone may call.** The
+rules, in the order they narrow:
+
+| Situation | What they can call |
+|---|---|
+| Key issued *for* a workspace | that workspace's models — the owner's groups do not apply |
+| In one or more workspaces | everything those workspaces allow, added together |
+| In no workspace at all | everything their role can see |
+| A list written on the key | narrowed to that list, on top of the above |
+
+`manager` is scoped like a member, to the workspaces they are in: someone who
+looks after CS101 has no business handing out ART200's models. `admin` is not
+scoped — they run the gateway, and the alternative is adding them to every
+workspace forever.
+
+Two consequences worth knowing before you use it:
+
+* **A workspace with no models allows nothing.** Adding someone to an empty one
+  takes their access away rather than granting any. The join response says so.
+* **In no group means unrestricted, not blocked.** A deployment that has not
+  started using workspaces behaves exactly as it did before.
+
+#### Upgrading a gateway that already has keys in circulation
+
+Turning this on re-permissions keys that are already out there. Before you
+upgrade, ask who it would affect:
+
+```bash
+python scripts/access_change_report.py --db "$GW_DATABASE_URL"
+```
+
+It writes nothing and exits 1 if anyone would lose access. If the answer is not
+"nobody", set `membership_grants_models: false` in `gateway.yaml`, upgrade,
+sort out the workspaces, then switch it on.
+
 ### 2.3 Set quota
 
 ```bash

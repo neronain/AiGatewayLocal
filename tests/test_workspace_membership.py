@@ -105,29 +105,38 @@ def test_removal_leaves_the_key_alone(client):
     assert still["revoked"] is False
 
 
-def test_membership_alone_grants_and_takes_away_nothing(client, writable_config):
-    """สถานะปัจจุบัน: อยู่ในกลุ่มไหนไม่มีผลต่อสิทธิ์เรียกโมเดลเลย
+def test_membership_now_decides_which_models_you_may_call(client, writable_config):
+    """v1.5: อยู่กลุ่มไหน ใช้ได้เท่าที่กลุ่มนั้นเปิดไว้
 
-    เป็นข้อที่ PRD v1.4 ตัวเลือก A จะพลิก — key จะเริ่มสืบสิทธิ์จากกลุ่มของเจ้าของ
-    เทสนี้จึงตรึงพฤติกรรมวันนี้ไว้ก่อน เพื่อให้ตอนเปลี่ยนเห็นชัดว่าเปลี่ยนอะไร ไม่ใช่
-    ค้นพบทีหลังจากผู้ใช้ที่เรียกไม่ได้กลางเทอม
+    ก่อนหน้านี้ membership เป็นแค่บันทึกทางบัญชี — จดว่าใครอยู่วิชาไหนแล้วไม่มีผล
+    อะไรเลย ซึ่งไม่ตรงกับที่ทุกคนเข้าใจตอนกด "เพิ่มเข้ากลุ่ม"
     """
     user = _user(client, "6412008")
     ws = _workspace(client, "CS101")
-    # กลุ่มนี้อนุญาตแค่ coding — ถ้า membership มีผล key ของคนนี้ต้องถูกจำกัดตาม
-    client.put(f"/admin/workspaces/{ws['id']}/models", headers=auth(client.admin_key),
+    client.post(f"/admin/workspaces/{ws['id']}/models", headers=auth(client.admin_key),
                json={"models": ["coding"]})
     client.post(f"/admin/workspaces/{ws['id']}/join", headers=auth(client.admin_key),
                 json={"user_id": user["id"]})
 
-    # key ที่ไม่ผูก workspace — จุดตัดสินอยู่ตรงนี้
+    # key ที่ไม่ผูก workspace — สิทธิ์จึงต้องมาจากกลุ่มของเจ้าของ
     key = client.post("/admin/api-keys", headers=auth(client.admin_key),
                       json={"user_id": user["id"], "name": "laptop"}).json()["api_key"]
 
     catalogue = {m["id"] for m in client.get("/v1/models", headers=auth(key)).json()["data"]}
-    assert catalogue > {"coding"}, (
-        "วันนี้การอยู่ในกลุ่มยังไม่จำกัดอะไร · ถ้าเหลือแค่ 'coding' แปลว่าพฤติกรรมเปลี่ยนแล้ว"
-    )
+    assert catalogue == {"coding"}, "ต้องเหลือเท่าที่กลุ่มเปิดให้"
+
+
+def test_someone_in_no_group_at_all_keeps_everything(client, writable_config):
+    """ไม่มีกลุ่ม = ไม่มีอะไรมาจำกัด · ถ้าตีเป็น "ห้ามหมด" คือล็อกคนออกยกชุด
+
+    ระบบที่ยังไม่เริ่มใช้ workspace เลยต้องทำงานได้เหมือนเดิมทุกอย่าง
+    """
+    user = _user(client, "6412009")
+    key = client.post("/admin/api-keys", headers=auth(client.admin_key),
+                      json={"user_id": user["id"], "name": "laptop"}).json()["api_key"]
+
+    catalogue = {m["id"] for m in client.get("/v1/models", headers=auth(key)).json()["data"]}
+    assert len(catalogue) > 1
 
 
 def test_a_member_cannot_add_themselves_to_a_workspace(client, member_key):

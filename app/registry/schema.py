@@ -336,6 +336,14 @@ class GatewayConfig(BaseModel):
     privacy: PrivacyPolicy = Field(default_factory=PrivacyPolicy)
     quota_defaults: QuotaDefaults = Field(default_factory=QuotaDefaults)
     rate_limit_defaults: RateLimitDefaults = Field(default_factory=RateLimitDefaults)
+    # Whether belonging to a workspace decides which models you may call.
+    #
+    # Off, membership is bookkeeping: it records who is in which class and
+    # grants nothing, which is what every deployment before v1.5 did. Turning it
+    # on re-permissions keys that are already in circulation, so a site with
+    # live keys should run scripts/access_change_report.py first and only then
+    # flip it. New deployments want it on - it is what everyone assumes it does.
+    membership_grants_models: bool = True
     health_check_interval_seconds: int = Field(default=15, ge=5)
     health_check_timeout_seconds: float = Field(default=5.0, ge=0.5)
     unhealthy_threshold: int = Field(default=3, ge=1)

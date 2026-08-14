@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.errors import ErrorCode, GatewayError
-from app.db.models import ApiKey, User, WorkspaceModel, utcnow
+from app.db.models import ApiKey, Membership, User, WorkspaceModel, utcnow
 from app.db.session import get_session
 
 log = logging.getLogger(__name__)
@@ -211,46 +211,124 @@ async def require_manager(principal: Principal = Depends(authenticate)) -> Princ
     return principal
 
 
-async def assert_model_permitted(
-    session: AsyncSession, principal: Principal, alias: str
-) -> None:
-    """Workspace policy gate (PRD §15 step 1).
+@dataclass(frozen=True)
+class Permission:
+    """What this caller may call, and the sentence explaining why.
 
-    Admins and managers bypass. A key bound to a workspace may only use aliases
-    that workspace enables. An unbound member key is allowed any member-visible
-    model - visibility is enforced separately by the registry.
+    `aliases is None` means nothing narrows them - not "nothing is allowed",
+    which is the reading that would lock out every key issued before workspaces
+    were used at all.
     """
-    # รายการบน key เองมาก่อน และมีผลกับทุก role รวมถึง admin
-    #
-    # จงใจไม่ยกเว้น manager/admin ตรงนี้ ต่างจากกติกาของ workspace ข้างล่าง: การ
-    # ยกเว้นที่นั่นคือ "คนที่ดูแลระบบเห็นทุกอย่างได้" ส่วนตรงนี้คือข้อจำกัดที่ผู้ออก key
-    # ตั้งใจใส่ให้ key ใบนั้น — key ที่ออกให้สคริปต์ตัวเดียวควรจำกัดได้จริง ไม่ว่า
-    # เจ้าของจะเป็นใคร ไม่งั้นข้อจำกัดจะหายไปเงียบ ๆ เมื่อเจ้าของถูกเลื่อนเป็น admin
-    if principal.key_models and alias not in principal.key_models:
-        raise GatewayError(
-            ErrorCode.MODEL_NOT_PERMITTED,
-            f"This key can only use: {', '.join(sorted(principal.key_models))}.",
-            details={"model": alias, "allowed": sorted(principal.key_models)},
+
+    aliases: set[str] | None
+    reason: str = ""
+
+    def allows(self, alias: str) -> bool:
+        return self.aliases is None or alias in self.aliases
+
+
+UNRESTRICTED = Permission(aliases=None)
+
+
+async def permitted_aliases(
+    session: AsyncSession, principal: Principal, gateway=None
+) -> Permission:
+    """The one place that decides which models a caller may use.
+
+    Three things can narrow it, and each only ever narrows:
+
+      1. the workspace the key was bound to when it was issued
+      2. otherwise, the workspaces its owner belongs to (union across them)
+      3. the alias list written on the key itself
+
+    Membership was bookkeeping until v1.5 - it recorded who was in which class
+    and granted nothing - so (2) is gated on `membership_grants_models`, and a
+    deployment with keys already in circulation should look at
+    `scripts/access_change_report.py` before switching it on.
+
+    Union, not intersection, in (2): adding somebody to another class must not
+    take access away from them, which is the opposite of what "add to group"
+    means to everyone who says it out loud.
+    """
+    scope: set[str] | None = None
+    reason = ""
+
+    if principal.workspace_id is not None:
+        scope = await _workspace_models(session, [principal.workspace_id])
+        reason = "the workspace this key was issued for"
+    elif not principal.is_admin and (gateway is None or gateway.membership_grants_models):
+        # Managers are scoped like members: someone who looks after CS101 should
+        # not be handing out ART200's models. Admins run the gateway itself and
+        # stay unscoped - the alternative is adding them to every workspace,
+        # which is a chore with no end and no security value.
+        scope = await _models_via_membership(session, principal.user_id)
+        if scope is not None:
+            reason = "the workspaces you belong to"
+
+    # The list on the key applies to everyone, admins included. The workspace
+    # rules above are about who you are; this one is about what the person
+    # issuing the key meant it for - a key made for one script should stay
+    # limited even if its owner is later promoted.
+    if principal.key_models:
+        on_key = set(principal.key_models)
+        scope = on_key if scope is None else scope & on_key
+        reason = (
+            f"{reason}, and the list on this key" if reason else "the model list on this key"
         )
 
-    if principal.is_manager:
-        return
-    if principal.workspace_id is None:
-        return
+    return Permission(aliases=scope, reason=reason)
 
-    result = await session.execute(
-        select(WorkspaceModel).where(
-            WorkspaceModel.workspace_id == principal.workspace_id,
-            WorkspaceModel.model_alias == alias,
+
+async def _models_via_membership(session: AsyncSession, user_id: str) -> set[str] | None:
+    """One join rather than "which groups" followed by "which models".
+
+    This runs on every request that is not workspace-bound, so the difference
+    between one query and two is paid by every call the gateway serves.
+
+    None means the person is in no group at all, which is not the same as being
+    in groups that allow nothing: the first is unrestricted, the second is a
+    deliberate empty allow-list.
+    """
+    rows = await session.execute(
+        select(Membership.workspace_id, WorkspaceModel.model_alias)
+        .outerjoin(
+            WorkspaceModel,
+            (WorkspaceModel.workspace_id == Membership.workspace_id)
+            & (WorkspaceModel.enabled.is_(True)),
+        )
+        .where(Membership.user_id == user_id)
+    )
+    pairs = rows.all()
+    if not pairs:
+        return None
+    return {alias for _, alias in pairs if alias is not None}
+
+
+async def _workspace_models(session: AsyncSession, workspaces: list[str]) -> set[str]:
+    rows = await session.execute(
+        select(WorkspaceModel.model_alias).where(
+            WorkspaceModel.workspace_id.in_(workspaces),
+            WorkspaceModel.enabled.is_(True),
         )
     )
-    row = result.scalar_one_or_none()
-    if row is None or not row.enabled:
-        raise GatewayError(
-            ErrorCode.MODEL_NOT_PERMITTED,
-            f"Model '{alias}' is not enabled for your workspace.",
-            details={"model": alias},
-        )
+    return {row[0] for row in rows}
+
+
+async def assert_model_permitted(
+    session: AsyncSession, principal: Principal, alias: str, gateway=None
+) -> None:
+    """Workspace policy gate (PRD §15 step 1)."""
+    permission = await permitted_aliases(session, principal, gateway)
+    if permission.allows(alias):
+        return
+
+    allowed = sorted(permission.aliases or [])
+    raise GatewayError(
+        ErrorCode.MODEL_NOT_PERMITTED,
+        f"'{alias}' is not available to you. Allowed by {permission.reason}: "
+        + (", ".join(allowed) if allowed else "nothing yet — ask your manager."),
+        details={"model": alias, "allowed": allowed, "reason": permission.reason},
+    )
 
 
 def _aware(value: datetime) -> datetime:

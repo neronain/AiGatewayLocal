@@ -69,7 +69,9 @@ async def messages(
         raise GatewayError(ErrorCode.INVALID_REQUEST, "'model' is required.", param="model")
 
     model = _resolve_model(state, alias, principal)
-    await assert_model_permitted(session, principal, alias)
+    await assert_model_permitted(
+        session, principal, alias, state.registry.snapshot.gateway
+    )
 
     # The alias must have the Anthropic surface enabled. Whether that surface is
     # served natively or by translation is a backend detail decided below.

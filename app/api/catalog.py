@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import Principal, authenticate
+from app.core.auth import Principal, authenticate, permitted_aliases
 from app.core.capability import compatibility_badges
 from app.db.session import get_session
 from app.registry.schema import ModelDefinition, Purpose
@@ -61,11 +61,21 @@ def _member_entry(model: ModelDefinition) -> dict[str, Any]:
 async def catalog(
     principal: Principal = Depends(authenticate),
     state: AppState = Depends(get_state),
+    session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    grouped = state.registry.snapshot.by_purpose(principal.role)
+    """What this person can actually call, grouped for browsing.
+
+    Filtered by the same rule that gates the call, and it says which rule: a
+    catalogue that has quietly shrunk reads as models having disappeared, and
+    the first guess is that the gateway is broken rather than that someone was
+    added to a class.
+    """
+    snapshot = state.registry.snapshot
+    permission = await permitted_aliases(session, principal, snapshot.gateway)
+    grouped = snapshot.by_purpose(principal.role)
     sections = []
     for purpose, label in _PURPOSE_LABELS.items():
-        models = grouped.get(purpose, [])
+        models = [m for m in grouped.get(purpose, []) if permission.allows(m.alias)]
         if not models:
             continue
         sections.append(
@@ -78,6 +88,10 @@ async def catalog(
     return {
         "user": {"display_name": principal.display_name, "role": principal.role},
         "sections": sections,
+        "access": {
+            "restricted": permission.aliases is not None,
+            "reason": permission.reason,
+        },
     }
 
 
