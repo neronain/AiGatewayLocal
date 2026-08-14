@@ -227,4 +227,14 @@ def test_the_console_only_draws_the_button_for_an_admin():
     from pathlib import Path
 
     page = (Path(__file__).resolve().parents[1] / "app/static/app.js").read_text()
-    assert "k.revealable && myRole === 'admin'" in page
+    block = page[page.index("data-reveal=") - 400:page.index("data-reveal=") + 200]
+    assert "myRole" in block and "admin" in block, "ปุ่มต้องขึ้นกับบทบาท"
+    assert "k.revealable" in block, "และขึ้นกับว่าใบนั้นเปิดดูได้จริงไหม"
+
+
+def test_a_key_that_cannot_be_revealed_says_so():
+    """ไม่มีปุ่มโดยไม่บอกอะไร = ผู้ดูแลหาฟีเจอร์ไม่เจอแล้วคิดว่าไม่มี (เกิดจริง)"""
+    from pathlib import Path
+
+    page = (Path(__file__).resolve().parents[1] / "app/static/app.js").read_text()
+    assert "ดูไม่ได้" in page
