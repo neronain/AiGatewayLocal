@@ -278,7 +278,7 @@ network at the proxy (SEC-5).
 | POST | `/admin/api-keys` | manager | Issue a key (**plaintext returned once**) |
 | GET | `/admin/api-keys?user_id=` | manager | List keys (prefix only) |
 | DELETE | `/admin/api-keys/{id}` | manager | Revoke |
-| POST | `/admin/quota-policies` | admin | Create a policy |
+| POST | `/admin/quota-policies` | admin | Create a policy — window limits plus `max_requests_per_minute` / `max_tokens_per_minute` |
 | GET | `/admin/quota-policies` | manager | List policies |
 | GET | `/admin/models` | admin | Registry incl. upstream names, endpoints, health |
 | PATCH | `/admin/models/{alias}/enabled` | admin | Take an alias or one endpoint out of service |

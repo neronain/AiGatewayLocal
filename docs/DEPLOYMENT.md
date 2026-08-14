@@ -345,6 +345,30 @@ curl -s -X POST $GW/admin/quota-policies -H "Authorization: Bearer $ADMIN_KEY" \
        "max_output_tokens":200000,"max_images":50}'
 ```
 
+### 2.3b Stop a burst, not just a spree
+
+A daily quota stops somebody spending a term's worth in a week. It does nothing
+about a class of forty pressing send in the same minute — the machines queue and
+the last person waits minutes for a first token, while their own daily figure is
+barely touched.
+
+```bash
+curl -s -X POST $GW/admin/quota-policies -H "Authorization: Bearer $ADMIN_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"scope":"workspace","workspace_id":"<id>","window":"day",
+       "max_requests":300,
+       "max_requests_per_minute":6,"max_tokens_per_minute":40000}'
+```
+
+Counted **per person**, not per key: ten tabs is still one person, and counting
+per key would make issuing yourself another one a way to get more. `0` means
+unlimited and is the default — a rate limit nobody chose is one that refuses
+somebody mid-lesson for a reason nobody can explain.
+
+The burst is checked before the window, so when both are over the reply is the
+useful one: `It clears in 32 seconds`, with `Retry-After` to match, rather than
+telling them to come back tomorrow.
+
 ### 2.4 Certify each model
 
 ```bash

@@ -107,6 +107,7 @@ async def messages(
         endpoint=endpoint,
         profile=profile,
         limits_window=limits.window,
+        rate_limited=limits.rate_limited,
         request_id=request_id,
         started=started,
         client_agent=request.headers.get("user-agent", "")[:128],

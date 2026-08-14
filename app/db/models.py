@@ -264,6 +264,11 @@ class QuotaPolicy(Base, TimestampMixin):
     max_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     max_output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     max_images: Mapped[int] = mapped_column(Integer, default=0)
+    # Burst control, per minute, counted per person. Separate from the window
+    # limits above because they answer different questions: how much may you use
+    # this term, and how fast may you use it right now.
+    max_requests_per_minute: Mapped[int] = mapped_column(Integer, default=0)
+    max_tokens_per_minute: Mapped[int] = mapped_column(Integer, default=0)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
 

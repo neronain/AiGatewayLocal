@@ -69,6 +69,15 @@ class ResolvedLimits:
     max_output_tokens: int
     max_images: int
     source: str  # user | workspace | global | default
+    # Burst control, counted per minute rather than per window. 0 is unlimited,
+    # which is the default: a rate limit nobody chose is a rate limit that will
+    # refuse somebody mid-lesson for a reason nobody can explain.
+    max_requests_per_minute: int = 0
+    max_tokens_per_minute: int = 0
+
+    @property
+    def rate_limited(self) -> bool:
+        return bool(self.max_requests_per_minute or self.max_tokens_per_minute)
 
 
 # Months a "term" starts on. The default is a Thai academic year, because that
@@ -102,6 +111,13 @@ def window_bounds(
     term_start_months: tuple[int, ...] | None = None,
 ) -> tuple[datetime, datetime]:
     now = now or datetime.now(UTC)
+    # A per-minute window rides the same counters as the daily one. A day's
+    # quota stops somebody using a term's worth in a week; it does nothing about
+    # forty people pressing send at the start of a class, which is the shape of
+    # the load this actually gets.
+    if window == "minute":
+        start = now.replace(second=0, microsecond=0)
+        return start, start + timedelta(minutes=1)
     if window == "month":
         start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         last_day = monthrange(now.year, now.month)[1]
@@ -376,38 +392,66 @@ class QuotaService:
             max_output_tokens=best.max_output_tokens,
             max_images=best.max_images,
             source=best.scope,
+            max_requests_per_minute=best.max_requests_per_minute or 0,
+            max_tokens_per_minute=best.max_tokens_per_minute or 0,
         )
 
     async def check(self, user_id: str, limits: ResolvedLimits) -> Consumption:
         key = self.subject_key(user_id)
         used = await self._store.get(key, limits.window)
 
-        def exceeded(name: str, used_value: int, limit: int) -> None:
-            if limit and used_value >= limit:
-                raise GatewayError(
-                    ErrorCode.QUOTA_EXCEEDED,
-                    f"Your {limits.window} {name} quota is exhausted "
-                    f"({used_value:,} of {limit:,}). It resets at the start of the "
-                    f"next {limits.window}.",
-                    retry_after=_seconds_to_reset(limits.window),
-                    details={
-                        "quota": name,
-                        "used": used_value,
-                        "limit": limit,
-                        "window": limits.window,
-                        "resets_at": window_bounds(limits.window)[1].isoformat(),
-                    },
-                )
+        def exceeded(name: str, used_value: int, limit: int, window: str) -> None:
+            if not limit or used_value < limit:
+                return
+            wait = _seconds_to_reset(window)
+            when = (
+                f"It clears in {wait} second{'s' if wait != 1 else ''}."
+                if window == "minute"
+                else f"It resets at the start of the next {window}."
+            )
+            raise GatewayError(
+                ErrorCode.QUOTA_EXCEEDED,
+                f"Your {window} {name} quota is exhausted "
+                f"({used_value:,} of {limit:,}). {when}",
+                retry_after=wait,
+                details={
+                    "quota": name,
+                    "used": used_value,
+                    "limit": limit,
+                    "window": window,
+                    "resets_at": window_bounds(window)[1].isoformat(),
+                },
+            )
 
-        exceeded("request", used.requests, limits.max_requests)
-        exceeded("input token", used.input_tokens, limits.max_input_tokens)
-        exceeded("output token", used.output_tokens, limits.max_output_tokens)
-        exceeded("image", used.images, limits.max_images)
+        # The burst check comes first. Both can be over at once, and being told
+        # to wait forty seconds is a more useful answer than being told to come
+        # back tomorrow when the daily figure was not the binding one.
+        if limits.rate_limited:
+            per_minute = await self._store.get(key, "minute")
+            exceeded("request", per_minute.requests, limits.max_requests_per_minute, "minute")
+            exceeded(
+                "token",
+                per_minute.input_tokens + per_minute.output_tokens,
+                limits.max_tokens_per_minute,
+                "minute",
+            )
+
+        exceeded("request", used.requests, limits.max_requests, limits.window)
+        exceeded("input token", used.input_tokens, limits.max_input_tokens, limits.window)
+        exceeded("output token", used.output_tokens, limits.max_output_tokens, limits.window)
+        exceeded("image", used.images, limits.max_images, limits.window)
         return used
 
-    async def record(self, user_id: str, window: str, delta: Consumption) -> None:
+    async def record(
+        self, user_id: str, window: str, delta: Consumption, *, rate_limited: bool = False
+    ) -> None:
         try:
-            await self._store.increment(self.subject_key(user_id), window, delta)
+            key = self.subject_key(user_id)
+            await self._store.increment(key, window, delta)
+            # Only when a rate limit is actually set: otherwise every deployment
+            # that never wanted one would pay for a second counter per request.
+            if rate_limited:
+                await self._store.increment(key, "minute", delta)
         except Exception:
             # Never fail a completed request because bookkeeping failed.
             log.exception("failed to record quota consumption for user %s", user_id)

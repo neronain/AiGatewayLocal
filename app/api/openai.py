@@ -172,6 +172,7 @@ async def run_chat(
         endpoint=endpoint,
         profile=profile,
         limits_window=limits.window,
+        rate_limited=limits.rate_limited,
         request_id=request_id,
         started=started,
         client_agent=client_agent,
@@ -196,6 +197,7 @@ class _RequestContext:
         endpoint: Endpoint,
         profile: RequestProfile,
         limits_window: str,
+        rate_limited: bool,
         request_id: str,
         started: float,
         client_agent: str,
@@ -207,6 +209,7 @@ class _RequestContext:
         self.endpoint = endpoint
         self.profile = profile
         self.limits_window = limits_window
+        self.rate_limited = rate_limited
         self.request_id = request_id
         self.started = started
         self.client_agent = client_agent
@@ -272,7 +275,8 @@ class _RequestContext:
         await self.state.quota.record(
             self.principal.user_id,
             self.limits_window,
-            Consumption(
+            rate_limited=self.rate_limited,
+            delta=Consumption(
                 requests=1,
                 text_input_tokens=usage.text_input_tokens,
                 visual_input_tokens=usage.visual_input_tokens,

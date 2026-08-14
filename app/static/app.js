@@ -1343,7 +1343,8 @@ async function loadQuota() {
   $('quota-table').innerHTML = `
     <tr><th>Scope</th><th>Applies to</th><th>Model</th><th>Window</th>
         <th class="num">Requests</th><th class="num">Input</th>
-        <th class="num">Output</th><th class="num">Images</th><th></th></tr>
+        <th class="num">Output</th><th class="num">Images</th>
+        <th class="num">Per minute</th><th></th></tr>
     ${policies.data.map((p) => `<tr>
       <td><span class="pill mute">${esc(p.scope)}</span></td>
       <td>${esc(users[p.user_id] || workspaces[p.workspace_id] || 'everyone')}</td>
@@ -1351,6 +1352,10 @@ async function loadQuota() {
       <td>${esc(p.window)}</td>
       <td class="num">${lim(p.max_requests)}</td><td class="num">${lim(p.max_input_tokens)}</td>
       <td class="num">${lim(p.max_output_tokens)}</td><td class="num">${lim(p.max_images)}</td>
+      <td class="num">${p.max_requests_per_minute || p.max_tokens_per_minute
+        ? `${lim(p.max_requests_per_minute)} req<div class="hint">${
+            lim(p.max_tokens_per_minute)} tok</div>`
+        : '<span class="hint">ไม่จำกัด</span>'}</td>
       <td><button class="danger small" data-del-policy="${esc(p.id)}">Delete</button></td>
     </tr>`).join('') || '<tr><td class="empty">No policies — the gateway.yaml defaults apply.</td></tr>'}`;
 
@@ -1389,6 +1394,8 @@ $('create-quota').onclick = async () => {
       max_input_tokens: Number($('q-in').value) || 0,
       max_output_tokens: Number($('q-outt').value) || 0,
       max_images: Number($('q-img').value) || 0,
+      max_requests_per_minute: Number($('q-rpm').value) || 0,
+      max_tokens_per_minute: Number($('q-tpm').value) || 0,
     });
     await loadQuota();
   } catch (e) { showError(e.message); }

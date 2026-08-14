@@ -978,6 +978,9 @@ class QuotaPolicyIn(BaseModel):
     max_input_tokens: int = 0
     max_output_tokens: int = 0
     max_images: int = 0
+    # ลิมิตต่อนาที นับต่อคน · 0 = ไม่จำกัด ซึ่งเป็นค่าตั้งต้น
+    max_requests_per_minute: int = 0
+    max_tokens_per_minute: int = 0
 
 
 @router.post("/quota-policies", status_code=201)
@@ -1025,6 +1028,8 @@ async def list_quota_policies(
                 "max_input_tokens": p.max_input_tokens,
                 "max_output_tokens": p.max_output_tokens,
                 "max_images": p.max_images,
+                "max_requests_per_minute": p.max_requests_per_minute,
+                "max_tokens_per_minute": p.max_tokens_per_minute,
             }
             for p in result.scalars()
         ]

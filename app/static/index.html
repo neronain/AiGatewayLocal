@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.12.0">
+<link rel="stylesheet" href="style.css?v=1.13.0">
 </head>
 <body>
 
@@ -477,6 +477,20 @@
         <div class="field"><label for="q-outt">Max output tokens</label><input id="q-outt" type="number" value="500000"></div>
         <div class="field"><label for="q-img">Max images</label><input id="q-img" type="number" value="100"></div>
       </div>
+      <div class="row">
+        <div class="field">
+          <label for="q-rpm">Requests per minute</label>
+          <input id="q-rpm" type="number" value="0" min="0">
+        </div>
+        <div class="field">
+          <label for="q-tpm">Tokens per minute</label>
+          <input id="q-tpm" type="number" value="0" min="0">
+        </div>
+      </div>
+      <p class="hint" style="margin:-4px 0 12px">
+        โควตาข้างบนกันการใช้เกินระยะยาว · สองช่องนี้กัน burst — ห้องเรียนกดพร้อมกันตอนต้นคาบ ·
+        นับ<strong>ต่อคน</strong>ไม่ใช่ต่อ key · <strong>0 = ไม่จำกัด</strong> ซึ่งเป็นค่าตั้งต้น
+      </p>
       <button id="create-quota" class="primary">Add policy</button>
     </div>
 
@@ -580,6 +594,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.12.0"></script>
+<script src="app.js?v=1.13.0"></script>
 </body>
 </html>
