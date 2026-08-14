@@ -89,28 +89,93 @@ header {
   backdrop-filter: saturate(180%) blur(12px);
   border-bottom: 1px solid var(--line);
 }
-.bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-h1 {
-  font: 600 0.9375rem/1 var(--mono); letter-spacing: .14em; margin: 0;
-  padding-right: 14px; border-right: 1px solid var(--line2);
-  background: var(--g-mix); -webkit-background-clip: text; background-clip: text;
-  color: transparent; white-space: nowrap;
-}
+.bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .sub { color: var(--fg2); font-size: 0.8125rem; }
 .spacer { flex: 1; }
 
-nav { display: flex; gap: 2px; margin-top: 10px; flex-wrap: wrap; }
+/* ── brand ──────────────────────────────────────────────────────────── */
+.brand {
+  display: flex; align-items: center; gap: 10px;
+  text-decoration: none; color: inherit; padding-right: 14px;
+  border-right: 1px solid var(--line);
+}
+.brand-mark {
+  display: grid; place-items: center; width: 34px; height: 34px;
+  border-radius: 9px; background: var(--g-mix); color: #fff;
+  box-shadow: var(--shadow);
+}
+.brand-text { display: grid; gap: 1px; line-height: 1.15; }
+.brand-text strong { font-size: 0.9375rem; letter-spacing: -.01em; }
+.brand-text span { font-size: 0.6875rem; color: var(--fg3); letter-spacing: .06em; }
+
+/* ── what the fleet is doing, in the frame ──────────────────────────── */
+.status {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 11px; border-radius: 999px; font-size: 0.75rem;
+  color: var(--fg2); background: var(--card); border: 1px solid var(--line);
+  white-space: nowrap;
+}
+.status-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none;
+}
+.status.warn .status-dot { background: var(--warn); }
+.status.err .status-dot { background: var(--bad); }
+
+/* ── who is signed in ───────────────────────────────────────────────── */
+.who { display: flex; align-items: center; gap: 9px; }
+.who-avatar {
+  display: grid; place-items: center; width: 30px; height: 30px; flex: none;
+  border-radius: 50%; background: var(--accent-bg); color: var(--accent);
+  font-size: 0.6875rem; font-weight: 600; letter-spacing: .02em;
+}
+.who-text { display: grid; gap: 1px; line-height: 1.2; }
+.who-text strong { font-size: 0.8125rem; }
+.who-text span {
+  font-size: 0.6562rem; color: var(--fg3);
+  text-transform: uppercase; letter-spacing: .07em;
+}
+
+/* Square, quiet, and captioned by their tooltip. Three word-buttons of equal
+   weight next to the title made the header read as a form. */
+.icon-btn {
+  display: grid; place-items: center; width: 34px; height: 34px; padding: 0;
+  color: var(--fg2); border-radius: 9px;
+}
+.icon-btn:hover:not(:disabled) { color: var(--fg); }
+
+/* ── tabs ───────────────────────────────────────────────────────────── */
+nav {
+  display: flex; gap: 2px; margin-top: 12px; flex-wrap: wrap;
+  padding: 3px; border-radius: 11px; background: var(--sunken);
+  border: 1px solid var(--line); width: fit-content; max-width: 100%;
+}
 /* A display rule on the element beats the browser's [hidden] rule, so an
    element styled with display must opt back out explicitly. Without this the
    nav stays on screen for someone who is not signed in. */
 [hidden] { display: none !important; }
 nav button {
-  background: none; border: none; border-bottom: 2px solid transparent;
-  color: var(--fg2); padding: 8px 14px; font: 500 0.8438rem/1 var(--sans);
-  cursor: pointer; border-radius: 0;
+  display: inline-flex; align-items: center; gap: 7px;
+  background: none; border: 1px solid transparent; color: var(--fg2);
+  padding: 7px 13px; font: 500 0.8438rem/1 var(--sans);
+  cursor: pointer; border-radius: 8px;
 }
-nav button:hover { color: var(--fg); background: none; border-color: var(--line2); }
-nav button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--c2); }
+nav button svg { opacity: .75; }
+nav button:hover { color: var(--fg); background: var(--card); border-color: transparent; }
+/* Raised rather than underlined: the selected tab should look like the surface
+   the page below it is drawn on, which is what makes the grouping read. */
+nav button[aria-selected="true"] {
+  color: var(--fg); background: var(--card);
+  border-color: var(--line); box-shadow: var(--shadow);
+}
+nav button[aria-selected="true"] svg { opacity: 1; color: var(--c2); }
+
+/* Below this the labels stop fitting; the icons carry it, and each button
+   keeps its aria-label. */
+@media (max-width: 720px) {
+  nav button span:not([data-icon]) { display: none; }
+  .brand { border-right: 0; padding-right: 0; }
+  .who-text, .status { display: none; }
+}
 
 main { max-width: 1180px; margin: 0 auto; padding: 18px 0 0; }
 section[hidden] { display: none; }
@@ -481,10 +546,6 @@ nav button[aria-selected="true"] .ti { opacity: 1; }
    people navigate by once they know the console, and unlike the words it is
    the same in every language this gets deployed into. */
 h2 .hi, h3 .hi {
-  font-style: normal; margin-right: 7px; opacity: .8;
-  /* Headings are uppercase with wide tracking, which shrinks a glyph visually.
-     Sized up to compensate, and the tracking removed so the icon sits against
-     the word rather than drifting away from it. */
-  font-size: 1.05em; letter-spacing: 0; color: var(--c2);
-  font-variant-emoji: text;
+  display: inline-grid; place-items: center; vertical-align: -3px;
+  margin-right: 7px; color: var(--c2);
 }

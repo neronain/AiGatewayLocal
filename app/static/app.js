@@ -154,12 +154,60 @@ const ICONS = {
   chat: '<path d="M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6.4A8 8 0 1 1 21 12z"/>',
   chevron: '<path d="M6 9l6 6 6-6"/>',
   copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
+
+  // The mark: many clients on the left, many machines on the right, one door
+  // between them. That is the whole product in one glyph.
+  gateway: '<path d="M4 7h4M4 12h4M4 17h4M16 7h4M16 12h4M16 17h4"/>'
+         + '<rect x="9" y="4" width="6" height="16" rx="2"/><path d="M12 9v6"/>',
+
+  dashboard: '<rect x="3" y="3" width="7" height="9" rx="1.5"/>'
+           + '<rect x="14" y="3" width="7" height="5" rx="1.5"/>'
+           + '<rect x="14" y="12" width="7" height="9" rx="1.5"/>'
+           + '<rect x="3" y="16" width="7" height="5" rx="1.5"/>',
+  account: '<circle cx="12" cy="8" r="3.5"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/>',
+  models: '<path d="M12 3l8 4.5-8 4.5-8-4.5z"/><path d="M4 12l8 4.5 8-4.5"/>'
+        + '<path d="M4 16.5L12 21l8-4.5"/>',
+  assistant: '<path d="M12 3l1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6z"/>'
+           + '<path d="M18 15l.8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8z"/>',
+  keys: '<circle cx="8" cy="12" r="4"/><path d="M12 12h9M18 12v3.5M15.5 12v2.5"/>',
+  quota: '<path d="M12 20a8 8 0 1 1 8-8"/><path d="M12 12l4.5-3"/>',
+  refresh: '<path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v5h-5"/>',
+  theme: '<circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2'
+       + 'M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/>',
+  signout: '<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/>'
+         + '<path d="M10 8l-4 4 4 4M6 12h9"/>',
+
+  // Section headings. Same set as the nav, so a heading and the tab that leads
+  // to it are drawn the same way.
+  health: '<path d="M3 12h4l2.5-6 4 12L16 12h5"/>',
+  usage: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  people: '<circle cx="9" cy="8" r="3.2"/><path d="M2.5 19a6.5 6.5 0 0 1 13 0"/>'
+        + '<path d="M16 5.5a3.2 3.2 0 0 1 0 5M18 19a6.6 6.6 0 0 0-1.6-4.3"/>',
+  workspace: '<path d="M3 9.5L12 4l9 5.5V20a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/>'
+           + '<path d="M9 21v-6h6v6"/>',
+  backends: '<rect x="3" y="4" width="18" height="6" rx="1.5"/>'
+          + '<rect x="3" y="14" width="18" height="6" rx="1.5"/>'
+          + '<path d="M7 7h.01M7 17h.01"/>',
+  capabilities: '<path d="M12 3l2.4 5.6L20 11l-5.6 2.4L12 19l-2.4-5.6L4 11l5.6-2.4z"/>',
+  suitability: '<path d="M20 6L9 17l-5-5"/>',
+  deploy: '<circle cx="12" cy="12" r="3"/>'
+        + '<path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1'
+        + 'M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/>',
+  trending: '<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
 };
 
 const icon = (name, size = 20) =>
   `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor"
         stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
         aria-hidden="true">${ICONS[name] || ICONS.chat}</svg>`;
+
+// Markup carries `data-icon="name"` and the drawing is filled in here, so the
+// set stays in one place instead of being pasted into the HTML as well.
+function paintIcons(root = document) {
+  for (const slot of root.querySelectorAll('[data-icon]')) {
+    slot.innerHTML = icon(slot.dataset.icon, Number(slot.dataset.iconSize) || 18);
+  }
+}
 
 // What a model is *for*, in one glyph. Read from what it can do rather than
 // from its name, so a model added later gets the right icon without an edit.
@@ -1317,6 +1365,9 @@ function showSignIn(needsSetup) {
   $('tab-signin').hidden = false;
   document.querySelector('#tabs').hidden = true;
   $('signout').hidden = true;
+  $('whoami').hidden = false;
+  $('whoami-chip').hidden = true;
+  $('fleet').hidden = true;
   $('whoami').textContent = needsSetup ? 'first-run setup' : 'not signed in';
   $('chat-open').hidden = true;
   $('chat').hidden = true;
@@ -1580,16 +1631,53 @@ async function load() {
   showError('');
   const me = await api('/v1/me');
   state.me = me;
-  $('whoami').textContent = `${me.display_name || me.external_id} · ${me.role}`;
+  showWho(me);
   $('signout').hidden = false;
   applyRole(me.role);
   await initAssistant();
   renderQuota(me);
-  renderCatalog(await api('/v1/catalog'));
-  if (me.role === 'admin') renderHealth((await api('/v1/health/endpoints')).data);
+  const catalog = await api('/v1/catalog');
+  renderCatalog(catalog);
+  const models = catalog.sections.flatMap((s) => s.models);
+  let health = null;
+  if (me.role === 'admin') {
+    health = (await api('/v1/health/endpoints')).data;
+    renderHealth(health);
+  }
+  showFleet(new Set(models.map((m) => m.id)).size, health);
   if (me.role === 'admin' || me.role === 'manager') {
     renderUsage(await api('/admin/usage/summary?days=7'));
   }
+}
+
+function showWho(me) {
+  const name = me.display_name || me.external_id;
+  $('whoami').hidden = true;
+  $('whoami-chip').hidden = false;
+  $('whoami-initials').textContent = name.trim().slice(0, 2).toUpperCase();
+  $('whoami-name').textContent = name;
+  $('whoami-role').textContent = me.role;
+}
+
+// A gateway console should say what the fleet is doing in the frame, not only
+// on whichever page happens to be open. Members see how many models they can
+// reach; admins also see how many machines are answering, because that is the
+// number they came to look at.
+function showFleet(modelCount, health) {
+  const chip = $('fleet');
+  if (!modelCount && !health) { chip.hidden = true; return; }
+
+  let dot = 'ok';
+  let backends = '';
+  if (health) {
+    const rows = Object.values(health);
+    const up = rows.filter((r) => r.healthy).length;
+    backends = ` · ${up}/${rows.length} backends`;
+    dot = up === rows.length ? 'ok' : up ? 'warn' : 'err';
+  }
+  chip.hidden = false;
+  chip.className = `status ${dot}`;
+  chip.innerHTML = `<span class="status-dot"></span>${modelCount} models${esc(backends)}`;
 }
 
 $('refresh').onclick = () => {
@@ -1600,6 +1688,7 @@ $('refresh').onclick = () => {
 };
 
 (async function boot() {
+  paintIcons();
   let status;
   try {
     status = await api('/auth/status');
