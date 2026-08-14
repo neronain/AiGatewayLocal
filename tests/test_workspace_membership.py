@@ -105,6 +105,31 @@ def test_removal_leaves_the_key_alone(client):
     assert still["revoked"] is False
 
 
+def test_membership_alone_grants_and_takes_away_nothing(client, writable_config):
+    """สถานะปัจจุบัน: อยู่ในกลุ่มไหนไม่มีผลต่อสิทธิ์เรียกโมเดลเลย
+
+    เป็นข้อที่ PRD v1.4 ตัวเลือก A จะพลิก — key จะเริ่มสืบสิทธิ์จากกลุ่มของเจ้าของ
+    เทสนี้จึงตรึงพฤติกรรมวันนี้ไว้ก่อน เพื่อให้ตอนเปลี่ยนเห็นชัดว่าเปลี่ยนอะไร ไม่ใช่
+    ค้นพบทีหลังจากผู้ใช้ที่เรียกไม่ได้กลางเทอม
+    """
+    user = _user(client, "6412008")
+    ws = _workspace(client, "CS101")
+    # กลุ่มนี้อนุญาตแค่ coding — ถ้า membership มีผล key ของคนนี้ต้องถูกจำกัดตาม
+    client.put(f"/admin/workspaces/{ws['id']}/models", headers=auth(client.admin_key),
+               json={"models": ["coding"]})
+    client.post(f"/admin/workspaces/{ws['id']}/join", headers=auth(client.admin_key),
+                json={"user_id": user["id"]})
+
+    # key ที่ไม่ผูก workspace — จุดตัดสินอยู่ตรงนี้
+    key = client.post("/admin/api-keys", headers=auth(client.admin_key),
+                      json={"user_id": user["id"], "name": "laptop"}).json()["api_key"]
+
+    catalogue = {m["id"] for m in client.get("/v1/models", headers=auth(key)).json()["data"]}
+    assert catalogue > {"coding"}, (
+        "วันนี้การอยู่ในกลุ่มยังไม่จำกัดอะไร · ถ้าเหลือแค่ 'coding' แปลว่าพฤติกรรมเปลี่ยนแล้ว"
+    )
+
+
 def test_a_member_cannot_add_themselves_to_a_workspace(client, member_key):
     user = _user(client, "6412007")
     ws = _workspace(client, "CS101")
