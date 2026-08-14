@@ -278,6 +278,15 @@ looks after CS101 has no business handing out ART200's models. `admin` is not
 scoped — they run the gateway, and the alternative is adding them to every
 workspace forever.
 
+**A manager's admin powers are scoped the same way.** They see the people, keys
+and usage of their own workspaces, and can add members, set models and issue
+keys only there — and only naming models they can use themselves, or enabling a
+model for your own class would be a way of granting it to yourself.
+
+A manager who is in no workspace manages nothing, which is the opposite default
+from model access and deliberate: promoting somebody should not quietly hand
+them the whole institution. Put them in their classes and they can work.
+
 Two consequences worth knowing before you use it:
 
 * **A workspace with no models allows nothing.** Adding someone to an empty one

@@ -279,6 +279,42 @@ async def permitted_aliases(
     return Permission(aliases=scope, reason=reason)
 
 
+async def managed_workspaces(
+    session: AsyncSession, principal: Principal
+) -> set[str] | None:
+    """The workspaces this person administers. `None` means all of them.
+
+    A manager manages the classes they are in and nothing else: someone who
+    looks after CS101 has no business reading ART200's usage or issuing its
+    keys. Admins run the gateway and are not scoped.
+
+    Note the default runs the other way from `permitted_aliases`: a manager in
+    no workspace manages nothing, where a member in no workspace may call
+    everything. The reason is different in each case. Model access defaults open
+    so that a deployment which never adopted workspaces keeps working; there is
+    no equivalent history on the admin plane, and defaulting it open would mean
+    that promoting somebody to manager silently hands them the whole institution.
+    """
+    if principal.is_admin:
+        return None
+    rows = await session.execute(
+        select(Membership.workspace_id).where(Membership.user_id == principal.user_id)
+    )
+    return {row[0] for row in rows}
+
+
+async def users_in_workspaces(
+    session: AsyncSession, workspaces: set[str]
+) -> set[str]:
+    """Everyone in any of these workspaces."""
+    if not workspaces:
+        return set()
+    rows = await session.execute(
+        select(Membership.user_id).where(Membership.workspace_id.in_(workspaces))
+    )
+    return {row[0] for row in rows}
+
+
 async def _models_via_membership(session: AsyncSession, user_id: str) -> set[str] | None:
     """One join rather than "which groups" followed by "which models".
 

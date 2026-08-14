@@ -114,13 +114,22 @@ def test_stepping_down_works_once_somebody_else_is_admin(client):
     users = client.get("/admin/users", headers=auth(client.admin_key)).json()["data"]
     first = next(u for u in users if u["role"] == "admin")
     second = _make(client, "second-admin", "admin")
+    # key ของ admin คนใหม่ · ต้องออกก่อนที่คนแรกจะลดตัวเอง เพราะหลังจากนั้น key
+    # เดิมกลายเป็นของ manager ซึ่งเห็นเฉพาะคนในกลุ่มตัวเอง
+    successor = client.post(
+        "/admin/api-keys", headers=auth(client.admin_key),
+        json={"user_id": second["id"], "name": "successor"},
+    ).json()["api_key"]
 
     response = client.patch(
         f"/admin/users/{first['id']}", headers=auth(client.admin_key), json={"role": "manager"}
     )
     assert response.status_code == 200
-    assert _role_of(client, first["id"]) == "manager"
-    assert _role_of(client, second["id"]) == "admin"
+
+    listed = client.get("/admin/users", headers=auth(successor)).json()["data"]
+    roles = {u["id"]: u["role"] for u in listed}
+    assert roles[first["id"]] == "manager"
+    assert roles[second["id"]] == "admin"
 
 
 def test_a_member_cannot_promote_themselves(client, member_key):

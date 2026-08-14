@@ -19,8 +19,11 @@ from app.core.auth import (
     Principal,
     extract_bearer_token,
     generate_api_key,
+    managed_workspaces,
+    permitted_aliases,
     require_admin,
     require_manager,
+    users_in_workspaces,
 )
 from app.core.capability import compatibility_badges, upstream_model_for
 from app.core.errors import ErrorCode, GatewayError
@@ -67,6 +70,72 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 # narrow as it can be while still covering every real name.
 _PARSER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 TOKEN_KEY_SETTING = lmds.TOKEN_KEY
+
+
+# ---------------------------------------------------------------------------
+# Manager scope
+# ---------------------------------------------------------------------------
+# A manager administers the workspaces they belong to. Every route below that
+# a manager can reach narrows to those; an admin passes through untouched.
+async def _scope(session: AsyncSession, actor: Principal) -> set[str] | None:
+    """Workspaces this actor may act on, or None for "all of them"."""
+    return await managed_workspaces(session, actor)
+
+
+async def _assert_owns(session: AsyncSession, actor: Principal, workspace_id: str) -> None:
+    scope = await _scope(session, actor)
+    if scope is None or workspace_id in scope:
+        return
+    raise GatewayError(
+        ErrorCode.INSUFFICIENT_SCOPE,
+        "You can only manage workspaces you belong to. Ask an administrator to "
+        "add you to this one."
+        if scope
+        else "You are not in any workspace yet, so there is nothing to manage. "
+        "An administrator can add you to one.",
+    )
+
+
+async def _assert_may_grant(
+    session: AsyncSession, actor: Principal, aliases: list[str], state: AppState
+) -> None:
+    """Nobody hands out access they do not have."""
+    if actor.is_admin or not aliases:
+        return
+    permission = await permitted_aliases(
+        session, actor, state.registry.snapshot.gateway
+    )
+    beyond = sorted(a for a in aliases if not permission.allows(a))
+    if beyond:
+        raise GatewayError(
+            ErrorCode.INSUFFICIENT_SCOPE,
+            f"You cannot grant models you cannot use yourself: {', '.join(beyond)}.",
+            details={"models": beyond},
+        )
+
+
+async def _assert_may_read_model(
+    session: AsyncSession, actor: Principal, alias: str, state: AppState
+) -> None:
+    """Test results describe a model. Reading them follows the same scope as
+    using it, so a manager does not learn about the fleet through the back."""
+    if actor.is_admin:
+        return
+    permission = await permitted_aliases(
+        session, actor, state.registry.snapshot.gateway
+    )
+    if not permission.allows(alias):
+        raise GatewayError(ErrorCode.MODEL_NOT_FOUND, f"Unknown model '{alias}'.")
+
+
+async def _visible_users(session: AsyncSession, actor: Principal) -> set[str] | None:
+    """User ids this actor may see, or None for everyone."""
+    scope = await _scope(session, actor)
+    if scope is None:
+        return None
+    # Their own record is always theirs to see; otherwise a manager in no
+    # workspace cannot even find themselves in the list.
+    return await users_in_workspaces(session, scope) | {actor.user_id}
 
 
 async def audit(
@@ -164,6 +233,9 @@ async def list_users(
     stmt = select(User).order_by(User.created_at.desc()).limit(limit)
     if role:
         stmt = stmt.where(User.role == role)
+    visible = await _visible_users(session, actor)
+    if visible is not None:
+        stmt = stmt.where(User.id.in_(visible))
     result = await session.execute(stmt)
     users = list(result.scalars())
 
@@ -262,7 +334,11 @@ async def list_workspaces(
     actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    result = await session.execute(select(Workspace).order_by(Workspace.code))
+    stmt = select(Workspace).order_by(Workspace.code)
+    scope = await _scope(session, actor)
+    if scope is not None:
+        stmt = stmt.where(Workspace.id.in_(scope)) if scope else stmt.where(False)
+    result = await session.execute(stmt)
     spaces = list(result.scalars())
 
     # โมเดลที่อนุญาตไว้ต้องมากับรายการนี้ ไม่งั้นหน้าเว็บวาด checkbox เป็นว่างทุกครั้ง
@@ -304,6 +380,7 @@ async def set_workspace_models(
     workspace = await session.get(Workspace, workspace_id)
     if workspace is None:
         raise GatewayError(ErrorCode.INVALID_REQUEST, "Workspace not found.")
+    await _assert_owns(session, actor, workspace_id)
 
     aliases = payload.get("models", [])
     known = set(state.registry.snapshot.models)
@@ -314,6 +391,11 @@ async def set_workspace_models(
             f"Unknown model alias(es): {', '.join(unknown)}.",
             details={"known_models": sorted(known)},
         )
+
+    # A manager cannot hand out a model they are not allowed to call themselves.
+    # Without this, scoping the admin plane would be theatre: enable the model
+    # for a workspace you are in, and you have granted yourself access to it.
+    await _assert_may_grant(session, actor, aliases, state)
 
     await session.execute(delete(WorkspaceModel).where(WorkspaceModel.workspace_id == workspace_id))
     for alias in aliases:
@@ -344,6 +426,7 @@ async def join(
         raise GatewayError(ErrorCode.INVALID_REQUEST, "Unknown user_id.")
     if await session.get(Workspace, workspace_id) is None:
         raise GatewayError(ErrorCode.INVALID_REQUEST, "Workspace not found.")
+    await _assert_owns(session, actor, workspace_id)
     existing = await session.execute(
         select(Membership).where(
             Membership.workspace_id == workspace_id, Membership.user_id == user_id
@@ -412,6 +495,18 @@ async def create_api_key(
             ErrorCode.INSUFFICIENT_SCOPE, "Only an admin can issue an admin key."
         )
 
+    # Issuing a key is the act of handing out access, so it is where the scope
+    # matters most: to somebody in your workspaces, for a workspace of yours,
+    # naming models you can use yourself.
+    visible = await _visible_users(session, actor)
+    if visible is not None and payload.user_id not in visible:
+        raise GatewayError(
+            ErrorCode.INSUFFICIENT_SCOPE,
+            "You can only issue keys to people in your own workspaces.",
+        )
+    if payload.workspace_id:
+        await _assert_owns(session, actor, payload.workspace_id)
+
     # alias ที่ไม่มีอยู่จริงบน key = key ที่เรียกอะไรไม่ได้เลย และไม่มีอะไรบอกจนกว่า
     # ผู้ใช้จะลอง · ตรวจตอนออกดีกว่าให้ไปเจอตอนใช้
     if payload.models:
@@ -423,6 +518,7 @@ async def create_api_key(
                 f"Unknown model alias(es): {', '.join(unknown)}.",
                 details={"known_models": sorted(known)},
             )
+    await _assert_may_grant(session, actor, payload.models, state)
 
     plaintext, prefix, digest = generate_api_key()
     expires_at = (
@@ -471,6 +567,7 @@ async def leave(
     key ที่ผูกกับ workspace นี้ไม่ถูกแตะ — มันหยุดใช้ quota ของ workspace เองเมื่อ
     สิทธิ์หายไป การไปเพิกถอน key ให้ด้วยเป็นการตัดสินใจแทนผู้ใช้ในเรื่องที่กู้คืนไม่ได้
     """
+    await _assert_owns(session, actor, workspace_id)
     result = await session.execute(
         select(Membership).where(
             Membership.workspace_id == workspace_id, Membership.user_id == user_id
@@ -495,6 +592,9 @@ async def list_api_keys(
     stmt = select(ApiKey).order_by(ApiKey.created_at.desc()).limit(500)
     if user_id:
         stmt = stmt.where(ApiKey.user_id == user_id)
+    visible = await _visible_users(session, actor)
+    if visible is not None:
+        stmt = stmt.where(ApiKey.user_id.in_(visible))
     result = await session.execute(stmt)
     return {
         "data": [
@@ -523,6 +623,11 @@ async def revoke_api_key(
 ) -> dict[str, Any]:
     api_key = await session.get(ApiKey, key_id)
     if api_key is None:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "API key not found.")
+    visible = await _visible_users(session, actor)
+    if visible is not None and api_key.user_id not in visible:
+        # Same message as "not found": whether a key exists is not something a
+        # manager outside its workspace should be able to probe for.
         raise GatewayError(ErrorCode.INVALID_REQUEST, "API key not found.")
     api_key.revoked_at = utcnow()
     await audit(session, request, actor, "apikey.revoke", "apikey", key_id)
@@ -633,7 +738,17 @@ async def list_quota_policies(
     actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    result = await session.execute(select(QuotaPolicy).where(QuotaPolicy.enabled.is_(True)))
+    stmt = select(QuotaPolicy).where(QuotaPolicy.enabled.is_(True))
+    scope = await _scope(session, actor)
+    if scope is not None:
+        # The global policy applies to this manager too, so it stays visible.
+        # A policy aimed at another workspace does not concern them.
+        stmt = stmt.where(
+            (QuotaPolicy.workspace_id.is_(None) & QuotaPolicy.user_id.is_(None))
+            | QuotaPolicy.workspace_id.in_(scope)
+            | (QuotaPolicy.user_id == actor.user_id)
+        )
+    result = await session.execute(stmt)
     return {
         "data": [
             {
@@ -855,7 +970,9 @@ async def get_compatibility(
     alias: str,
     actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
+    await _assert_may_read_model(session, actor, alias, state)
     result = await session.execute(select(ModelRecord).where(ModelRecord.alias == alias))
     record = result.scalar_one_or_none()
     if record is None:
@@ -1673,10 +1790,12 @@ async def get_test_run(
     run_id: str,
     actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
     run = await session.get(ModelTestRun, run_id)
     if run is None:
         raise GatewayError(ErrorCode.INVALID_REQUEST, "Unknown test run.")
+    await _assert_may_read_model(session, actor, run.model_alias, state)
     return {
         "run_id": run.id,
         "model": run.model_alias,
@@ -1716,13 +1835,21 @@ async def usage_summary(
         .group_by(UsageLog.model_alias)
     )
     if workspace_id:
+        await _assert_owns(session, actor, workspace_id)
         stmt = stmt.where(UsageLog.workspace_id == workspace_id)
+    visible = await _visible_users(session, actor)
+    if visible is not None:
+        stmt = stmt.where(UsageLog.user_id.in_(visible))
     rows = (await session.execute(stmt)).all()
 
     errors = (
         await session.execute(
             select(UsageLog.error_code, func.count(UsageLog.id))
-            .where(UsageLog.ts >= since, UsageLog.status == "error")
+            .where(
+                UsageLog.ts >= since,
+                UsageLog.status == "error",
+                *([UsageLog.user_id.in_(visible)] if visible is not None else []),
+            )
             .group_by(UsageLog.error_code)
         )
     ).all()
@@ -1754,6 +1881,7 @@ async def top_users(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     since = datetime.now(UTC) - timedelta(days=days)
+    visible = await _visible_users(session, actor)
     rows = (
         await session.execute(
             select(
@@ -1762,7 +1890,10 @@ async def top_users(
                 func.sum(UsageLog.total_tokens),
                 func.sum(UsageLog.image_count),
             )
-            .where(UsageLog.ts >= since)
+            .where(
+                UsageLog.ts >= since,
+                *([UsageLog.user_id.in_(visible)] if visible is not None else []),
+            )
             .group_by(UsageLog.user_id)
             .order_by(func.sum(UsageLog.total_tokens).desc())
             .limit(limit)
