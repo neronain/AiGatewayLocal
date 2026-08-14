@@ -1,33 +1,44 @@
+<div align="center">
+
 # LiteGate
 
-**Capability-aware, multimodal AI gateway for teams that run their own GPUs.**
-Put your own model servers behind the standard OpenAI and Anthropic APIs, with
-identity, policy, quota and usage accounting in front of them — and without
-exposing a raw model server to anyone.
+**One door in front of your own GPUs — with identity, policy, quota and proof that each model can do what it claims**
 
-Built for the case where a handful of people share a handful of GPUs: a small
-company, a school or university department, a research group, an agency running
-inference for its own clients. Nothing in it assumes a particular sector.
+Put your model servers behind the standard **OpenAI** and **Anthropic** APIs.
+Members get an alias and a key; you keep the machines, the limits and the audit trail.
 
 [![CI](https://github.com/neronain/AiGatewayLocal/actions/workflows/ci.yml/badge.svg)](https://github.com/neronain/AiGatewayLocal/actions/workflows/ci.yml)
+[![version](https://img.shields.io/badge/version-1.3.0-1f5fbf)](pyproject.toml)
+[![tests](https://img.shields.io/badge/tests-378-17703f)](tests/)
+[![python](https://img.shields.io/badge/python-3.11%2B-3776ab)](pyproject.toml)
+[![APIs](https://img.shields.io/badge/API-OpenAI%20%C2%B7%20Anthropic-8b5cf6)](docs/API.md)
+[![license](https://img.shields.io/badge/license-MIT-17703f)](LICENSE)
+
+**[Deploy](docs/DEPLOYMENT.md)** · **[API](docs/API.md)** · **[Architecture](docs/ARCHITECTURE.md)** · **[Runbook](docs/RUNBOOK.md)** · **[LMDS — the deploy side](https://github.com/neronain/AutoDeployDGXProject)**
+
+Created and maintained by **neronain** — [facebook.com/neronain.minidev](https://www.facebook.com/neronain.minidev)
+
+</div>
 
 ```
     Members                       LiteGate                    Your GPUs
 ┌─────────────┐          ┌────────────────────────┐        ┌──────────────┐
 │ Python SDK  │          │ Auth · Workspace policy│        │ vLLM         │
 │ Claude Code │ ─HTTPS─▶ │ Capability · Quota     │ ─────▶ │ llama.cpp    │
-│ Web / App   │          │ Routing · Usage        │        │ Ollama/SGLang│
+│ Web / App   │          │ Routing · Failover     │        │ Ollama/SGLang│
 └─────────────┘          └────────────────────────┘        └──────────────┘
       alias only            policy + accounting               inference
 ```
 
-### Who it is for
+For the case where a handful of people share a handful of GPUs — a small
+company, a university department, a research group, an agency. Nothing in it
+assumes a particular sector.
 
 | You have | LiteGate gives you |
 |---|---|
 | One GPU box shared by a small team | Per-person keys and quota instead of an open port |
-| Several nodes with different models | One alias per job (`coding`, `vision`) that survives model swaps |
-| A class, a department, or client projects | Workspaces, each with its own allowed models and limits |
+| Several nodes with different models | One alias per job (`coding`, `vision`) that survives model swaps — and fails over between nodes |
+| A class, a department, or client projects | Workspaces and access groups, each with its own models and limits |
 | Claude Code users and OpenAI-SDK users | Both, against the same backend, without changing the backend |
 
 ---
@@ -36,13 +47,14 @@ inference for its own clients. Nothing in it assumes a particular sector.
 
 | | |
 |---|---|
-| **Capability registry** | Models declare what they *can do* (`vision`, `tools`, `agentic`), not what they *are*. Adding a model is one YAML file — no code change. |
-| **Fails fast, not downstream** | Send an image to a text-only model and you get a `400` with an actionable message. The backend never sees the request. |
-| **Multimodal from day one** | Text + image content blocks, streaming, on both the OpenAI and Anthropic surfaces. |
-| **Stable aliases** | Members use `coding`. Admins can repoint it from Qwen to something else with zero member-side change. Repository names are never member-visible. |
-| **Real quota** | Per member, workspace and model, over requests / text tokens / **visual tokens** / output tokens / images. |
-| **Claude Code works** | `/v1/messages` is served even when the backend only speaks OpenAI — the gateway translates both directions, streaming included. |
-| **Private by default** | No prompt, no response, no image is ever written to disk. The schema has no column for them. |
+| 🧩 **Capability registry** | Models declare what they *can do* (`vision`, `tools`, `agentic`), not what they *are*. Adding a model is one YAML file — no code change. |
+| ⛔ **Fails fast, not downstream** | Send an image to a text-only model and you get a `400` with an actionable message. The backend never sees the request. |
+| 🖼 **Multimodal from day one** | Text + image content blocks, streaming, on both the OpenAI and Anthropic surfaces. |
+| 🏷 **Stable aliases** | Members use `coding`. Admins repoint it from one model to another with zero member-side change. Repository names are never member-visible. |
+| ♻️ **Failover between endpoints** | Two machines behind one alias take over for each other — retried only before the first byte is streamed, so nobody sees half an answer twice. |
+| 📊 **Real quota** | Per member, workspace, model or group — over requests, text tokens, **visual tokens**, output tokens and images, plus per-minute rate limits. |
+| 🤖 **Claude Code works** | `/v1/messages` is served even when the backend only speaks OpenAI — the gateway translates both directions, streaming included. |
+| 🔒 **Private by default** | No prompt, no response, no image is ever written to disk. The schema has no column for them. |
 
 ---
 
@@ -51,10 +63,9 @@ inference for its own clients. Nothing in it assumes a particular sector.
 ```bash
 git clone https://github.com/neronain/AiGatewayLocal.git
 cd AiGatewayLocal
-
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 
-# Terminal 1 — a stand-in model server (no GPU needed)
+# Terminal 1 — a stand-in model server, no GPU needed
 .venv/bin/python scripts/mock_backend.py --port 8000
 
 # Terminal 2 — point an alias at it, then run the gateway
@@ -62,20 +73,46 @@ sed -i '' 's#http://dgx03:8000#http://127.0.0.1:8000#' config/models/coding.yaml
 .venv/bin/uvicorn app.main:app --port 8080
 ```
 
-The log prints a bootstrap admin key once. Then:
+The log prints a bootstrap admin key once.
 
 ```bash
-export KEY=edu_sk_...
+export KEY=lg_sk_...
 
 curl -s -X POST http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
   -d '{"model":"coding","messages":[{"role":"user","content":"Reply with exactly: OK"}]}'
 ```
 
-Console at <http://localhost:8080/console>, API docs at `/docs`.
+Console at <http://localhost:8080/console>, API reference at `/docs`.
 
-For real deployments see **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — Docker
-Compose, native systemd, and a no-GPU staging path.
+### HTTPS from the first install
+
+A growing number of clients refuse plain HTTP outright — browser APIs gated on a
+secure context, editor extensions, anything that treats `http://` as a
+misconfiguration. So TLS is part of installing, not something to retrofit:
+
+```bash
+sudo scripts/install_tls.sh                         # private CA, names detected
+sudo scripts/install_tls.sh gateway.example.ac.th   # add a name
+sudo scripts/install_tls.sh --cert full.pem --key key.pem   # a certificate you already have
+```
+
+What it leaves running:
+
+| | |
+|---|---|
+| `:443` | nginx, TLS — the address you hand out |
+| `:80` | nginx, 301 to `:443` — so a typed hostname lands somewhere |
+| `:8080` | the app, plain HTTP — for scripts, health checks and LAN clients |
+
+The plain port stays on purpose: removing it breaks every curl and monitoring
+probe on the network for no security gain. `nginx -t` runs **before** the reload,
+so a bad render never takes the site down. **HSTS is opt-in** (`--hsts`) because
+it is host-scoped, not port-scoped — switching it on also upgrades
+`http://host:8080` and can strand a private-CA deployment with no way back.
+
+Real deployments — Docker Compose, systemd, Postgres + Redis, backup and
+restore, monitoring: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**
 
 ---
 
@@ -84,17 +121,17 @@ Compose, native systemd, and a no-GPU staging path.
 Two credentials, two audiences — the distinction that keeps production keys out
 of browsers:
 
-| | API key (`lg_sk_...`) | Console sign-in |
+| | API key (`lg_sk_…`) | Console sign-in |
 |---|---|---|
 | Authenticates | a **program** — SDK, Claude Code, curl | a **person** in a browser |
 | Lives in | a config file or `.env` | the operator's head |
-| Lifetime | long (default 180 days) | 8 hours |
+| Lifetime | long (default 180 days, extendable) | 8 hours |
 | How many | several — one per machine or project | one session |
 | If it leaks | revoke that key; other work is unaffected | sign out, change password |
 
 On first start the console asks for a username and password rather than a token,
-and creates the first administrator. Set `GW_ADMIN_USER` / `GW_ADMIN_PASSWORD` to
-choose them; otherwise a password is generated and printed once.
+and creates the first administrator. Set `GW_ADMIN_USER` / `GW_ADMIN_PASSWORD`
+to choose them; otherwise a password is generated and printed once.
 
 ### What each role can do
 
@@ -102,32 +139,72 @@ choose them; otherwise a password is generated and printed once.
 |---|---|---|---|
 | See the models they may use, and their own quota | ✅ | ✅ | ✅ |
 | Issue, name and revoke **their own** API keys | ✅ | ✅ | ✅ |
-| Manage people in their workspace, issue keys for them | — | ✅ | ✅ |
-| Choose which models a workspace may use | — | ✅ | ✅ |
-| Set workspace quota, read workspace usage | — | ✅ | ✅ |
-| Add, edit or delete models in the registry | — | — | ✅ |
+| Manage people **in their own workspaces**, issue keys for them | — | ✅ | ✅ |
+| Choose which models those workspaces may use | — | ✅ | ✅ |
+| Set quota and read usage **for those workspaces** | — | ✅ | ✅ |
+| Add, edit, disable or delete models in the registry | — | — | ✅ |
 | Verify backends, run the model test suite, reload the registry | — | — | ✅ |
 
 The line is deliberate: **a manager decides who may use what; an admin decides
 what exists.** Adding a model touches GPUs and machine configuration, which is
-not a people-management decision.
+not a people-management decision. A manager's reach stops at the workspaces they
+actually run — they cannot see, quota or issue keys for anyone outside them.
+
+---
+
+## Deciding who may use what
+
+Three tools that compose, rather than three ways to do the same thing:
+
+| | What it is | Use it for |
+|---|---|---|
+| **Workspace** | A group of people with allowed models, defaults and a status | A class, a team, a client project |
+| **Access group** | A named bundle of models (`vision-set`, `coding-set`) | Granting several models at once, and quota-ing them together |
+| **Quota policy** | A named limit, optionally scoped and dated | "Exam period", "urgent, 3 days" |
+
+Permission **narrows** through every rule it passes — key, workspace, group —
+so no layer can widen what an earlier one withheld. Quota does the opposite and
+picks exactly one winner, most specific first:
+
+```
+user+model  >  user+group  >  user  >  workspace+model  >  workspace+group  >  workspace  >  global
+```
+
+Consequences that are easy to get wrong, and are tested:
+
+- **Suspending a workspace** removes its models from its members — it does not
+  make them unrestricted. (A real bug once: filtering on the wrong side made a
+  suspended class read as "in no group at all".)
+- **An expired key is kept, not deleted** — extend it with a button, counting
+  days from today, so something that lapsed last month gets a full period.
+  Quota policies expire too: a limit nobody removes is a limit still in force
+  next term.
+- **Enrolling thirty people is not thirty decisions.** A workspace carries the
+  models, key lifetime and groups a new key starts with, and the console reports
+  which defaults it applied — a default nobody sees is a setting nobody knows
+  they have.
+
+Usage is drawn against the limit that will actually stop someone — the tightest
+of them, not the roomiest — so the bar never reads "plenty left" right up to the
+refusal.
+
+---
 
 ## For members
-
-**Python**
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="https://gateway.university.ac.th/v1", api_key="edu_sk_...")
+client = OpenAI(base_url="https://gateway.example.ac.th/v1", api_key="lg_sk_...")
 
-response = client.chat.completions.create(
+client.chat.completions.create(
     model="coding",                       # an alias, not a repository name
     messages=[{"role": "user", "content": "เขียนฟังก์ชัน bubble sort ใน Python"}],
 )
 ```
 
-**Vision**
+<details>
+<summary>Vision, and Claude Code</summary>
 
 ```python
 client.chat.completions.create(
@@ -139,14 +216,43 @@ client.chat.completions.create(
 )
 ```
 
-**Claude Code**
-
 ```bash
-export ANTHROPIC_BASE_URL=https://gateway.university.ac.th
-export ANTHROPIC_AUTH_TOKEN=edu_sk_...
+export ANTHROPIC_BASE_URL=https://gateway.example.ac.th
+export ANTHROPIC_AUTH_TOKEN=lg_sk_...
 export ANTHROPIC_MODEL=coding
 claude
 ```
+
+</details>
+
+---
+
+## When a machine goes down
+
+Two endpoints under one alias are not just load balancing — the second takes
+over when the first stops answering:
+
+```yaml
+endpoints:
+  - name: dgx01
+    base_url: http://10.0.0.21:8000
+    priority: 1                # lower wins
+  - name: dgx02
+    base_url: http://10.0.0.22:8000
+    priority: 1                # equal priority alternates
+```
+
+- **Equal priority alternates**, so both machines stay warm.
+- **Retried only before the first streamed byte.** Once a member has seen output,
+  re-running the request would replay half an answer — so it does not.
+- **4xx is never retried.** A malformed request is malformed on every machine;
+  retrying it only spends quota.
+- A response that failed over carries `x-litegate-failed-over`, so this is
+  visible in logs rather than inferred from latency.
+
+`priority`, `weight` and `max_concurrency` are editable from the console without
+touching the file — and the file keeps its comments, because a registry that
+eats your annotations every time you press a button is one you stop annotating.
 
 ---
 
@@ -169,18 +275,20 @@ quota and the models they may use, and nothing else — not other people's usage
 not backend hostnames, not repository names. An admin's additionally sees
 backend health, registry errors and upstream model names.
 
-It is not a way around the rules either: its requests go through the same
-capability gate, quota and routing as any other caller, spend the caller's own
-quota, and show up in usage. Conversation history stays in the browser tab and
-is never written server-side.
+It is not a way around the rules either: its requests pass the same capability
+gate, quota and routing as any other caller, spend the caller's own quota, and
+appear in usage. Conversation history stays in the browser tab.
 
 The box hides itself when no chat model is available to you — a chat box that
 always answers "no backend" is worse than no chat box.
 
-**Choosing the model.** The *Assistant* tab ranks every chat model for this
-particular job and says why. The assistant's prompt is mostly system state and
-grows with your fleet, while its answers are short and read in a small panel, so
-context headroom and *not narrating* matter more here than raw capability:
+<details>
+<summary>Choosing which model runs the assistant</summary>
+
+The *Assistant* tab ranks every chat model for this particular job and says why.
+The prompt is mostly system state and grows with your fleet, while the answers
+are short and read in a small panel, so context headroom and *not narrating*
+matter more here than raw capability:
 
 ```
   coder-next   Good fit   131,222-token context — room for state and history.
@@ -193,15 +301,16 @@ context headroom and *not narrating* matter more here than raw capability:
   embed-only   Cannot     Does not serve chat, so it cannot hold a conversation.
 ```
 
-Pick one from the dropdown or leave it on *Automatic*, which uses the same
-ranking. A model that cannot serve the role is refused with the failing check
-named, rather than accepted into a chat box that visibly does not work.
+A model that cannot serve the role is refused with the failing check named,
+rather than accepted into a chat box that visibly does not work.
 `GW_ASSISTANT_MODEL` still sets a deploy-time default.
 
 > **Reasoning models** narrate unless the backend was started with vLLM's
 > `--reasoning-parser`. The console strips what it recognises, but the real fix
 > is the flag — `litegate model-test` reports it as `reasoning_not_separated`
 > along with the command to correct it.
+
+</details>
 
 ---
 
@@ -236,8 +345,8 @@ Contradictions are caught at load, not at request time: declaring
 endpoint that serves images, is rejected with a specific message and the previous
 good registry is kept.
 
-Then certify it — a model is `READY` because it was measured, never because of
-its name:
+Then certify it — a model is `READY` because it was **measured**, never because
+of its name:
 
 ```bash
 python scripts/model_test_suite.py --base-url $GW --admin-key $KEY --model my-model
@@ -250,15 +359,17 @@ python scripts/model_test_suite.py --base-url $GW --admin-key $KEY --model my-mo
   MODEL-009 ... PASS      11 ms  stop_reason=tool_use
 ```
 
+A model can be **taken out of service without losing the file it lives in** —
+the console toggles `enabled`, editing that one line and leaving every comment
+in place.
+
 ---
 
 ## Working with a deploy tool
 
 LiteGate does not deploy models and does not want to. It measures what a running
-server actually does, which is the one thing a deploy tool structurally cannot
-check: the tool knows what it *generated*, not what the process is *doing*.
-
-Used together the loop closes. Used alone, each still works.
+server **actually does**, which is the one thing a deploy tool structurally
+cannot check: the tool knows what it *generated*, not what the process is *doing*.
 
 ```
   deploy tool                LiteGate
@@ -278,135 +389,81 @@ Used together the loop closes. Used alone, each still works.
   → ./<controller>.sh restart --tool-parser qwen3_coder
 ```
 
-If a model file says where the backend came from, the command is filled in
-rather than left as a placeholder:
+If a model file records where its backend came from (`managed_by`), that becomes
+a command you can paste rather than a placeholder — and if the deploy tool is
+**LMDS**, the finding gains an **Apply** button that asks LMDS to restart that
+bundle with the parser set. The button reports what it sent, not that it
+succeeded: whether it worked is a question only a fresh probe answers.
+
+<details>
+<summary>How the connection works, and its limits</summary>
 
 ```yaml
 endpoints:
   - name: msi-6
     base_url: http://10.0.0.6:8000
-    managed_by:                       # optional, purely informational
+    managed_by:
       tool: lmds
-      node: ops@10.0.0.6
+      node: ops@10.0.0.6                  # ssh target, for humans
       controller: ~/bundles/coder/coder-single.sh
+      lmds_node: msi-6                    # the machine's name in LMDS
+      lmds_slug: coder-next               # the bundle LMDS knows it by
 ```
 
-```
-→ ssh ops@10.0.0.6 '~/bundles/coder/coder-single.sh restart --tool-parser qwen3_coder'
-```
+`managed_by` is inert — LiteGate never contacts the deploy tool, and every model
+works without it. `lmds_node` is separate from `node` because LMDS addresses
+machines by the name in its own registry, which is usually not the ssh target;
+guessing one from the other would restart the wrong machine.
 
-`managed_by` is inert: LiteGate never contacts the deploy tool, and every model
-works without it. It only decides whether a finding names a command you can
-paste or one you have to translate.
+**The credential is LMDS's own web token**, printed by `lmds web --status`. One
+credential, not a second thing to manage. **Press Test after saving** — a saved
+URL and a working connection look identical in a settings form, and Test makes a
+real authenticated call and names which fleet answered.
 
-### Applying a finding instead of pasting it
-
-Verification used to stop one step short. LiteGate works out that vLLM was
-started without `--tool-call-parser`, prints the exact command — and then
-somebody opens a terminal, finds the machine, and pastes it.
-
-Connect the LMDS that deployed a backend (*Assistant → Deploy tool*) and record
-where it came from, and the finding gains a button:
-
-```yaml
-managed_by:
-  tool: lmds
-  node: ops@10.0.0.6                    # ssh target, for humans
-  controller: ~/bundles/coder/coder-single.sh
-  lmds_node: msi-6                      # the machine's name in LMDS
-  lmds_slug: coder-next                 # the bundle LMDS knows it by
-```
-
-```
-[warning] tools_flag_missing
-  vLLM rejected the tool request: it was started without
-  --enable-auto-tool-choice and a --tool-call-parser.
-  → ssh ops@10.0.0.6 '~/bundles/coder/coder-single.sh restart --tool-parser qwen3_coder'
-  [ Apply via LMDS ]  qwen3_coder
-```
-
-Pressing it asks LMDS to restart that bundle with the parser set. Then re-run
-verification — whether it worked is a question only a fresh probe answers, so
-the button reports what it sent, not that it succeeded.
-
-**The token is LMDS's own web token** — the one you type to open its console,
-printed by `lmds web --status`. One credential, not a second thing to manage.
-
-**Press Test after saving.** A saved URL and a working connection look identical
-in a settings form, and a site with a staging and a production LMDS has two URLs
-that differ by one character. Test makes a real authenticated call and reports
-which fleet answered:
-
-```
-connected   Autodeploy 192.168.1.92 · LMDS 0.2.0 · 6 machines:
-            spark-head, spark-worker, msi-5, msi-6, dgx-veerasiam, AiTop100
-```
-
-If the token is stale it says so specifically, rather than failing later when a
-restart is already in flight.
-
-`lmds_node` and `lmds_slug` are separate from `node` because LMDS addresses
-machines by the name in its own registry, which is usually not the ssh target.
-Guessing one from the other would restart the wrong machine.
-
-LMDS refuses options it cannot honour. A model it merely *adopted* — a container
-someone started by hand that `lmds ps` picked up later — can be stopped and
-started, but LMDS does not own its launch command, so a parser sent to it would
-be silently ignored. It now answers with a `409` explaining that, because an
-exit code of zero that means "nothing happened" is worse than an error: every
-layer above reports success and nobody finds out until the symptom returns.
+LMDS refuses options it cannot honour: a container it merely *adopted* can be
+stopped and started, but LMDS does not own its launch command, so it answers
+`409` rather than accepting a parser it would silently ignore. An exit code of
+zero meaning "nothing happened" is worse than an error.
 
 Only findings on a short list can be applied — currently the tool and reasoning
 parsers. This is not a remote shell with a friendly name: the payload is a
-parser name matched against a pattern, sent to one bundle on one node. Every
-other finding still shows the command to run yourself, and a gateway with no
-deploy tool connected behaves exactly as before.
+parser name matched against a pattern, sent to one bundle on one node.
+
+</details>
 
 ### LMDS — the deploy side of the pair
 
-**[LMDS (Local Model Deploy Studio)](https://github.com/neronain/AutoDeployDGXProject)**
-is the other half: it downloads weights, generates the launch bundle, and runs
-the model on your own machines. LiteGate is the serving and verification side.
-
-Neither depends on the other:
+**[LMDS · Local Model Deploy Studio](https://github.com/neronain/AutoDeployDGXProject)**
+downloads weights, generates the launch bundle, and runs the model on your own
+machines. LiteGate is the serving and verification side. **Neither depends on
+the other.**
 
 | You install | You get |
 |---|---|
-| LMDS alone | Models deployed and running on your hardware, with its own console and its own assistant |
+| LMDS alone | Models deployed and running on your hardware, with its own console and assistant |
 | LiteGate alone | One endpoint, keys, quota and capability verification in front of backends you started any way you like |
-| **Both** | The loop closes — LMDS deploys, LiteGate measures what the running server actually does and names the exact command to fix it, and either console's assistant can answer from the state of both |
+| **Both** | The loop closes — LMDS deploys, LiteGate measures the running server and names the exact command to fix it |
 
-The two meet in three places, all optional:
+They meet in three optional places: `managed_by` on an endpoint, LMDS's planner
+pointed at LiteGate instead of a cloud provider
+(`lmds config set-provider openai-compat --base-url http://litegate:8080/v1`),
+and the parsers LiteGate reports as missing being exactly the knobs LMDS exposes.
 
-* **`managed_by`** on an endpoint turns LiteGate's advice from a placeholder
-  into a command you can paste.
-* **LMDS's brain** can point at LiteGate instead of a cloud provider, so model
-  planning and both chat panels run on your own hardware:
-  ```bash
-  lmds config set-provider openai-compat --base-url http://litegate:8080/v1 --model general
-  ```
-* **The tool and reasoning parsers** LiteGate reports as missing are exactly the
-  knobs LMDS exposes with `restart --tool-parser` and `test-tools`.
-
-Nothing here is a dependency. A university that only wants to run models
-installs LMDS; a company that already has backends installs LiteGate; the ones
-who install both get the parts that only exist between them.
+---
 
 ## Documentation
 
-| Document | Contents |
+| | |
 |---|---|
-| **[PRD.md](docs/PRD.md)** | Requirements, data model, acceptance criteria, decision log |
-| **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Pipeline, modules, design decisions and their costs |
+| **[DEPLOYMENT.md](docs/DEPLOYMENT.md)** | Docker / systemd / staging, Postgres + Redis, TLS, backup and restore, monitoring, troubleshooting |
 | **[API.md](docs/API.md)** | Full endpoint reference with examples |
-| **[DEPLOYMENT.md](docs/DEPLOYMENT.md)** | Docker / systemd / staging, operations, troubleshooting |
-| **[RUNBOOK.md](docs/RUNBOOK.md)** | What to do when an alert fires, one section per alert |
+| **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Pipeline, modules, design decisions and their costs |
+| **[RUNBOOK.md](docs/RUNBOOK.md)** | What to do when an alert fires — one section per alert |
+| **[PRD.md](docs/PRD.md)** | Requirements, data model, acceptance criteria, decision log |
+| [PRD-v1.4-Access.md](docs/PRD-v1.4-Access.md) | Making workspace membership actually govern access — the options weighed, the decision gate, and the report that had to run first |
+| [PRD-v1.5-Models.md](docs/PRD-v1.5-Models.md) | Models & endpoints measured against a running LiteLLM: what to adopt, what we already had, what not to copy |
+| [PRD-v1.6-AccessControl.md](docs/PRD-v1.6-AccessControl.md) | Access groups, named quota policies, rate limits and expiry — LiteLLM's flexibility, only as far as it earns its keep |
 | [PRD-v1.2-Addendum.md](docs/PRD-v1.2-Addendum.md) | The original v1.2 addendum, preserved verbatim |
-| [PRD-v1.5-Models.md](docs/PRD-v1.5-Models.md) | **Draft** — Models & Endpoints measured against a running LiteLLM: what to adopt, what we already have, and the one thing not to copy |
-| [PRD-v1.4-Access.md](docs/PRD-v1.4-Access.md) | **Draft, not approved** — proposal to make workspace membership actually govern access, with the options weighed and the decision gate that comes before any code |
-
-**Related project** — [LMDS · AutoDeployDGXProject](https://github.com/neronain/AutoDeployDGXProject),
-the deploy side of the pair. Works alone; works better alongside this.
 
 ---
 
@@ -414,33 +471,38 @@ the deploy side of the pair. Works alone; works better alongside this.
 
 ```bash
 make dev      # install with dev dependencies
-make test     # 48 tests
+make test     # 378 tests
 make lint
 make check    # what CI runs
 make run      # reload server on :8080
 make mock     # mock backend on :8000
 ```
 
-Tests cover the capability contract, vision policy enforcement (including a GIF
-mislabelled as PNG, and the SSRF guard on remote URLs), quota exhaustion,
-streaming on both protocols, Anthropic translation, and the guarantee that no
-repository name reaches a member-visible response.
+Tests cover the capability contract, vision policy (including a GIF mislabelled
+as PNG and the SSRF guard on remote URLs), quota precedence and exhaustion,
+per-minute rate limits, streaming on both protocols, Anthropic translation,
+endpoint failover, manager scoping, and the guarantee that no repository name
+reaches a member-visible response.
 
----
+Each feature was proved by disabling it and watching the tests fail — a test
+that still passes with the code removed was never checking anything.
 
 ## Project status
 
 | Milestone | State |
 |---|---|
-| M1 — Core: registry, capability validation, OpenAI surface, quota, routing | done |
-| M2 — Agent: Anthropic surface, translation, test suite | done |
-| M3 — Pilot: one real DGX, one workspace | next |
-| M4 — Production: Postgres + Redis, TLS, monitoring | planned |
-| M5 — P1: image upload, PDF, richer dashboard | planned |
+| M1 — Core: registry, capability validation, OpenAI surface, quota, routing | ✅ done |
+| M2 — Agent: Anthropic surface, translation, model test suite | ✅ done |
+| M3 — Pilot: real hardware, workspaces, bulk provisioning | ✅ done |
+| M4 — Production: Postgres + Redis, TLS, backup/restore, monitoring, runbook | ✅ done |
+| v1.4 — Access: membership governs access, manager scoping, workspace status | ✅ done |
+| v1.5 — Models: enable/disable, endpoint priority and failover, comment-safe writes | ✅ done |
+| v1.6 — Access control: access groups, named quota policies, rate limits, expiry | ✅ done |
+| M5 — image upload, PDF, richer dashboard | planned |
 
-Verified end-to-end on Ubuntu 24.04 against a mock backend: all 10 model tests,
-streaming on both protocols, capability rejection with zero backend calls, and
-the image-type and SSRF guards.
+Verified end-to-end against real backends on a live fleet, not only against the
+mock: capability rejection with zero backend calls, failover between two
+machines, quota and rate-limit exhaustion, and the image-type and SSRF guards.
 
 ## Credits
 
@@ -449,3 +511,10 @@ Created and maintained by **neronain** — [facebook.com/neronain.minidev](https
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+<div align="center">
+<br>
+
+**[LMDS · the deploy side of the pair](https://github.com/neronain/AutoDeployDGXProject)** — works alone; works better alongside this
+
+</div>
