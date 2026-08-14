@@ -24,13 +24,13 @@ from app.core.auth import (
 )
 from app.core.capability import compatibility_badges, upstream_model_for
 from app.core.errors import ErrorCode, GatewayError
-from app.core.passwords import SESSION_COOKIE
 from app.core.modeltest import (
     ModelTestSuite,
     probe_backend,
     resolve_commands,
     suggest_tool_parser,
 )
+from app.core.passwords import SESSION_COOKIE
 from app.db.models import (
     ASSISTANT_MODEL_KEY,
     ApiKey,
@@ -50,8 +50,10 @@ from app.db.models import (
 from app.db.session import get_session, session_scope
 from app.registry.writer import (
     delete_model,
+    model_path,
     registry_writable,
     render_yaml,
+    set_enabled_in_file,
     validate_definition,
     write_model,
 )
@@ -1224,6 +1226,75 @@ async def save_model(
         "registry_errors": snapshot.errors,
         # Only this worker reloaded synchronously; the watcher covers the rest.
         "propagation_seconds": state.settings.registry_reload_seconds,
+    }
+
+
+@router.patch("/models/{alias}/enabled")
+async def set_model_enabled(
+    alias: str,
+    payload: dict[str, Any],
+    request: Request,
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """Turn an alias off without deleting its file, or a single endpoint off.
+
+    `enabled` has always been honoured — the registry hides a disabled model
+    from the catalogue and routing skips a disabled endpoint — but the console
+    offered no way to set it. Taking a model out of service meant deleting the
+    file and rebuilding it afterwards, which loses every setting that was tuned
+    on the way in.
+
+    Send `{"enabled": false}` for the alias, or add `"endpoint": "<name>"` to
+    take one backend out while the others keep serving — the case when one
+    machine is being worked on and the alias should stay up.
+    """
+    definition = state.registry.snapshot.models.get(alias)
+    if definition is None:
+        raise GatewayError(ErrorCode.MODEL_NOT_FOUND, f"Unknown model '{alias}'.")
+    if "enabled" not in payload:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "Send {'enabled': true|false}.")
+
+    wanted = bool(payload["enabled"])
+    endpoint_name = payload.get("endpoint")
+    updated = definition.model_copy(deep=True)
+
+    if endpoint_name:
+        target = next((e for e in updated.spec.endpoints if e.name == endpoint_name), None)
+        if target is None:
+            raise GatewayError(
+                ErrorCode.INVALID_REQUEST,
+                f"'{alias}' has no endpoint named '{endpoint_name}'.",
+            )
+        target.enabled = wanted
+    else:
+        updated.spec.enabled = wanted
+
+    # "อย่างน้อยหนึ่ง endpoint ต้องเปิด" เป็นกติกาของ schema อยู่แล้ว — ตรวจซ้ำผ่าน
+    # ทางเดิมแทนที่จะเขียนเงื่อนไขของตัวเอง ไม่งั้นการตั้งค่าที่ loader จะปฏิเสธ
+    # จะถูกเขียนลงไฟล์ แล้วค่อยไปพังตอน reload
+    validate_definition(updated.model_dump(mode="json"))
+
+    # ปิดสวิตช์ไม่ควรทำให้คอมเมนต์ในไฟล์หาย — แก้เฉพาะบรรทัดนั้น ถ้าหาไม่เจอ
+    # ค่อยถอยไปเขียนใหม่ทั้งไฟล์แบบเดิม
+    path = model_path(state.settings.config_dir, alias)
+    if not set_enabled_in_file(path, wanted, endpoint_name):
+        path = write_model(state.settings.config_dir, updated)
+    snapshot = state.registry.reload()
+    await sync_model_projection(session, state)
+    await audit(
+        session, request, actor,
+        "model.enabled" if not endpoint_name else "model.endpoint.enabled",
+        "model", alias, {"enabled": wanted, "endpoint": endpoint_name},
+    )
+    await session.commit()
+    return {
+        "alias": alias,
+        "endpoint": endpoint_name,
+        "enabled": wanted,
+        "path": str(path),
+        "registry_errors": snapshot.errors,
     }
 
 

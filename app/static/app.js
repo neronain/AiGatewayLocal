@@ -218,24 +218,37 @@ async function loadModels() {
     <tr><th>Alias</th><th>Upstream / backends</th><th>Capabilities</th>
         <th>Health</th><th>Test status</th><th></th></tr>
     ${registry.data.map((m, i) => {
-      const healthy = m.endpoints.filter((e) => e.health?.healthy).length;
-      const total = m.endpoints.length;
+      // นับเฉพาะเครื่องที่เปิดอยู่ — เครื่องที่ถูกปิดไว้ไม่ได้รับงาน การนับรวมเข้าไป
+      // ทำให้ตัวเลขบอกกำลังที่ไม่มีจริง ส่วนที่ปิดไว้บอกแยกเพราะเป็นคนละเรื่องกับ down
+      const serving = m.endpoints.filter((e) => e.enabled !== false);
+      const healthy = serving.filter((e) => e.health?.healthy).length;
+      const total = serving.length;
+      const off = m.endpoints.length - total;
       const cls = healthy === total ? 'ok' : healthy ? 'warn' : 'err';
       const c = compat[i];
       const ccls = c.status === 'READY' ? 'ok' : c.status === 'DEGRADED' ? 'err' : 'mute';
       return `<tr>
-        <td><code>${esc(m.alias)}</code><div class="hint">${esc(m.display_name)}</div></td>
+        <td><code>${esc(m.alias)}</code>${m.enabled === false
+              ? ' <span class="pill mute">off</span>' : ''}
+            <div class="hint">${esc(m.display_name)}</div></td>
         <td><code>${esc(m.upstream_model)}</code>
             ${m.endpoints.map((e) => `<div class="hint">${esc(e.server_type)} ·
-              ${esc(e.base_url)} ${e.health?.healthy ? '' : '<span class="pill err">down</span>'}</div>`).join('')}</td>
+              ${esc(e.base_url)} ${e.health?.healthy ? '' : '<span class="pill err">down</span>'}
+              <button class="linkish" data-ep-model="${esc(m.alias)}" data-ep="${esc(e.name)}"
+                data-ep-to="${e.enabled === false ? '1' : '0'}"
+                >${e.enabled === false ? 'ปิดอยู่ · เปิด' : 'ปิดเครื่องนี้'}</button></div>`).join('')}</td>
         <td>${m.badges.map((b) => `<span class="badge">${esc(b)}</span>`).join(' ')}</td>
-        <td><span class="pill ${cls}">${healthy}/${total} up</span></td>
+        <td><span class="pill ${cls}">${healthy}/${total} up</span>
+            ${off ? `<div class="hint">ปิดไว้ ${off}</div>` : ''}</td>
         <td><span class="pill ${ccls}">${esc(c.status)}</span>
             <div class="hint" id="run-${esc(m.alias)}"></div></td>
         <td style="white-space:nowrap">
           <button class="ghost small" data-verify="${esc(m.alias)}">Verify</button>
           <button class="ghost small" data-test="${esc(m.alias)}">Run tests</button>
           <button class="ghost small" data-edit="${esc(m.alias)}">Edit</button>
+          <button class="ghost small" data-enable="${esc(m.alias)}"
+            data-to="${m.enabled === false ? '1' : '0'}"
+            >${m.enabled === false ? 'Enable' : 'Disable'}</button>
           <button class="danger small" data-del="${esc(m.alias)}">Delete</button>
         </td></tr>`;
     }).join('')}`;
@@ -248,6 +261,24 @@ async function loadModels() {
   }
   for (const btn of $('model-table').querySelectorAll('[data-edit]')) {
     btn.onclick = () => openEditor(state.cache.models.find((m) => m.alias === btn.dataset.edit));
+  }
+  // ปิดโดยไม่ลบ — ไฟล์และค่าที่ปรับมายังอยู่ครบ ต่างจากปุ่ม Delete ข้าง ๆ
+  const setEnabled = async (alias, body) => {
+    try { await patch(`/admin/models/${encodeURIComponent(alias)}/enabled`, body); await loadModels(); }
+    catch (e) { showError(e.message); }
+  };
+  for (const btn of $('model-table').querySelectorAll('[data-enable]')) {
+    btn.onclick = () => {
+      const on = btn.dataset.to === '1';
+      if (!on && !confirm(`ปิด "${btn.dataset.enable}" ชั่วคราว?\n\n` +
+                          'สมาชิกจะไม่เห็น alias นี้ในรายการ แต่ไฟล์ตั้งค่ายังอยู่ เปิดกลับได้ทุกเมื่อ')) return;
+      setEnabled(btn.dataset.enable, { enabled: on });
+    };
+  }
+  for (const btn of $('model-table').querySelectorAll('[data-ep-model]')) {
+    btn.onclick = () => setEnabled(btn.dataset.epModel, {
+      enabled: btn.dataset.epTo === '1', endpoint: btn.dataset.ep,
+    });
   }
   for (const btn of $('model-table').querySelectorAll('[data-del]')) {
     btn.onclick = async () => {

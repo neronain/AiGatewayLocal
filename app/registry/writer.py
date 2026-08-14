@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -128,12 +129,14 @@ def write_model(config_dir: Path, definition: ModelDefinition) -> Path:
     """
     path = model_path(config_dir, definition.alias)
     path.parent.mkdir(parents=True, exist_ok=True)
-    content = render_yaml(definition)
+    _atomic_write(path, render_yaml(definition), definition.alias)
+    log.info("wrote model definition %s", path)
+    return path
 
+
+def _atomic_write(path: Path, content: str, alias: str) -> None:
     try:
-        fd, tmp_name = tempfile.mkstemp(
-            dir=str(path.parent), prefix=f".{definition.alias}.", suffix=".tmp"
-        )
+        fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{alias}.", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(content)
@@ -164,8 +167,107 @@ def write_model(config_dir: Path, definition: ModelDefinition) -> Path:
             ErrorCode.INTERNAL_ERROR, f"Could not write the model file: {exc}"
         ) from exc
 
-    log.info("wrote model definition %s", path)
-    return path
+
+# `enabled: true` / `enabled: false`, with whatever trailing comment it carries.
+_ENABLED_LINE = re.compile(r"^(\s*)enabled:\s*(?:true|false)\s*(#.*)?$", re.IGNORECASE)
+
+
+def set_enabled_in_file(path: Path, enabled: bool, endpoint: str | None = None) -> bool:
+    """Flip one `enabled:` flag, leaving every other byte of the file alone.
+
+    Rewriting the document from the parsed model - what `write_model` does - is
+    the right trade when an admin edited the fields: they saw a form, they
+    expect the file to be regenerated. It is the wrong trade for a switch. The
+    rewrite drops every comment in the file, and comments in a registry file are
+    where an operator explains why a backend is set up the way it is - the
+    single-slot note on a llama.cpp box, why one endpoint has lower priority.
+    Losing that to a toggle is a bad bargain, and the toggle is exactly when the
+    next person is most likely to be reading it.
+
+    Returns False when the flag cannot be located confidently, so the caller
+    falls back to a full rewrite rather than guessing at the file's structure.
+    """
+    try:
+        original = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+    lines = original.splitlines(keepends=True)
+    block = _endpoint_block(lines, endpoint) if endpoint else _spec_block(lines)
+    if block is None:
+        return False
+    start, stop, indent = block
+
+    for index in range(start, stop):
+        match = _ENABLED_LINE.match(lines[index].rstrip("\n"))
+        if match and len(match.group(1)) == indent:
+            comment = f"  {match.group(2)}" if match.group(2) else ""
+            ending = "\n" if lines[index].endswith("\n") else ""
+            lines[index] = f"{' ' * indent}enabled: {str(enabled).lower()}{comment}{ending}"
+            _atomic_write(path, "".join(lines), path.stem)
+            return True
+
+    # No key at all means the schema default, which is `true`. Asking for true
+    # is then already satisfied; asking for false has to be written down.
+    if enabled:
+        return True
+    insert = _last_content_line(lines, start, stop) + 1
+    lines.insert(insert, f"{' ' * indent}enabled: false\n")
+    _atomic_write(path, "".join(lines), path.stem)
+    return True
+
+
+def _indent_of(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _is_content(line: str) -> bool:
+    stripped = line.strip()
+    return bool(stripped) and not stripped.startswith("#")
+
+
+def _last_content_line(lines: list[str], start: int, stop: int) -> int:
+    """Where the block's own text ends - a trailing comment usually introduces
+    the next item, so an insert has to land before it."""
+    for index in range(stop - 1, start - 1, -1):
+        if _is_content(lines[index]):
+            return index
+    return stop - 1
+
+
+def _spec_block(lines: list[str]) -> tuple[int, int, int] | None:
+    """The `spec:` mapping, and the indent its own keys sit at."""
+    for index, line in enumerate(lines):
+        if line.rstrip("\n") != "spec:":
+            continue
+        indent = next(
+            (_indent_of(after) for after in lines[index + 1 :] if _is_content(after)), 0
+        )
+        if indent == 0:
+            return None
+        stop = len(lines)
+        for after in range(index + 1, len(lines)):
+            if _is_content(lines[after]) and _indent_of(lines[after]) == 0:
+                stop = after
+                break
+        return index + 1, stop, indent
+    return None
+
+
+def _endpoint_block(lines: list[str], name: str) -> tuple[int, int, int] | None:
+    """The one list item under `endpoints:` whose `name:` matches."""
+    wanted = {f"- name: {name}", f"- name: '{name}'", f'- name: "{name}"'}
+    for index, line in enumerate(lines):
+        if line.strip() not in wanted:
+            continue
+        indent = _indent_of(line) + 2  # past the "- ", where the item's keys sit
+        stop = len(lines)
+        for after in range(index + 1, len(lines)):
+            if _is_content(lines[after]) and _indent_of(lines[after]) < indent:
+                stop = after
+                break
+        return index, stop, indent
+    return None
 
 
 def delete_model(config_dir: Path, alias: str) -> bool:

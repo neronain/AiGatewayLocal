@@ -97,7 +97,8 @@ def test_removal_leaves_the_key_alone(client):
     key = client.post("/admin/api-keys", headers=auth(client.admin_key),
                       json={"user_id": user["id"], "workspace_id": ws["id"], "name": "lab"}).json()
 
-    client.delete(f"/admin/workspaces/{ws['id']}/members/{user['id']}", headers=auth(client.admin_key))
+    client.delete(f"/admin/workspaces/{ws['id']}/members/{user['id']}",
+                  headers=auth(client.admin_key))
 
     keys = client.get("/admin/api-keys", headers=auth(client.admin_key)).json()["data"]
     still = next(k for k in keys if k["id"] == key["id"])

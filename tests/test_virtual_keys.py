@@ -54,11 +54,11 @@ def test_a_key_can_name_the_models_it_may_use(client):
 
 def test_an_alias_that_does_not_exist_is_refused_at_issue_time(client):
     """key ที่ระบุ alias ผิดคือ key ที่เรียกอะไรไม่ได้ และไม่มีอะไรบอกจนกว่าจะลอง"""
+    users = client.get("/admin/users", headers=auth(client.admin_key)).json()["data"]
     r = client.post(
         "/admin/api-keys",
         headers=auth(client.admin_key),
-        json={"user_id": client.get("/admin/users", headers=auth(client.admin_key)).json()["data"][0]["id"],
-              "models": ["not-a-model"]},
+        json={"user_id": users[0]["id"], "models": ["not-a-model"]},
     )
     assert r.status_code in (400, 404)
     assert "not-a-model" in r.text

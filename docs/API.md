@@ -276,6 +276,7 @@ network at the proxy (SEC-5).
 | POST | `/admin/quota-policies` | admin | Create a policy |
 | GET | `/admin/quota-policies` | manager | List policies |
 | GET | `/admin/models` | admin | Registry incl. upstream names, endpoints, health |
+| PATCH | `/admin/models/{alias}/enabled` | admin | Take an alias or one endpoint out of service |
 | POST | `/admin/registry/reload` | admin | Reload YAML (see the worker caveat below) |
 | POST | `/admin/models/{alias}/compatibility` | admin | Record a test result |
 | GET | `/admin/models/{alias}/compatibility` | manager | READY / DEGRADED roll-up |
@@ -369,6 +370,27 @@ the connection is what did not:
 ```json
 { "ok": false, "reason": "The deploy tool rejected the token. Copy the one it prints with `lmds web --status`." }
 ```
+
+### `PATCH /admin/models/{alias}/enabled`
+
+Takes a model out of service without deleting its file. `enabled` was already
+honoured everywhere — the catalogue hides a disabled alias, routing skips a
+disabled endpoint — the console just had no way to set it, so the only way down
+was to delete the file and rebuild it afterwards.
+
+```json
+{ "enabled": false }                              // the whole alias
+{ "enabled": false, "endpoint": "spark-worker" }  // one backend, alias keeps serving
+```
+
+Turning off the last serving endpoint is refused: the alias would stay listed
+and be unable to answer, which reads as a broken gateway rather than a
+deliberate change. Disable the model itself instead.
+
+Only that one `enabled:` line in the YAML is rewritten. The full re-render used
+by `POST /admin/models` regenerates the document from the parsed model and
+drops every comment in it — a fair trade for a form submission, a bad one for a
+switch.
 
 ### `POST /admin/models/{alias}/apply-fix`
 

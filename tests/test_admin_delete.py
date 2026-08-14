@@ -33,7 +33,8 @@ def _first_user_id(client) -> str:
 
 
 def _key_ids(client) -> set[str]:
-    return {k["id"] for k in client.get("/admin/api-keys", headers=auth(client.admin_key)).json()["data"]}
+    listing = client.get("/admin/api-keys", headers=auth(client.admin_key)).json()
+    return {k["id"] for k in listing["data"]}
 
 
 # ── keys ────────────────────────────────────────────────────────────────────
