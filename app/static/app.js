@@ -1155,8 +1155,11 @@ async function loadAccess() {
         <td><code>${esc(k.key_prefix)}…</code></td>
         <td>${esc(u ? u.external_id : k.user_id)}</td>
         <td>${esc(workspace ? workspace.code : '—')}</td>
-        <td>${esc(k.name || '—')}${(k.models || []).length
-          ? `<div class="hint">เฉพาะ ${(k.models || []).map(esc).join(', ')}</div>` : ''}</td>
+        <td>${esc(k.name || '—')}${k.kind === 'service'
+            ? ' <span class="pill mute">service</span>' : ''}${(k.models || []).length
+          ? `<div class="hint">เฉพาะ ${(k.models || []).map(esc).join(', ')}</div>` : ''}${
+          (k.access_groups || []).length
+          ? `<div class="hint">มัด ${(k.access_groups || []).length} ชุด</div>` : ''}</td>
         <td class="hint">${k.expires_at ? new Date(k.expires_at).toLocaleDateString() : 'never'}</td>
         <td class="hint">${k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'never'}</td>
         <td><span class="pill ${k.revoked ? 'err' : 'ok'}">${k.revoked ? 'revoked' : 'active'}</span></td>
@@ -1214,6 +1217,17 @@ async function loadAccess() {
         <label><input type="checkbox" data-workspace="${esc(c.id)}" value="${esc(a)}"${
           (c.models || []).includes(a) ? ' checked' : ''}> ${esc(a)}</label>
       `).join('') || '<span class="hint">ยังไม่มีโมเดลใน registry</span>'}
+        <div class="ws-defaults">
+          <span class="hint">key ที่ออกให้สมาชิกเริ่มต้นที่:</span>
+          <label>โมเดล
+            <select multiple size="2" data-wsdefault="${esc(c.id)}">${aliases.map((a) => `
+              <option value="${esc(a)}"${(c.default_member_models || []).includes(a)
+                ? ' selected' : ''}>${esc(a)}</option>`).join('')}</select></label>
+          <label>อายุ (วัน)
+            <input type="number" min="0" data-wsdays="${esc(c.id)}"
+              value="${c.default_key_days || 0}"></label>
+          <span class="hint">0 = ไม่หมดอายุ · ว่าง = ไม่ตั้งค่าเริ่มต้น</span>
+        </div>
         ${groups.data.length ? `<div class="ws-bundles">${groups.data.map((g) => `
           <label><input type="checkbox" data-wsgroup="${esc(c.id)}" value="${esc(g.id)}"${
             (c.access_groups || []).includes(g.id) ? ' checked' : ''}>
@@ -1252,12 +1266,18 @@ async function loadAccess() {
         .map((i) => i.value);
       const access_groups = [...document.querySelectorAll(`input[data-wsgroup="${id}"]:checked`)]
         .map((i) => i.value);
+      const picker = document.querySelector(`select[data-wsdefault="${id}"]`);
+      const default_member_models = [...(picker?.selectedOptions || [])].map((o) => o.value);
+      const default_key_days = Number(
+        document.querySelector(`input[data-wsdays="${id}"]`)?.value) || 0;
       // ไม่ติ๊กอะไรเลย = workspace นี้เรียกโมเดลไม่ได้สักตัว (ไม่มีแถว = ไม่อนุญาต)
       // ซึ่งต่างจาก "ยังไม่ได้ตั้ง" อย่างสิ้นเชิง — key ที่ผูกกับมันจะใช้ไม่ได้ทันที
       if (!models.length && !access_groups.length && !confirm('ไม่ได้เลือกโมเดลหรือมัดเลย\n\n'
         + 'key ที่ผูกกับ workspace นี้จะเรียกโมเดลไม่ได้สักตัว ยืนยันไหม?')) return;
       try {
-        await post(`/admin/workspaces/${id}/models`, { models, access_groups });
+        await post(`/admin/workspaces/${id}/models`, {
+          models, access_groups, default_member_models, default_key_days,
+        });
         await loadAccess();
         banner('error', 'ok',
           `บันทึกแล้ว · โมเดล: ${models.join(', ') || 'ไม่มี'}`

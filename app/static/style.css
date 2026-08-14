@@ -409,6 +409,38 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .ws-bundles .hint { margin: 0; }
 .ws-bundles svg { color: var(--c2); vertical-align: -2px; }
 
+/* What the three roles mean, next to where one is chosen. Closed by default:
+   it is a reference for the first time and noise every time after. */
+.roles {
+  margin: -4px 0 12px; border: 1px solid var(--line);
+  border-radius: var(--r); background: var(--card);
+}
+.roles > summary {
+  padding: 9px 14px; cursor: pointer; color: var(--fg2);
+  font-size: 0.8125rem; list-style: none;
+}
+.roles > summary::-webkit-details-marker { display: none; }
+.roles > summary::before { content: "▸ "; color: var(--fg3); }
+.roles[open] > summary::before { content: "▾ "; }
+.roles > summary:hover { color: var(--fg); }
+.roles-body { padding: 0 14px 14px; }
+.roles-body table { box-shadow: none; margin-bottom: 10px; }
+.roles-body td { vertical-align: top; }
+
+/* Defaults for new members sit below the models, because they answer the next
+   question rather than the same one. */
+.ws-defaults {
+  display: flex; align-items: flex-end; flex-wrap: wrap; gap: 8px 14px;
+  margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line2);
+  flex-basis: 100%;
+}
+.ws-defaults label {
+  display: grid; gap: 3px; margin: 0; font-size: 0.6875rem; color: var(--fg3);
+}
+.ws-defaults select { min-width: 9em; }
+.ws-defaults input { width: 5em; }
+.ws-defaults .hint { margin: 0; align-self: center; }
+
 /* A held class stays in the list, legibly on hold — it is coming back, which
    is the difference between suspending it and revoking everybody's keys. */
 tr.ws-suspended > td { opacity: .62; }

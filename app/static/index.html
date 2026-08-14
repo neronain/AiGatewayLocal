@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.13.0">
+<link rel="stylesheet" href="style.css?v=1.15.0">
 </head>
 <body>
 
@@ -308,6 +308,46 @@
 
     <div>
       <h2><span class="hi" data-icon="people" data-icon-size="15" aria-hidden="true"></span>People</h2>
+
+      <!-- Roles are three fixed levels, not a policy editor. Saying so where
+           the dropdown is stops people hunting for a screen that does not
+           exist, and says what to use instead. -->
+      <details class="roles">
+        <summary>สามระดับนี้ต่างกันอย่างไร · ตั้งค่าเองไม่ได้</summary>
+        <div class="roles-body">
+          <table>
+            <tr><th>Role</th><th>เรียกโมเดลได้</th><th>ดูแลอะไรได้</th></tr>
+            <tr>
+              <td><code>member</code></td>
+              <td>เท่าที่กลุ่มของตัวเองเปิดให้</td>
+              <td>ของตัวเองเท่านั้น — ออก key ให้ตัวเอง เปลี่ยนรหัสผ่าน</td>
+            </tr>
+            <tr>
+              <td><code>manager</code></td>
+              <td>เท่าที่กลุ่มของตัวเองเปิดให้ <em>เหมือน member</em></td>
+              <td>เฉพาะกลุ่มที่ตัวเองสังกัด — เพิ่ม/เอาคนออก ตั้งโมเดลของกลุ่ม
+                  ออก key ให้คนในกลุ่ม ดู usage ของกลุ่ม ·
+                  <strong>แจกโมเดลที่ตัวเองใช้ไม่ได้ ไม่ได้</strong></td>
+            </tr>
+            <tr>
+              <td><code>admin</code></td>
+              <td>ทุกโมเดลใน registry</td>
+              <td>ทั้ง gateway — registry, มัดโมเดล, quota, ทุกกลุ่ม ทุกคน</td>
+            </tr>
+          </table>
+          <p class="hint">
+            <strong>ทั้งสามระดับนี้แก้ไม่ได้และเพิ่มระดับใหม่ไม่ได้</strong> — กติกาอยู่ในโค้ดเพื่อให้
+            ทุกที่ที่ติดตั้งระบบนี้มีความหมายเดียวกัน · สิ่งที่ปรับได้คือ
+            <em>ใครอยู่กลุ่มไหน</em> (ตาราง People), <em>กลุ่มนั้นใช้โมเดลอะไรได้</em>
+            (Workspaces / Access groups), <em>key ใบนั้นถูกจำกัดแค่ไหน</em> (Issue an API key)
+            และ <em>ใช้ได้มากแค่ไหน</em> (แท็บ Quota)
+          </p>
+          <p class="hint">
+            manager ที่ยังไม่อยู่กลุ่มไหนเลยจะดูแลอะไรไม่ได้ — ใส่เขาเข้ากลุ่มก่อน
+          </p>
+        </div>
+      </details>
+
       <div class="scroll"><table id="user-table"></table></div>
     </div>
 
@@ -594,6 +634,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.13.0"></script>
+<script src="app.js?v=1.15.0"></script>
 </body>
 </html>

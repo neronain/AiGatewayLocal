@@ -90,6 +90,14 @@ class Workspace(Base, TimestampMixin):
     term: Mapped[str] = mapped_column(String(32), default="")
     status: Mapped[str] = mapped_column(String(32), default="active")
 
+    # What a key issued to a member of this workspace starts as. Enrolling
+    # thirty people otherwise means typing the same settings thirty times, and
+    # the one that gets mistyped is found weeks later by the person it belongs
+    # to. Empty means "no default", not "nothing allowed".
+    default_member_models: Mapped[list] = mapped_column(JSON, default=list)
+    default_access_groups: Mapped[list] = mapped_column(JSON, default=list)
+    default_key_days: Mapped[int] = mapped_column(Integer, default=0)
+
     memberships: Mapped[list[Membership]] = relationship(back_populates="workspace")
     allowed_models: Mapped[list[WorkspaceModel]] = relationship(back_populates="workspace")
 
@@ -132,6 +140,10 @@ class ApiKey(Base, TimestampMixin):
     # was this key issued for", so they add up with each other and then narrow
     # what the owner's workspaces already allow.
     access_groups: Mapped[list] = mapped_column(JSON, default=list)
+    # "person" or "service". Changes no rule - it is there so that a CI token
+    # and a student's laptop key stop looking identical in a list of two hundred,
+    # which is what makes an audit take an afternoon.
+    kind: Mapped[str] = mapped_column(String(16), default="person")
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

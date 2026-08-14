@@ -308,6 +308,39 @@ that narrowed before. Only an admin can define one, and a manager can only hand
 out bundles whose models they could call themselves — otherwise granting
 yourself a bundle would be the way around every other check.
 
+**What each role can do — and why there is no screen to change it.**
+
+Three fixed levels, decided in code so that this gateway means the same thing at
+every site that installs it:
+
+| Role | May call | May administer |
+|---|---|---|
+| `member` | whatever their workspaces allow | themselves only — their own keys and password |
+| `manager` | whatever their workspaces allow, *same as a member* | only the workspaces they belong to: add and remove people, set that class's models, issue keys to its members, read its usage. **Cannot hand out a model they cannot call themselves.** |
+| `admin` | every model in the registry | the whole gateway — registry, bundles, quota, every workspace and person |
+
+There is deliberately no role editor. What you configure is *who is in which
+workspace* (People), *what that workspace may call* (Workspaces and Access
+groups), *how far a key is narrowed* (Issue an API key) and *how much may be
+used* (Quota). Roles decide the shape of someone's authority; those four decide
+its extent.
+
+A manager who is in no workspace administers nothing. Put them in their classes
+first — the opposite default from model access, so that promoting somebody does
+not quietly hand them the institution.
+
+**Defaults for a whole class.** Set `default_member_models`,
+`default_access_groups` and `default_key_days` on the workspace and a key issued
+to one of its members starts there, instead of thirty keys being typed by hand
+with one of them mistyped. Only blanks are filled: sending `"models": []`
+explicitly means "unrestricted" and is left alone. The issue response reports
+what was filled in and which class it came from, because a default that applies
+silently is a setting nobody knows they have.
+
+**Marking service keys.** `"kind": "service"` on a key changes no rule; it exists
+so a CI token and a student's laptop key stop looking identical in a list of two
+hundred, which is what turns an audit into an afternoon.
+
 **Putting a class on hold.** `PATCH /admin/workspaces/{id}/status` with
 `suspended` stops it granting any models; `active` brings it back. Nobody's key
 is touched, which is the difference from revoking them — end of term, a course

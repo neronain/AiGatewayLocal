@@ -574,6 +574,9 @@ async def list_workspaces(
                 "status": c.status,
                 "models": sorted(allowed.get(c.id, [])),
                 "access_groups": sorted(held.get(c.id, [])),
+                "default_member_models": list(c.default_member_models or []),
+                "default_access_groups": list(c.default_access_groups or []),
+                "default_key_days": c.default_key_days or 0,
             }
             for c in spaces
         ]
@@ -644,6 +647,19 @@ async def set_workspace_models(
             session.add(
                 WorkspaceAccessGroup(workspace_id=workspace_id, access_group_id=group_id)
             )
+
+    # What a key issued to a member of this class starts as. Omitted fields are
+    # left alone, so a caller that predates them does not clear them.
+    if "default_member_models" in payload:
+        defaults = [str(a) for a in (payload.get("default_member_models") or [])]
+        await _known_aliases(state, defaults)
+        workspace.default_member_models = defaults
+    if "default_access_groups" in payload:
+        workspace.default_access_groups = [
+            str(g) for g in (payload.get("default_access_groups") or [])
+        ]
+    if "default_key_days" in payload:
+        workspace.default_key_days = max(int(payload.get("default_key_days") or 0), 0)
 
     await audit(
         session,
@@ -723,6 +739,28 @@ class ApiKeyIn(BaseModel):
     models: list[str] = Field(default_factory=list)
     # มัดที่ระบุบน key · รวมกับ models ข้างบนก่อน แล้วจึงไปตัดกับสิทธิ์ของเจ้าของ
     access_groups: list[str] = Field(default_factory=list)
+    # person | service · ไม่เปลี่ยนกติกาสิทธิ์ มีไว้ให้แยกออกในรายการ
+    kind: str = "person"
+
+
+async def _workspace_defaults(
+    session: AsyncSession, payload: ApiKeyIn
+) -> Workspace | None:
+    """The class whose defaults should fill in what the caller left blank.
+
+    The workspace named on the key, if there is one. Otherwise the owner's, but
+    only when they are in exactly one - with two classes there is no right
+    answer, and guessing would hand somebody the wrong term's settings.
+    """
+    if payload.workspace_id:
+        return await session.get(Workspace, payload.workspace_id)
+    rows = await session.execute(
+        select(Workspace)
+        .join(Membership, Membership.workspace_id == Workspace.id)
+        .where(Membership.user_id == payload.user_id)
+    )
+    spaces = list(rows.scalars())
+    return spaces[0] if len(spaces) == 1 else None
 
 
 @router.post("/api-keys", status_code=201)
@@ -781,6 +819,31 @@ async def create_api_key(
             session, actor, sorted({a for g in found for a in (g.models or [])}), state
         )
 
+    # Fill in what the caller left blank from the class's defaults. Only blanks:
+    # an explicit empty list is a decision ("this key is unrestricted") and
+    # overwriting it would be the console arguing with the person using it.
+    #
+    # "The caller did not choose" is `model_fields_set`, never the value: every
+    # one of these fields has a default of its own, and reading the default as
+    # a choice is what made the workspace's expiry silently lose to the schema's
+    # 180 days.
+    applied: dict[str, Any] = {}
+    blanks = {"models", "access_groups", "expires_in_days"} - payload.model_fields_set
+    if blanks:
+        home = await _workspace_defaults(session, payload)
+        if home is not None:
+            if "models" in blanks and home.default_member_models:
+                payload.models = list(home.default_member_models)
+                applied["models"] = payload.models
+            if "access_groups" in blanks and home.default_access_groups:
+                payload.access_groups = list(home.default_access_groups)
+                applied["access_groups"] = payload.access_groups
+            if "expires_in_days" in blanks and home.default_key_days:
+                payload.expires_in_days = home.default_key_days
+                applied["expires_in_days"] = payload.expires_in_days
+            if applied:
+                applied["from_workspace"] = home.code
+
     plaintext, prefix, digest = generate_api_key()
     expires_at = (
         utcnow() + timedelta(days=payload.expires_in_days)
@@ -796,6 +859,7 @@ async def create_api_key(
         scopes=payload.scopes,
         models=payload.models,
         access_groups=payload.access_groups,
+        kind="service" if payload.kind == "service" else "person",
         expires_at=expires_at,
     )
     session.add(api_key)
@@ -808,7 +872,12 @@ async def create_api_key(
         "user_id": payload.user_id,
         "workspace_id": payload.workspace_id,
         "models": payload.models,
+        "access_groups": payload.access_groups,
+        "kind": api_key.kind,
         "expires_at": expires_at.isoformat() if expires_at else None,
+        # What was filled in for you, and where it came from. A default that
+        # applies silently is a setting nobody knows they have.
+        "applied_defaults": applied,
         "warning": "Store this key now. It cannot be retrieved again.",
     }
 
@@ -868,6 +937,7 @@ async def list_api_keys(
                 "key_prefix": k.key_prefix,
                 "models": list(k.models or []),
                 "access_groups": list(k.access_groups or []),
+                "kind": k.kind or "person",
                 "revoked": k.revoked_at is not None,
                 "expires_at": k.expires_at.isoformat() if k.expires_at else None,
                 "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
