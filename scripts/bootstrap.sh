@@ -94,6 +94,21 @@ for _ in {1..30}; do
         echo "  Console : http://$(hostname -I | awk '{print $1}'):8080/console"
         echo "  Docs    : http://$(hostname -I | awk '{print $1}'):8080/docs"
         echo "  Logs    : journalctl -u ${SERVICE_NAME} -f"
+        echo
+
+        # HTTPS belongs to the install, not to a follow-up someone gets to
+        # later. Plenty of clients refuse http:// outright, and a gateway that
+        # only speaks plain HTTP is one those clients simply cannot use - which
+        # surfaces weeks in, as "the SDK does not work", not as a TLS problem.
+        if [[ "${SKIP_TLS:-}" == "1" ]]; then
+            warn "SKIP_TLS=1 - HTTPS not configured. Run scripts/install_tls.sh when ready."
+        else
+            log "Setting up HTTPS"
+            "$REPO_DIR/scripts/install_tls.sh" || {
+                warn "HTTPS setup failed. The gateway is running on :8080; fix and re-run"
+                warn "  sudo ./scripts/install_tls.sh"
+            }
+        fi
         exit 0
     fi
     sleep 1

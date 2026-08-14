@@ -473,20 +473,63 @@ with no `subjectAltName`, which every current browser and HTTP client rejects.
 People then reach for `--insecure` everywhere, which is worse than plain HTTP
 because it looks encrypted while verifying nothing.
 
-`scripts/make_tls_cert.sh` creates a small CA of your own and issues a server
-certificate from it with the right names, including IP addresses as IP SANs:
+**`scripts/bootstrap.sh` does all of this for you.** HTTPS is part of the
+install, not a follow-up step: the last thing bootstrap does is run
+`scripts/install_tls.sh`, which issues the certificate, writes the nginx site,
+checks it, and reloads. Set `SKIP_TLS=1` to opt out.
+
+To set it up on a gateway that is already running, or to change the names:
 
 ```bash
-./scripts/make_tls_cert.sh --out ./certs litegate.local 192.168.1.10
-sudo install -m 644 certs/litegate.crt /etc/ssl/certs/litegate.crt
-sudo install -m 600 certs/litegate.key /etc/ssl/private/litegate.key
-sudo cp deploy/nginx/litegate.conf /etc/nginx/sites-available/
-sudo ln -s ../sites-available/litegate.conf /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
+sudo ./scripts/install_tls.sh                       # names detected from the host
+sudo ./scripts/install_tls.sh litegate.local 192.168.1.10
+sudo ./scripts/install_tls.sh --cert /path/fullchain.pem --key /path/key.pem
 ```
 
+It is safe to re-run: an existing certificate with more than a week left is
+kept, so re-running to change a hostname does not churn the certificate or make
+anyone reinstall the CA.
+
+What you end up with:
+
+| Port | Serves | For |
+|---|---|---|
+| 443 | nginx, TLS | the address you hand out |
+| 80 | 301 to 443 | so a typed hostname lands somewhere |
+| 8080 | the app, plain HTTP | scripts, health checks, LAN clients |
+
+Underneath, `scripts/make_tls_cert.sh` creates a small CA of your own and
+issues a server certificate with the right names, including IP addresses as IP
+SANs. Call it directly if you want the files without touching nginx.
+
 List **every** name the gateway will be reached by. A certificate for the
-hostname does not cover the IP, and clients differ in which they send.
+hostname does not cover the IP, and clients differ in which they send —
+`install_tls.sh` defaults to the hostname plus every non-loopback address.
+
+### HSTS is off unless the certificate is publicly trusted
+
+HSTS tells a browser "this host is HTTPS-only" and it is believed for a year.
+Paired with a private CA that costs more than it buys:
+
+* Chrome does not offer the **proceed anyway** link on an HSTS host. The first
+  visit — before anyone has installed the CA — becomes a dead end rather than a
+  warning you can click past.
+* The promise covers the *host*, not the port. Every `http://` URL for that
+  machine is upgraded, **including `http://host:8080`**, which then fails
+  because nothing is listening for TLS there. This is a confusing failure: the
+  browser reports a connection error, so it looks like the app is down.
+
+So `install_tls.sh` emits the header only with `--cert` (a real certificate) or
+an explicit `--hsts`.
+
+If a browser already has the pin, removing the header does not release it —
+the browser keeps its promise for the full year. Clear it by hand:
+
+* **Chrome / Edge** — `chrome://net-internals/#hsts` → *Delete domain security
+  policies* → enter the host → **Delete**
+* **Firefox** — History → *Forget About This Site* for that host
+* **Safari** — Develop → *Empty Caches*, then remove the site's data in
+  Settings → Privacy → Manage Website Data
 
 Then install `certs/ca.crt` on the machines that call the gateway — the script
 prints the command for each platform. Until you do, they are right to refuse the
@@ -499,15 +542,20 @@ curl https://192.168.1.10/healthz
 Re-running the script reuses an existing CA, so certificates issued later stay
 trusted and nobody reinstalls anything.
 
-**Two things to change once TLS is in front:**
+**One thing to decide once TLS is in front:** how much of the network should
+still reach port 8080 directly.
 
-* **Bind the app to localhost.** With a proxy in front, `--host 0.0.0.0` leaves
-  port 8080 reachable directly, which bypasses TLS, the rate limits and the
-  `/admin` and `/metrics` restrictions in the nginx config. Change the systemd
-  unit to `--host 127.0.0.1`.
-* **Nothing else.** The session cookie already sets `Secure` when the request
-  arrives over HTTPS, which works behind the proxy because the unit passes
-  `--proxy-headers`.
+The app binds `0.0.0.0:8080` so scripts, health checks and LAN clients keep
+working. That port bypasses TLS, the rate limits, and the `/admin` and
+`/metrics` restrictions in the nginx config. On a campus network where members
+can route to the gateway host, change the systemd unit to `--host 127.0.0.1`
+and hand out only the HTTPS address. On an isolated rack where the only things
+that can reach it are yours, leaving it open costs nothing and saves an
+argument with every monitoring probe.
+
+Nothing else changes. The session cookie already sets `Secure` when the request
+arrives over HTTPS, which works behind the proxy because the unit passes
+`--proxy-headers`.
 
 If you *do* have a public hostname, use the Caddy config instead and let it
 obtain a real certificate — then none of the CA installation applies.
