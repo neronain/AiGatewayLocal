@@ -2445,6 +2445,105 @@ async def get_test_run(
     }
 
 
+@router.get("/usage/quota")
+async def quota_usage(
+    limit: int = Query(200, le=1000),
+    actor: Principal = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """How much of their allowance each person has spent, and against what.
+
+    Deliberately per person, not per key. The counters are keyed by user and the
+    limits resolve per user, so a bar drawn on a key would be showing somebody
+    else's number under that key's name - which is worse than showing nothing,
+    because it looks authoritative.
+
+    Read through the same counter store the request path uses. Reading the
+    database directly would be faster and would report zeroes on every
+    deployment running Redis, since that is where the real counts live.
+    """
+    stmt = select(User).where(User.status == "active").limit(limit)
+    visible = await _visible_users(session, actor)
+    if visible is not None:
+        stmt = stmt.where(User.id.in_(visible))
+    users = list((await session.execute(stmt)).scalars())
+
+    rows = []
+    for user in users:
+        limits = await state.quota.resolve_limits(session, user.id, None, "")
+        snapshot = await state.quota.usage_snapshot(user.id, limits)
+        used, caps = snapshot["used"], snapshot["limits"]
+        # The tightest of the four is the one that will actually stop them, so
+        # that is the number worth putting on a bar.
+        percents = [
+            round(100 * used[u] / caps[c])
+            for u, c in (
+                ("requests", "max_requests"),
+                ("input_tokens", "max_input_tokens"),
+                ("output_tokens", "max_output_tokens"),
+                ("images", "max_images"),
+            )
+            if caps[c]
+        ]
+        rows.append({
+            "user_id": user.id,
+            "external_id": user.external_id,
+            "window": snapshot["window"],
+            "window_end": snapshot["window_end"],
+            "source": limits.source,
+            "used": used,
+            "limits": caps,
+            "percent": max(percents) if percents else None,
+        })
+    return {"data": rows}
+
+
+@router.get("/usage/by-key")
+async def usage_by_key(
+    days: int = Query(7, ge=1, le=365),
+    actor: Principal = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """What each key has actually done lately.
+
+    Activity, not allowance: a key is one of several a person may hold, and the
+    limit belongs to the person. Useful for the question a key list cannot
+    otherwise answer - which of these is still in use, and which was issued for
+    something that finished months ago.
+    """
+    await state.usage.flush()
+    since = datetime.now(UTC) - timedelta(days=days)
+
+    stmt = (
+        select(
+            UsageLog.api_key_id,
+            func.count(UsageLog.id),
+            func.sum(UsageLog.total_tokens),
+            func.max(UsageLog.ts),
+        )
+        .where(UsageLog.ts >= since, UsageLog.api_key_id.is_not(None))
+        .group_by(UsageLog.api_key_id)
+    )
+    visible = await _visible_users(session, actor)
+    if visible is not None:
+        stmt = stmt.where(UsageLog.user_id.in_(visible))
+
+    return {
+        "days": days,
+        "data": [
+            {
+                "api_key_id": key_id,
+                "requests": int(requests or 0),
+                "tokens": int(tokens or 0),
+                "last_seen": last.isoformat() if last else None,
+            }
+            for key_id, requests, tokens, last in (await session.execute(stmt)).all()
+        ],
+    }
+
+
 @router.get("/usage/summary")
 async def usage_summary(
     days: int = Query(7, ge=1, le=365),

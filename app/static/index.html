@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.21.0">
+<link rel="stylesheet" href="style.css?v=1.23.0">
 </head>
 <body>
 
@@ -307,7 +307,12 @@
     </div>
 
     <div>
-      <h2><span class="hi" data-icon="people" data-icon-size="15" aria-hidden="true"></span>People</h2>
+      <div class="bar" style="margin-bottom:4px">
+        <h2 style="margin:0;flex:1"><span class="hi" data-icon="people" data-icon-size="15"
+          aria-hidden="true"></span>People</h2>
+        <span class="sub"><span class="hi" data-icon="gauge" data-icon-size="14"
+          aria-hidden="true"></span>โควตานับต่อคน ไม่ใช่ต่อ key</span>
+      </div>
 
       <!-- Roles are three fixed levels, not a policy editor. Saying so where
            the dropdown is stops people hunting for a screen that does not
@@ -673,6 +678,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.21.0"></script>
+<script src="app.js?v=1.23.0"></script>
 </body>
 </html>

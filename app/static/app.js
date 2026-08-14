@@ -195,6 +195,9 @@ const ICONS = {
         + 'M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/>',
   trending: '<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
   bundle: '<path d="M3 8l9-4 9 4-9 4z"/><path d="M3 8v8l9 4 9-4V8"/><path d="M12 12v8"/>',
+  gauge: '<path d="M4.5 18a8 8 0 1 1 15 0"/><path d="M12 14l4-3.5"/><circle cx="12" cy="14" r="1.2"/>',
+  pulse: '<path d="M3 12h3.5L9 5l4 14 2.5-7H21"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
 };
 
 const icon = (name, size = 20) =>
@@ -1050,11 +1053,55 @@ function renderAccessGroups(groups, aliases) {
   }
 }
 
+// The limit belongs to the person, so the bar does too. Four limits can apply
+// at once; the one nearest its ceiling is the one that will stop them, so that
+// is the one drawn — a bar showing the roomiest number would read as "fine"
+// right up until a request is refused.
+// Activity, not allowance. A key is one of several a person may hold and the
+// limit belongs to the person, so this answers the question a key list cannot
+// otherwise answer: which of these is still in use.
+function activityCell(a) {
+  if (!a || !a.requests) return '<span class="hint">—</span>';
+  return `<span title="7 วันล่าสุด">${num(a.requests)} ครั้ง</span>
+    <div class="hint">${num(a.tokens)} โทเคน</div>`;
+}
+
+function quotaCell(q) {
+  if (!q) return '<span class="hint">—</span>';
+  const named = [
+    ['requests', 'max_requests', 'ครั้ง'],
+    ['input_tokens', 'max_input_tokens', 'โทเคนเข้า'],
+    ['output_tokens', 'max_output_tokens', 'โทเคนออก'],
+    ['images', 'max_images', 'ภาพ'],
+  ].filter(([, cap]) => q.limits[cap]);
+
+  if (!named.length) {
+    return `<span class="hint">ไม่จำกัด · ${num(q.used.requests)} ครั้งใน${
+      q.window === 'day' ? 'วันนี้' : `รอบ${esc(q.window)}นี้`}</span>`;
+  }
+  const [useKey, capKey, unit] = named
+    .map((n) => [...n, q.used[n[0]] / q.limits[n[1]]])
+    .sort((a, b) => b[3] - a[3])[0];
+  const pct = Math.min(100, Math.round(100 * q.used[useKey] / q.limits[capKey]));
+  const level = pct >= 90 ? 'err' : pct >= 70 ? 'warn' : 'ok';
+  return `<div class="meter" title="รอบ${esc(q.window)} · เกณฑ์จาก ${esc(q.source)}">
+    <div class="meter-bar"><span class="${level}" style="width:${pct}%"></span></div>
+    <div class="meter-text">${num(q.used[useKey])} / ${num(q.limits[capKey])} ${unit}
+      <span class="hint">${pct}%</span></div>
+  </div>`;
+}
+
 async function loadAccess() {
-  const [users, workspaces, keys, groups] = await Promise.all([
+  // โควตาอ่านต่อคน · กิจกรรมอ่านต่อ key · ล้มแล้วไม่ทำให้ทั้งหน้าพัง เพราะสองอันนี้
+  // เป็นข้อมูลประกอบ ไม่ใช่สิ่งที่หน้านี้มีไว้ทำ
+  const [users, workspaces, keys, groups, quota, activity] = await Promise.all([
     api('/admin/users'), api('/admin/workspaces'), api('/admin/api-keys'),
     api('/admin/access-groups'),
+    api('/admin/usage/quota').catch(() => ({ data: [] })),
+    api('/admin/usage/by-key?days=7').catch(() => ({ data: [] })),
   ]);
+  const quotaOf = Object.fromEntries((quota.data || []).map((q) => [q.user_id, q]));
+  const seenOf = Object.fromEntries((activity.data || []).map((a) => [a.api_key_id, a]));
   state.cache.users = users.data;
   state.cache.workspaces = workspaces.data;
   state.cache.accessGroups = groups.data;
@@ -1082,7 +1129,8 @@ async function loadAccess() {
   const roles = ['member', 'manager', 'admin'];
   const adminCount = users.data.filter((u) => u.role === 'admin').length;
   $('user-table').innerHTML = `
-    <tr><th>ID</th><th>Name</th><th>Role</th><th>Workspaces</th><th>Status</th></tr>
+    <tr><th>ID</th><th>Name</th><th>Role</th><th>Workspaces</th>
+        <th>โควตาที่ใช้ไป</th><th>Status</th></tr>
     ${users.data.map((u) => {
       // admin คนสุดท้ายเปลี่ยน role ไม่ได้ — ไม่มี admin แปลว่าไม่มีใครออก key
       // ตั้ง quota หรือแก้ registry ได้อีก และไม่มีทางกลับผ่านหน้าเว็บ
@@ -1114,6 +1162,7 @@ async function loadAccess() {
             ${spare.map((c) => `<option value="${esc(c.id)}">${esc(c.code)}</option>`).join('')}
           </select>` : ''}
         </td>
+        <td>${quotaCell(quotaOf[u.id])}</td>
         <td><span class="pill ${u.status === 'active' ? 'ok' : 'mute'}">${esc(u.status || 'active')}</span></td>
       </tr>`;
     }).join('') || '<tr><td class="empty">No people yet.</td></tr>'}`;
@@ -1150,6 +1199,7 @@ async function loadAccess() {
   const byId = Object.fromEntries(users.data.map((u) => [u.id, u]));
   $('key-table').innerHTML = `
     <tr><th>Prefix</th><th>User</th><th>Workspace</th><th>Label</th>
+        <th class="num">ใช้งาน 7 วัน</th>
         <th>Expires</th><th>Last used</th><th>State</th><th></th></tr>
     ${keys.data.map((k) => {
       const u = byId[k.user_id];
@@ -1163,6 +1213,7 @@ async function loadAccess() {
           ? `<div class="hint">เฉพาะ ${(k.models || []).map(esc).join(', ')}</div>` : ''}${
           (k.access_groups || []).length
           ? `<div class="hint">มัด ${(k.access_groups || []).length} ชุด</div>` : ''}</td>
+        <td class="num">${activityCell(seenOf[k.id])}</td>
         <td class="hint">${k.expires_at
           ? `${stamp(k.expires_at).toLocaleDateString()}${stamp(k.expires_at) < new Date()
               ? '<div class="hint" style="color:var(--bad)">หมดอายุแล้ว</div>' : ''}`
@@ -1301,7 +1352,7 @@ async function loadAccess() {
     }).join('') || '<tr><td class="empty">No workspaces yet.</td></tr>'}`;
 
   // ระงับ ≠ เพิกถอน · คำในปุ่มและในคำถามยืนยันต้องบอกให้ชัดว่าอันนี้ย้อนกลับได้
-  paintIcons($('workspace-table'));
+  paintIcons($('tab-access'));
   for (const btn of $('workspace-table').querySelectorAll('[data-holdworkspace]')) {
     btn.onclick = async () => {
       const { holdworkspace: id, to, code } = btn.dataset;

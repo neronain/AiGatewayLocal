@@ -292,6 +292,8 @@ network at the proxy (SEC-5).
 | GET | `/admin/models/{alias}/compatibility` | manager | READY / DEGRADED roll-up |
 | GET | `/admin/usage/summary?days=` | manager | Per-model totals |
 | GET | `/admin/usage/top-users?days=` | manager | Heaviest users |
+| GET | `/admin/usage/quota` | manager | Allowance spent, per person, against the limit that resolves for them |
+| GET | `/admin/usage/by-key?days=` | manager | Requests and tokens per key — activity, not allowance |
 
 > **`POST /admin/registry/reload` reloads only the worker that handled the
 > request.** With multiple uvicorn workers, the file-watcher

@@ -427,6 +427,28 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .roles-body table { box-shadow: none; margin-bottom: 10px; }
 .roles-body td { vertical-align: top; }
 
+/* ── quota meter ────────────────────────────────────────────────────────
+   A bar and the numbers together. The bar answers "is anyone near the edge"
+   across a whole page at a glance, which a column of figures cannot; the
+   figures answer "how near", which a bar alone cannot. */
+.meter { display: grid; gap: 4px; min-width: 8.5em; }
+.meter-bar {
+  height: 5px; border-radius: 999px; background: var(--line);
+  overflow: hidden;
+}
+.meter-bar span {
+  display: block; height: 100%; border-radius: 999px;
+  background: var(--ok); transition: width .2s ease;
+}
+.meter-bar span.warn { background: var(--warn); }
+.meter-bar span.err { background: var(--bad); }
+.meter-text {
+  font-size: 0.7188rem; color: var(--fg2);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.meter-text .hint { display: inline; margin-left: 5px; }
+@media (prefers-reduced-motion: reduce) { .meter-bar span { transition: none; } }
+
 /* Collapsed by default: a control whose right answer is almost always the
    default reads, sitting open in a form, as a decision somebody has to make. */
 .advanced { margin: 0 0 12px; }
@@ -630,7 +652,11 @@ nav button[aria-selected="true"] .ti { opacity: 1; }
 /* Section headings carry an icon for the same reason the tabs do: it is what
    people navigate by once they know the console, and unlike the words it is
    the same in every language this gets deployed into. */
-h2 .hi, h3 .hi {
+/* Not scoped to headings: the same marker is used beside a caption or a note,
+   and one that only lines up inside an h2 shows as a stray glyph everywhere
+   else. */
+.hi {
   display: inline-grid; place-items: center; vertical-align: -3px;
   margin-right: 7px; color: var(--c2);
 }
+.sub .hi { margin-right: 5px; vertical-align: -2px; }
