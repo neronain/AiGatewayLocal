@@ -31,6 +31,10 @@ function esc(value) {
 }
 const num = (v) => (v || 0).toLocaleString();
 
+// The API hands back naive UTC timestamps. Reading one as local time shifts it
+// by the offset, which turns "tested a moment ago" into "tested in 7 hours".
+const stamp = (value) => new Date(/(Z|[+-]\d{2}:?\d{2})$/.test(value) ? value : `${value}Z`);
+
 function banner(target, kind, message) {
   $(target).innerHTML = message ? `<div class="banner ${kind}">${esc(message)}</div>` : '';
 }
@@ -215,8 +219,8 @@ async function loadModels() {
   );
 
   $('model-table').innerHTML = `
-    <tr><th>Alias</th><th>Upstream / backends</th><th>Capabilities</th>
-        <th>Health</th><th>Test status</th><th></th></tr>
+    <tr><th>Alias</th><th>Upstream / backends</th><th>Capabilities · declared</th>
+        <th>Health</th><th>Test status · measured</th><th></th></tr>
     ${registry.data.map((m, i) => {
       // นับเฉพาะเครื่องที่เปิดอยู่ — เครื่องที่ถูกปิดไว้ไม่ได้รับงาน การนับรวมเข้าไป
       // ทำให้ตัวเลขบอกกำลังที่ไม่มีจริง ส่วนที่ปิดไว้บอกแยกเพราะเป็นคนละเรื่องกับ down
@@ -227,6 +231,12 @@ async function loadModels() {
       const cls = healthy === total ? 'ok' : healthy ? 'warn' : 'err';
       const c = compat[i];
       const ccls = c.status === 'READY' ? 'ok' : c.status === 'DEGRADED' ? 'err' : 'mute';
+      // ป้ายความสามารถคือสิ่งที่ *ประกาศไว้* · ผลทดสอบคือสิ่งที่ *วัดได้จริง* สองอย่างนี้
+      // ไม่ตรงกันได้ และเคสที่เจ็บคือประกาศว่าทำได้แต่วัดแล้วไม่ผ่าน จึงต้องบอกให้เห็น
+      const results = c.results || [];
+      const times = results.map((r) => r.tested_at).filter(Boolean).map((t) => stamp(t));
+      const last = times.length ? new Date(Math.max(...times)) : null;
+      const failed = results.filter((r) => r.status === 'fail').map((r) => r.feature);
       return `<tr>
         <td><code>${esc(m.alias)}</code>${m.enabled === false
               ? ' <span class="pill mute">off</span>' : ''}
@@ -241,6 +251,12 @@ async function loadModels() {
         <td><span class="pill ${cls}">${healthy}/${total} up</span>
             ${off ? `<div class="hint">ปิดไว้ ${off}</div>` : ''}</td>
         <td><span class="pill ${ccls}">${esc(c.status)}</span>
+            <div class="hint">${last
+              ? `วัดล่าสุด ${esc(last.toLocaleString())}`
+              : 'ยังไม่เคยวัด — ป้ายทางซ้ายเป็นสิ่งที่ประกาศไว้เท่านั้น'}</div>
+            ${failed.length
+              ? `<div class="hint" style="color:var(--bad)">ไม่ผ่าน: ${failed.map(esc).join(', ')}</div>`
+              : ''}
             <div class="hint" id="run-${esc(m.alias)}"></div></td>
         <td style="white-space:nowrap">
           <button class="ghost small" data-verify="${esc(m.alias)}">Verify</button>
