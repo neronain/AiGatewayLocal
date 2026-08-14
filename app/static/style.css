@@ -439,7 +439,10 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 }
 .ws-defaults select { min-width: 9em; }
 .ws-defaults input { width: 5em; }
-.ws-defaults .hint { margin: 0; align-self: center; }
+.ws-defaults .hint { margin: 0; align-self: center; max-width: 24em; }
+.ws-defaults-title {
+  align-self: center; font-size: 0.6875rem; color: var(--fg2); font-weight: 600;
+}
 
 /* A held class stays in the list, legibly on hold — it is coming back, which
    is the difference between suspending it and revoking everybody's keys. */

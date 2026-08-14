@@ -1218,15 +1218,20 @@ async function loadAccess() {
           (c.models || []).includes(a) ? ' checked' : ''}> ${esc(a)}</label>
       `).join('') || '<span class="hint">ยังไม่มีโมเดลใน registry</span>'}
         <div class="ws-defaults">
-          <span class="hint">key ที่ออกให้สมาชิกเริ่มต้นที่:</span>
-          <label>โมเดล
-            <select multiple size="2" data-wsdefault="${esc(c.id)}">${aliases.map((a) => `
+          <span class="ws-defaults-title">key ของสมาชิกใหม่เริ่มต้นที่</span>
+          <label>จำกัดไว้ที่
+            <select multiple size="3" data-wsdefault="${esc(c.id)}">${
+              (c.models || []).map((a) => `
               <option value="${esc(a)}"${(c.default_member_models || []).includes(a)
-                ? ' selected' : ''}>${esc(a)}</option>`).join('')}</select></label>
+                ? ' selected' : ''}>${esc(a)}</option>`).join('')
+              || '<option disabled>ยังไม่ได้ติ๊กโมเดลไว้ข้างบน</option>'}</select></label>
           <label>อายุ (วัน)
             <input type="number" min="0" data-wsdays="${esc(c.id)}"
               value="${c.default_key_days || 0}"></label>
-          <span class="hint">0 = ไม่หมดอายุ · ว่าง = ไม่ตั้งค่าเริ่มต้น</span>
+          <span class="hint">
+            เลือกได้เฉพาะที่ติ๊กไว้ข้างบน · ไม่เลือก = key ใช้ได้ทุกตัวที่วิชานี้เปิด ·
+            อายุ 0 = ไม่หมดอายุ
+          </span>
         </div>
         ${groups.data.length ? `<div class="ws-bundles">${groups.data.map((g) => `
           <label><input type="checkbox" data-wsgroup="${esc(c.id)}" value="${esc(g.id)}"${

@@ -713,6 +713,28 @@ async def set_workspace_models(
     if "default_member_models" in payload:
         defaults = [str(a) for a in (payload.get("default_member_models") or [])]
         await _known_aliases(state, defaults)
+        # A default naming something this class cannot call produces a key whose
+        # list and whose class have nothing in common, so it can call nothing at
+        # all - and the owner finds out by being refused. The two settings are
+        # not in competition; this is what keeps them from contradicting.
+        reachable = set(aliases) | {
+            a for g in await session.execute(
+                select(AccessGroup.models)
+                .join(WorkspaceAccessGroup,
+                      WorkspaceAccessGroup.access_group_id == AccessGroup.id)
+                .where(WorkspaceAccessGroup.workspace_id == workspace_id,
+                       AccessGroup.enabled.is_(True))
+            ) for a in (g[0] or [])
+        }
+        beyond = sorted(set(defaults) - reachable)
+        if beyond:
+            raise GatewayError(
+                ErrorCode.INVALID_REQUEST,
+                f"This workspace does not allow {', '.join(beyond)}, so a key "
+                "starting there could call nothing. Tick them above first, or "
+                "leave them out of the default.",
+                details={"beyond": beyond},
+            )
         workspace.default_member_models = defaults
     if "default_access_groups" in payload:
         workspace.default_access_groups = [

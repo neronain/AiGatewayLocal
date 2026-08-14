@@ -176,3 +176,31 @@ def test_a_service_key_says_so(client):
 def test_an_unknown_kind_falls_back_to_person(client):
     """ชนิดที่พิมพ์ผิดต้องไม่กลายเป็นชนิดใหม่ที่ไม่มีใครกรองเจอ"""
     assert issue(client, user(client, "typo"), kind="robot")["kind"] == "person"
+
+
+def test_a_default_the_class_cannot_call_is_refused(client):
+    """ค่าเริ่มต้นที่วิชาไม่ได้เปิด = key ที่เรียกอะไรไม่ได้เลย และเจ้าของรู้ตอนโดนปฏิเสธ
+
+    ช่องติ๊กกับช่องค่าเริ่มต้นตอบคนละคำถาม แต่ขัดกันเองได้ · ข้อนี้คือสิ่งที่กันไว้
+    """
+    ws = client.post("/admin/workspaces", headers=auth(client.admin_key),
+                     json={"code": "CS101", "name": "CS101"}).json()
+    response = client.post(f"/admin/workspaces/{ws['id']}/models",
+                           headers=auth(client.admin_key),
+                           json={"models": ["coding"],
+                                 "default_member_models": ["gemma-vision"]})
+    assert response.status_code == 400
+    assert "gemma-vision" in response.json()["error"]["message"]
+
+
+def test_a_default_that_a_bundle_supplies_is_accepted(client):
+    """วิชาเข้าถึงโมเดลได้สองทาง · ค่าเริ่มต้นต้องนับทั้งสองทาง ไม่ใช่แค่ช่องติ๊ก"""
+    group = client.post("/admin/access-groups", headers=auth(client.admin_key),
+                        json={"name": "vision-set", "models": ["gemma-vision"]}).json()
+    ws = client.post("/admin/workspaces", headers=auth(client.admin_key),
+                     json={"code": "CS102", "name": "CS102"}).json()
+    response = client.post(f"/admin/workspaces/{ws['id']}/models",
+                           headers=auth(client.admin_key),
+                           json={"models": [], "access_groups": [group["id"]],
+                                 "default_member_models": ["gemma-vision"]})
+    assert response.status_code == 200

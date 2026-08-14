@@ -329,6 +329,15 @@ A manager who is in no workspace administers nothing. Put them in their classes
 first — the opposite default from model access, so that promoting somebody does
 not quietly hand them the institution.
 
+**Defaults for a whole class.** These are a different question from the allowed
+models, and the console keeps them apart: the checkboxes are *what this class
+may call*, the row beneath is *what a key issued to a new member starts as*.
+They can contradict each other — a default naming something the class cannot
+call produces a key whose own list and whose class have nothing in common, so it
+can call nothing at all and the owner finds out by being refused. The default
+can therefore only name models the class actually reaches, whether ticked
+directly or supplied by a bundle, and the API refuses the rest.
+
 **Defaults for a whole class.** Set `default_member_models`,
 `default_access_groups` and `default_key_days` on the workspace and a key issued
 to one of its members starts there, instead of thirty keys being typed by hand
