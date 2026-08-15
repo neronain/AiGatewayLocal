@@ -132,6 +132,51 @@ That says what the backend can *actually* do now, as opposed to what the
 registry claims. Where they disagree, the registry is wrong until proven
 otherwise — the backend is the thing that is running.
 
+## A backend is serving a different model
+
+*No alert. That is the whole problem.*
+
+An operator reloads a node with different weights and the registry still points
+at it. What happens next depends entirely on the server:
+
+| Server | Unknown `model` in the request | How you find out |
+|---|---|---|
+| vLLM, SGLang | `404 The model X does not exist` | `UPSTREAM_*` errors, alert fires |
+| llama.cpp | Serves whatever is loaded, `200` | Nobody tells you |
+
+llama.cpp has one model in memory and ignores the field, so an alias pointed at
+it keeps answering — fluently, plausibly, and from the wrong model. A fallback
+endpoint is the worst place for this: it is silent until the primary dies, and
+then it is silent while it is wrong.
+
+Ask every backend what it is actually serving and compare:
+
+```bash
+for url in $(grep -h base_url config/models/*.yaml | awk '{print $2}' | sort -u); do
+  echo "$url -> $(curl -s -m 5 "$url/v1/models" | jq -r '.data[].id' | paste -sd,)"
+done
+```
+
+Anything that disagrees with the alias's `upstream_model` is a live incident
+even when the dashboards are green. Disable the endpoint (`enabled: false`)
+rather than editing it to match: an alias whose name promises a coding model
+must not quietly become a general one, and a fallback that serves the wrong
+weights is worse than having no fallback at all.
+
+When the node has genuinely become a new model, give it its own alias, and
+build the capability block from measurement instead of from the model's name:
+
+```bash
+curl -X POST https://gateway/admin/models/detect -H "Authorization: Bearer $ADMIN" \
+     -H 'Content-Type: application/json' -d '{"base_url": "http://node:8000"}'
+curl -s https://gateway/admin/models/<alias>/advice -H "Authorization: Bearer $ADMIN" | jq '.backends[].drift'
+```
+
+`detect` probes the backend and fills the flags in; `advice` reports every place
+the registry and the running server still disagree. An empty `drift` array is
+the thing to merge on. Re-run it after any deploy on the model servers — nothing
+runs it for you.
+
 ## Everything feels slow
 
 *`LiteGateSlowNonStreaming` — p95 above 2s on endpoints that do no generation.*
