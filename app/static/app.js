@@ -1412,7 +1412,7 @@ async function loadAccess() {
       const all = state.cache.models || [];
       if (!all.length) { showError('ยังไม่มีโมเดลใน registry'); return; }
 
-      showModal(`model ที่ "${btn.dataset.name}" เรียกได้`, `
+      modal(`model ที่ "${btn.dataset.name}" เรียกได้`, `
         <div class="checks" id="scope-checks">${all.map((m) => `
           <label><input type="checkbox" class="scope-model" value="${esc(m.alias)}"
             ${current.has(m.alias) ? 'checked' : ''}> ${esc(m.alias)}</label>`).join('')}</div>
@@ -1727,11 +1727,64 @@ async function loadQuota() {
         ? `${lim(p.max_requests_per_minute)} req<div class="hint">${
             lim(p.max_tokens_per_minute)} tok</div>`
         : '<span class="hint">ไม่จำกัด</span>'}</td>
-      <td style="white-space:nowrap">${p.expires_at
+      <td style="white-space:nowrap">
+        <button class="ghost small" data-edit-policy="${esc(p.id)}"
+          data-name="${esc(p.name || p.scope)}">Edit</button>${p.expires_at
         ? `<button class="ghost small" data-extend-policy="${esc(p.id)}"
              data-name="${esc(p.name || p.scope)}">ต่ออายุ</button>` : ''}
         <button class="danger small" data-del-policy="${esc(p.id)}">Delete</button></td>
     </tr>`).join('') || '<tr><td class="empty">No policies — the gateway.yaml defaults apply.</td></tr>'}`;
+
+  // แก้ลิมิตของนโยบายที่มีอยู่แล้วในที่เดิม · ก่อนหน้านี้ทำได้ทางเดียวคือลบแล้วสร้างใหม่
+  // ซึ่งครึ่งหลัง (สร้างใหม่) คือครึ่งที่คนลืม แล้วเป้าหมายที่เหลือไม่มีนโยบายก็ร่วงไป
+  // ใช้ตัวที่กว้างกว่าเงียบ ๆ · scope/เป้าหมายแก้ไม่ได้ที่นี่ตั้งใจ — เปลี่ยนพวกนั้น
+  // = คนละนโยบาย ให้สร้างใบใหม่แทน
+  for (const btn of $('quota-table').querySelectorAll('[data-edit-policy]')) {
+    btn.onclick = () => {
+      const p = policies.data.find((x) => x.id === btn.dataset.editPolicy);
+      if (!p) return;
+      const fld = (id, label, val) => `
+        <div class="field"><label for="${id}">${label}</label>
+          <input type="number" id="${id}" min="0" step="1" value="${val || 0}"></div>`;
+      modal(`แก้ลิมิต "${btn.dataset.name}"`, `
+        <p class="hint">0 = ไม่จำกัด · นับใหม่ทุก window</p>
+        <div class="row">
+          ${fld('e-req', 'Max requests', p.max_requests)}
+          ${fld('e-in', 'Max input tokens', p.max_input_tokens)}
+          ${fld('e-out', 'Max output tokens', p.max_output_tokens)}
+        </div>
+        <div class="row">
+          ${fld('e-img', 'Max images', p.max_images)}
+          ${fld('e-rpm', 'Requests/นาที', p.max_requests_per_minute)}
+          ${fld('e-tpm', 'Tokens/นาที', p.max_tokens_per_minute)}
+        </div>
+        <div class="row">
+          <div class="field"><label for="e-window">Window</label>
+            <select id="e-window">
+              ${['day', 'month', 'term'].map((w) =>
+                `<option value="${w}" ${p.window === w ? 'selected' : ''}>${w}</option>`).join('')}
+            </select></div>
+        </div>
+        <p class="hint" id="e-note"></p>
+        <button class="primary" id="e-save">บันทึก</button>`);
+      $('e-save').onclick = async () => {
+        try {
+          await patch(`/admin/quota-policies/${p.id}`, {
+            max_requests: Number($('e-req').value) || 0,
+            max_input_tokens: Number($('e-in').value) || 0,
+            max_output_tokens: Number($('e-out').value) || 0,
+            max_images: Number($('e-img').value) || 0,
+            max_requests_per_minute: Number($('e-rpm').value) || 0,
+            max_tokens_per_minute: Number($('e-tpm').value) || 0,
+            window: $('e-window').value,
+          });
+          $('modal').close();
+          await loadQuota();
+          banner('error', 'ok', 'แก้ลิมิตแล้ว');
+        } catch (e) { $('e-note').textContent = e.message; }
+      };
+    };
+  }
 
   // นโยบายที่เจาะจงกว่าชนะเสมอ (user > workspace > global) การลบตัวหนึ่งจึงไม่ได้แค่
   // หายไป แต่ทำให้คนที่เคยอยู่ใต้มันเลื่อนไปใช้ตัวถัดไป — ต้องบอกให้เห็นก่อนกด

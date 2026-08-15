@@ -164,3 +164,51 @@ def test_an_expired_policy_stops_applying(client, member_key, upstream):
 def test_a_policy_without_an_end_date_never_expires(client):
     created = policy(client, max_requests=100)
     assert created.json()["expires_at"] is None
+
+
+# --- editing an existing policy in place (PATCH beyond just expiry) -----------
+# ก่อนหน้านี้ PATCH รับแค่ {days} · การแก้ลิมิตทำได้ทางเดียวคือลบแล้วสร้างใหม่ ซึ่ง
+# ครึ่งหลังคือครึ่งที่คนลืม แล้วเป้าหมายที่เหลือไม่มีนโยบายก็ร่วงไปใช้ตัวที่กว้างกว่าเงียบ ๆ
+
+def test_a_policys_limits_can_be_edited_in_place(client):
+    created = policy(client, name="สอบ", max_input_tokens=1000, max_output_tokens=500).json()
+    out = client.patch(f"/admin/quota-policies/{created['id']}",
+                       headers=auth(client.admin_key),
+                       json={"max_input_tokens": 9000, "max_output_tokens": 4000})
+    assert out.status_code == 200
+    listed = client.get("/admin/quota-policies", headers=auth(client.admin_key)).json()["data"]
+    row = next(p for p in listed if p["id"] == created["id"])
+    assert row["max_input_tokens"] == 9000
+    assert row["max_output_tokens"] == 4000
+
+
+def test_editing_the_window_is_allowed(client):
+    created = policy(client, window="day", max_requests=10).json()
+    out = client.patch(f"/admin/quota-policies/{created['id']}",
+                       headers=auth(client.admin_key), json={"window": "month"})
+    assert out.status_code == 200
+    listed = client.get("/admin/quota-policies", headers=auth(client.admin_key)).json()["data"]
+    assert next(p for p in listed if p["id"] == created["id"])["window"] == "month"
+
+
+def test_the_extend_by_days_path_still_works(client):
+    """PATCH เดิมรับแค่ days — ต้องไม่พังหลังเพิ่มการแก้ลิมิต"""
+    created = policy(client, max_requests=10).json()
+    out = client.patch(f"/admin/quota-policies/{created['id']}",
+                       headers=auth(client.admin_key), json={"days": 7})
+    assert out.status_code == 200
+    assert out.json()["expires_at"] is not None
+
+
+def test_a_negative_limit_is_refused(client):
+    created = policy(client, max_requests=10).json()
+    out = client.patch(f"/admin/quota-policies/{created['id']}",
+                       headers=auth(client.admin_key), json={"max_input_tokens": -5})
+    assert out.status_code >= 400
+
+
+def test_an_empty_edit_is_refused(client):
+    created = policy(client, max_requests=10).json()
+    out = client.patch(f"/admin/quota-policies/{created['id']}",
+                       headers=auth(client.admin_key), json={})
+    assert out.status_code >= 400

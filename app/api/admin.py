@@ -1336,40 +1336,90 @@ async def amend_api_key(
     }
 
 
+# Limits an edit may change. Scope and target are left out on purpose: a policy
+# is *identified* by who it applies to, so changing those is a different policy,
+# not an edit of this one — the console makes a new one for that.
+_EDITABLE_LIMITS = (
+    "max_requests",
+    "max_input_tokens",
+    "max_output_tokens",
+    "max_images",
+    "max_requests_per_minute",
+    "max_tokens_per_minute",
+)
+
+
 @router.patch("/quota-policies/{policy_id}")
-async def extend_quota_policy(
+async def update_quota_policy(
     policy_id: str,
     payload: dict[str, Any],
     request: Request,
     actor: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """Same for a temporary allowance whose work ran long."""
+    """Change an existing policy in place — the allowance itself, or its expiry.
+
+    Editing beats delete-and-recreate: the second half of that pair is the one
+    people forget, and a target left with no policy silently falls through to a
+    broader one. `days` alone still works, so the extend button is unchanged.
+    """
     policy = await session.get(QuotaPolicy, policy_id)
     if policy is None:
         raise GatewayError(ErrorCode.INVALID_REQUEST, "Quota policy not found.")
-    if "days" not in payload:
-        raise GatewayError(ErrorCode.INVALID_REQUEST, "Send {'days': <number|null>}.")
 
-    days = payload["days"]
-    if days is None:
-        policy.expires_at = None
-    else:
+    changed: dict[str, Any] = {}
+
+    if "days" in payload:
+        days = payload["days"]
+        if days is None:
+            policy.expires_at = None
+            changed["days"] = None
+        else:
+            try:
+                days = int(days)
+            except (TypeError, ValueError):
+                raise GatewayError(
+                    ErrorCode.INVALID_REQUEST, "days must be a whole number."
+                ) from None
+            if days < 1:
+                raise GatewayError(ErrorCode.INVALID_REQUEST, "days must be at least 1.")
+            policy.expires_at = utcnow() + timedelta(days=days)
+            changed["days"] = days
+
+    if "window" in payload:
+        window = payload["window"]
+        if window not in {"day", "month", "term"}:
+            raise GatewayError(ErrorCode.INVALID_REQUEST, "window must be day, month or term.")
+        policy.window = window
+        changed["window"] = window
+
+    for field in _EDITABLE_LIMITS:
+        if field not in payload:
+            continue
         try:
-            days = int(days)
+            value = int(payload[field])
         except (TypeError, ValueError):
             raise GatewayError(
-                ErrorCode.INVALID_REQUEST, "days must be a whole number."
+                ErrorCode.INVALID_REQUEST, f"{field} must be a whole number."
             ) from None
-        if days < 1:
-            raise GatewayError(ErrorCode.INVALID_REQUEST, "days must be at least 1.")
-        policy.expires_at = utcnow() + timedelta(days=days)
+        if value < 0:
+            raise GatewayError(ErrorCode.INVALID_REQUEST, f"{field} cannot be negative.")
+        setattr(policy, field, value)
+        changed[field] = value
 
-    await audit(session, request, actor, "quota.extend", "quota", policy_id, {"days": days})
+    if not changed:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            "Nothing to change — send 'days', 'window' or a limit field.",
+        )
+
+    await audit(session, request, actor, "quota.update", "quota", policy_id, changed)
     await session.commit()
     return {
         "id": policy_id,
         "expires_at": policy.expires_at.isoformat() if policy.expires_at else None,
+        **{f: getattr(policy, f) for f in _EDITABLE_LIMITS},
+        "window": policy.window,
     }
 
 

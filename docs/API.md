@@ -284,7 +284,7 @@ network at the proxy (SEC-5).
 | POST | `/admin/users/{id}/quota/reset` | **admin** | Zero this person's counter for the current window — usage records untouched |
 | POST | `/admin/quota-policies` | admin | Create a policy — `name`, window limits, per-minute limits, `expires_in_days`, and either `model_alias` or `access_group_id` |
 | GET | `/admin/quota-policies` | manager | List policies |
-| PATCH | `/admin/quota-policies/{id}` | admin | Move the expiry — same shape |
+| PATCH | `/admin/quota-policies/{id}` | admin | Edit an existing policy in place: send `days` to move the expiry, and/or any of `window`, `max_requests`, `max_input_tokens`, `max_output_tokens`, `max_images`, `max_requests_per_minute`, `max_tokens_per_minute`. Scope and target are fixed — changing who a policy applies to is a new policy, not an edit |
 | GET | `/admin/models` | admin | Registry incl. upstream names, endpoints, health |
 | PATCH | `/admin/models/{alias}/enabled` | admin | Take an alias or one endpoint out of service |
 | PATCH | `/admin/models/{alias}/endpoints/{name}` | admin | `priority`, `weight`, `max_concurrency` |
