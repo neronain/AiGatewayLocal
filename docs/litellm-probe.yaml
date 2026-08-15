@@ -5,10 +5,10 @@ model_list:
       model: openai/muse-glimmer-30b-gguf
       api_base: http://100.124.77.93:8000/v1
       api_key: none
-  - model_name: coder-next                 # not reasoning · vLLM on msi-6
+  - model_name: coder-next                 # not reasoning · llama.cpp on spark-worker
     litellm_params:
-      model: openai/qwen3-coder-next-nvfp4-gb10
-      api_base: http://100.80.132.102:8000/v1
+      model: openai/qwen3-coder-next-gguf
+      api_base: http://100.115.254.108:8001/v1
       api_key: none
 
 litellm_settings:
