@@ -705,8 +705,27 @@ def build_advice(result: ProbeResult) -> list[Advice]:
         return advice
 
     if not result.capabilities.get("tools"):
-        parser, confident = suggest_tool_parser(model)
-        if "tool choice requires" in notes or "enable-auto-tool-choice" in notes:
+        if result.server_kind == "llamacpp":
+            # llama.cpp only applies the model's tool template when started with
+            # --jinja. A template that *has* tools but a server that emits none is
+            # almost always a controller generated before --jinja was standard —
+            # the fix is to regenerate the bundle, not a vLLM tool-parser flag.
+            advice.append(
+                Advice(
+                    issue="jinja_missing",
+                    severity="warning",
+                    detail="The backend accepted a tool request but returned no "
+                    "tool_calls. llama.cpp applies the model's tool template only "
+                    "when started with --jinja.",
+                    fix="Restart llama-server with --jinja. LMDS adds it for any GGUF "
+                    "that ships a chat template, so a controller generated before "
+                    "that just needs regenerating (lmds rebuild) and pushing again; "
+                    "a hand-written unit needs --jinja added.",
+                    command="./<controller>.sh restart   # controller must include --jinja",
+                )
+            )
+        elif "tool choice requires" in notes or "enable-auto-tool-choice" in notes:
+            parser, confident = suggest_tool_parser(model)
             advice.append(
                 Advice(
                     issue="tools_flag_missing",
@@ -801,8 +820,21 @@ def build_advice(result: ProbeResult) -> list[Advice]:
     return advice
 
 
+def _normalize_kind(server_type: str) -> str:
+    """Map a registry server_type to the engine kinds advice branches on."""
+    t = (server_type or "").lower().replace(".", "").replace("_", "").replace("-", "")
+    if "llamacpp" in t or "llama" in t:
+        return "llamacpp"
+    if "vllm" in t:
+        return "vllm"
+    if "sglang" in t:
+        return "sglang"
+    return ""
+
+
 async def probe_backend(
-    base_url: str, upstream_model: str = "", api_key: str = "", timeout: float = 60.0
+    base_url: str, upstream_model: str = "", api_key: str = "", timeout: float = 60.0,
+    server_type: str = "",
 ) -> ProbeResult:
     """Ask a model server what it can actually do.
 
@@ -944,9 +976,11 @@ async def probe_backend(
             except Exception:
                 tools = False
             if not tools:
+                # Engine-neutral on purpose: naming vLLM here made the kind
+                # detector below read a llama.cpp backend as vLLM. The remedy
+                # branches on the real engine instead.
                 result.notes.append(
-                    "tools: backend accepted the request but returned no tool_calls "
-                    "(vLLM needs --enable-auto-tool-choice with a --tool-call-parser)"
+                    "tools: backend accepted the request but returned no tool_calls"
                 )
         elif response is not None:
             # A rejected tools request usually says exactly what the backend is
@@ -1012,6 +1046,12 @@ async def probe_backend(
             anthropic = False
         result.protocols = {"openai": result.capabilities["chat"], "anthropic": anthropic}
 
-    result.server_kind = _detect_server_kind(result.notes, result.served_models)
+    # The registry's server_type is authoritative when present; only fall back to
+    # guessing from probe notes when the caller did not say (e.g. the add-model
+    # wizard, which probes a bare URL). Guessing had a trap: a hardcoded "vLLM"
+    # hint in a note made a llama.cpp backend look like vLLM and drew vLLM advice.
+    result.server_kind = _normalize_kind(server_type) or _detect_server_kind(
+        result.notes, result.served_models
+    )
     result.advice = build_advice(result)
     return result

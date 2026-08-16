@@ -2469,6 +2469,7 @@ async def model_advice(
             endpoint.normalized_base_url,
             upstream_model_for(model, endpoint),
             api_key,
+            server_type=endpoint.server_type,
         )
         # What the registry claims versus what the backend just did. A mismatch
         # here is the thing that silently breaks members.
