@@ -1379,6 +1379,13 @@ function renderAccessGroups(groups, aliases) {
 // Activity, not allowance. A key is one of several a person may hold and the
 // limit belongs to the person, so this answers the question a key list cannot
 // otherwise answer: which of these is still in use.
+// A coloured dot + word reads state faster than a plain pill, and matches the
+// health dots used elsewhere in the console.
+function statusDot(active, labelOn = 'active', labelOff = 'disabled') {
+  return `<span class="stat-dot ${active ? 'on' : 'off'}"><span class="d"></span>${
+    active ? labelOn : labelOff}</span>`;
+}
+
 function activityCell(a) {
   if (!a || !a.requests) return '<span class="hint">—</span>';
   return `<span title="7 days">${num(a.requests)} ครั้ง</span>
@@ -1486,7 +1493,7 @@ async function loadAccess() {
                data-who="${esc(u.external_id)}"
                title="คืนโควตารอบนี้ให้ ${esc(u.external_id)} · ประวัติการใช้งานยังอยู่ครบ"
                >คืนโควตา</button>`}</td>
-        <td><span class="pill ${u.status === 'active' ? 'ok' : 'mute'}">${esc(u.status || 'active')}</span></td>
+        <td>${statusDot(u.status === 'active', 'active', esc(u.status || 'disabled'))}</td>
       </tr>`;
     }).join('') || '<tr><td class="empty">No people yet.</td></tr>'}`;
 
@@ -1537,50 +1544,56 @@ async function loadAccess() {
   }
 
   const byId = Object.fromEntries(users.data.map((u) => [u.id, u]));
-  $('key-table').innerHTML = `
-    <tr><th>Prefix</th><th>User</th><th>Workspace</th><th>Label</th>
-        <th class="num">ใช้งาน 7 วัน</th>
-        <th>Expires</th><th>Last used</th><th>State</th><th></th></tr>
-    ${keys.data.map((k) => {
-      const u = byId[k.user_id];
-      const workspace = workspaces.data.find((c) => c.id === k.workspace_id);
-      return `<tr>
-        <td><code>${esc(k.key_prefix)}…</code></td>
-        <td>${esc(u ? u.external_id : k.user_id)}</td>
-        <td>${esc(workspace ? workspace.code : '—')}</td>
-        <td>${esc(k.name || '—')}${k.kind === 'service'
-            ? ' <span class="pill mute">service</span>' : ''}${(k.models || []).length
-          ? `<div class="hint">เฉพาะ ${(k.models || []).map(esc).join(', ')}</div>` : ''}${
-          (k.access_groups || []).length
-          ? `<div class="hint">มัด ${(k.access_groups || []).length} ชุด</div>` : ''}</td>
-        <td class="num">${activityCell(seenOf[k.id])}</td>
-        <td class="hint">${k.expires_at
-          ? `${stamp(k.expires_at).toLocaleDateString()}${stamp(k.expires_at) < new Date()
-              ? '<div class="hint" style="color:var(--bad)">หมดอายุแล้ว</div>' : ''}`
-          : 'never'}</td>
-        <td class="hint">${k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'never'}</td>
-        <td><span class="pill ${k.revoked ? 'err' : 'ok'}">${k.revoked ? 'revoked' : 'active'}</span></td>
-        <td><div class="rowacts">${k.revoked
-          ? `<button class="small" data-purge="${esc(k.id)}" title="ลบแถวนี้ถาวร — ประวัติการใช้งานยังอยู่">Delete</button>`
-          : `<button class="ghost small" data-extend="${esc(k.id)}"
-               data-name="${esc(k.name || k.key_prefix)}"
-               title="เลื่อนวันหมดอายุ · ตัว key เดิมใช้ต่อได้เลย">ต่ออายุ</button>
-             <button class="ghost small" data-scope="${esc(k.id)}"
-               data-name="${esc(k.name || k.key_prefix)}"
-               title="เพิ่ม/ลด model ที่ key ใบนี้เรียกได้ · ไม่ต้องออกใบใหม่">
-               ${icon('models')} model</button>
+  // Cards, not a table: each key carries three or four actions, and a per-card
+  // ⋯ menu keeps them from sprawling — which a table could not do, its
+  // overflow:hidden clips the popup. Every data-attr is kept so the handlers
+  // below bind unchanged.
+  $('key-table').innerHTML = keys.data.map((k) => {
+    const u = byId[k.user_id];
+    const workspace = workspaces.data.find((c) => c.id === k.workspace_id);
+    const scope = [
+      (k.models || []).length ? `เฉพาะ ${(k.models || []).map(esc).join(', ')}` : '',
+      (k.access_groups || []).length ? `มัด ${(k.access_groups || []).length} ชุด` : '',
+    ].filter(Boolean).join(' · ');
+    const expired = k.expires_at && stamp(k.expires_at) < new Date();
+    const actions = k.revoked
+      ? `<button class="small" data-purge="${esc(k.id)}"
+           title="ลบแถวนี้ถาวร — ประวัติการใช้งานยังอยู่">Delete</button>`
+      : `<button class="ghost small" data-extend="${esc(k.id)}" data-name="${esc(k.name || k.key_prefix)}"
+           title="เลื่อนวันหมดอายุ · ตัว key เดิมใช้ต่อได้เลย">ต่ออายุ</button>
+         <span class="rowmenu"><button class="ghost small menu-t" data-menu aria-label="More actions"
+           >${icon('chevron', 14)}</button>
+           <div class="menu-pop">
+             <button data-scope="${esc(k.id)}" data-name="${esc(k.name || k.key_prefix)}">Models…</button>
              ${myRole !== 'admin' ? '' : k.revealable
-               ? `<button class="ghost small" data-reveal="${esc(k.id)}"
-                    data-label="${esc(k.name || k.key_prefix)}"
-                    title="เปิดดู key ใบนี้ — ทุกครั้งถูกบันทึกว่าใครดูเมื่อไร">
-                    ${icon('eye')} ดู key</button>`
-               // ไม่มีปุ่มโดยไม่บอกอะไรเลย = ผู้ดูแลหาฟีเจอร์ไม่เจอแล้วคิดว่าไม่มี
-               // (เกิดจริง) · บอกไปตรง ๆ ว่าทำไมใบนี้เปิดดูไม่ได้
-               : `<span class="hint" title="ตอนออก key ใบนี้ ระบบเก็บแค่ hash จึงไม่มีตัวจริงให้เปิดดู${
-                    ''} · key ที่ออกหลังจากนี้จะมีปุ่มให้">ดูไม่ได้</span>`}
-             <button class="danger small" data-revoke="${esc(k.id)}">Revoke</button>`}</div></td>
-      </tr>`;
-    }).join('') || '<tr><td class="empty">No keys issued yet.</td></tr>'}`;
+               ? `<button data-reveal="${esc(k.id)}" data-label="${esc(k.name || k.key_prefix)}">ดู key</button>`
+               : '<div class="menu-note">ดู key ไม่ได้ — เก็บแค่ hash</div>'}
+             <button class="danger" data-revoke="${esc(k.id)}">Revoke</button>
+           </div></span>`;
+    return `<div class="kcard${k.revoked ? ' kdim' : ''}">
+      <div class="kc-top">
+        <div class="kc-id">
+          <div class="kc-label"><code>${esc(k.key_prefix)}…</code> ${esc(k.name || '—')}${
+            k.kind === 'service' ? ' <span class="pill mute">service</span>' : ''}</div>
+          <div class="hint">${esc(u ? u.external_id : k.user_id)}${
+            workspace ? ' · ' + esc(workspace.code) : ''}${scope ? ' · ' + scope : ''}</div>
+        </div>
+        <div class="kc-right">${statusDot(!k.revoked, 'active', 'revoked')}
+          <div class="rowacts">${actions}</div></div>
+      </div>
+      <div class="kc-meta">
+        <span>ใช้งาน 7 วัน · ${activityCell(seenOf[k.id])}</span>
+        <span>Expires · ${k.expires_at
+          ? `${stamp(k.expires_at).toLocaleDateString()}${expired ? ' <b style="color:var(--bad)">หมดอายุแล้ว</b>' : ''}`
+          : 'never'}</span>
+        <span>Last used · ${k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'never'}</span>
+      </div>
+    </div>`;
+  }).join('') || '<div class="empty">No keys issued yet.</div>';
+
+  for (const btn of $('key-table').querySelectorAll('[data-menu]')) {
+    btn.onclick = (ev) => { ev.stopPropagation(); btn.closest('.rowmenu').classList.toggle('open'); };
+  }
 
   // เปิดดู key ที่ออกไปแล้ว — มีเฉพาะเมื่อผู้ดูแลเปิดใช้ (GW_KEY_REVEAL_SECRET)
   // และเฉพาะ admin · ทุกครั้งถูกบันทึก และประวัตินั้นแสดงให้เห็นตรงนี้เลย เพราะการ

@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.34.0">
+<link rel="stylesheet" href="style.css?v=1.35.0">
 </head>
 <body>
 
@@ -381,7 +381,7 @@
       <h2><span class="hi" data-icon="keys" data-icon-size="15" aria-hidden="true"></span>API keys</h2>
       <!-- ขึ้นเฉพาะเมื่อมีคีย์ที่เพิกถอนแล้วจริง — ปุ่มลบที่ไม่มีอะไรให้ลบคือปุ่มที่ชวนให้กดผิด -->
       <div class="row"><button id="purge-revoked" class="small" hidden></button></div>
-      <div class="scroll"><table id="key-table"></table></div>
+      <div id="key-table"></div>
     </div>
 
     <div class="card">
@@ -711,6 +711,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.34.0"></script>
+<script src="app.js?v=1.35.0"></script>
 </body>
 </html>
