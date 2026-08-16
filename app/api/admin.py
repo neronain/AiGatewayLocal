@@ -2816,6 +2816,53 @@ async def usage_summary(
     }
 
 
+@router.get("/usage/daily")
+async def usage_daily(
+    days: int = Query(14, ge=1, le=90),
+    actor: Principal = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """Per-day totals for the dashboard's usage-over-time chart.
+
+    Zero-filled so the series always has one point per day: an empty day must
+    read as a dip in the line, not a missing bucket that shifts every later day
+    one step to the left.
+    """
+    await state.usage.flush()
+    start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
+        days=days - 1
+    )
+    day = func.date(UsageLog.ts)
+    stmt = (
+        select(
+            day,
+            func.count(UsageLog.id),
+            func.sum(UsageLog.text_input_tokens + UsageLog.visual_input_tokens),
+            func.sum(UsageLog.output_tokens),
+        )
+        .where(UsageLog.ts >= start)
+        .group_by(day)
+    )
+    visible = await _visible_users(session, actor)
+    if visible is not None:
+        stmt = stmt.where(UsageLog.user_id.in_(visible))
+    by_day = {str(r[0]): r for r in (await session.execute(stmt)).all()}
+    series = []
+    for i in range(days):
+        key = (start + timedelta(days=i)).date().isoformat()
+        r = by_day.get(key)
+        series.append(
+            {
+                "date": key,
+                "requests": int(r[1]) if r else 0,
+                "input_tokens": int(r[2] or 0) if r else 0,
+                "output_tokens": int(r[3] or 0) if r else 0,
+            }
+        )
+    return {"window_days": days, "series": series}
+
+
 @router.get("/usage/top-users")
 async def top_users(
     days: int = Query(7, ge=1, le=365),

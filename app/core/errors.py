@@ -39,6 +39,8 @@ class ErrorCode:
     TOO_MANY_IMAGES = "TOO_MANY_IMAGES"
     REMOTE_IMAGE_URL_DISABLED = "REMOTE_IMAGE_URL_DISABLED"
     CONTEXT_LENGTH_EXCEEDED = "CONTEXT_LENGTH_EXCEEDED"
+    TOOL_NOT_FOUND = "TOOL_NOT_FOUND"
+    TOOL_NOT_PUBLISHED = "TOOL_NOT_PUBLISHED"
 
     # --- policy (429) ---
     QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
@@ -64,6 +66,8 @@ _ERROR_META: dict[str, tuple[int, str]] = {
     ErrorCode.MODEL_NOT_PERMITTED: (status.HTTP_403_FORBIDDEN, "permission_error"),
     ErrorCode.MODEL_NOT_FOUND: (status.HTTP_404_NOT_FOUND, "invalid_request_error"),
     ErrorCode.MODEL_DISABLED: (status.HTTP_404_NOT_FOUND, "invalid_request_error"),
+    ErrorCode.TOOL_NOT_FOUND: (status.HTTP_404_NOT_FOUND, "invalid_request_error"),
+    ErrorCode.TOOL_NOT_PUBLISHED: (status.HTTP_400_BAD_REQUEST, "invalid_request_error"),
     ErrorCode.MODEL_CAPABILITY_NOT_SUPPORTED: (
         status.HTTP_400_BAD_REQUEST,
         "invalid_request_error",

@@ -96,7 +96,7 @@ function showTab(name) {
   }
   const loaders = {
     account: loadAccount, models: loadModels, assistant: loadAssistant,
-    access: loadAccess, quota: loadQuota,
+    access: loadAccess, quota: loadQuota, tools: loadTools,
   };
   if (loaders[name]) loaders[name]().catch((e) => showError(e.message));
 }
@@ -120,29 +120,91 @@ function applyRole(role) {
 }
 
 /* ------------------------------------------------------------ dashboard */
+// Inline SVG chart primitives — no CDN, so they draw the same on an air-gapped
+// install. Colours are passed in from the --c1..c4 family so a chart belongs to
+// the same page as the gradients, not to a palette of its own.
+function compact(n) {
+  n = Number(n) || 0;
+  if (n >= 1e9) return (n / 1e9).toFixed(2).replace(/\.?0+$/, '') + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(2).replace(/\.?0+$/, '') + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+  return String(n);
+}
+
+function sparkSvg(vals, color) {
+  const clean = vals.filter((v) => Number.isFinite(v));
+  if (clean.length < 2) return '';
+  const w = 120, h = 30, p = 3, mn = Math.min(...clean), mx = Math.max(...clean), r = (mx - mn) || 1;
+  const pt = clean.map((v, i) => [p + i * (w - 2 * p) / (clean.length - 1), h - p - (v - mn) / r * (h - 2 * p)]);
+  const line = 'M' + pt.map((q) => q.map((n) => n.toFixed(1)).join(' ')).join(' L ');
+  const area = `M ${pt[0][0]} ${h} L ` + pt.map((q) => q.map((n) => n.toFixed(1)).join(' ')).join(' L ')
+    + ` L ${pt[pt.length - 1][0]} ${h} Z`;
+  const id = 'sp' + Math.random().toString(36).slice(2, 7);
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+    <defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="${color}" stop-opacity=".28"/><stop offset="1" stop-color="${color}" stop-opacity="0"/>
+    </linearGradient></defs><path d="${area}" fill="url(#${id})"/>
+    <path d="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="${pt[pt.length - 1][0].toFixed(1)}" cy="${pt[pt.length - 1][1].toFixed(1)}" r="2.4" fill="${color}"/></svg>`;
+}
+
+function ringSvg(pct, color, size = 64) {
+  const r = (size - 8) / 2, c = size / 2, C = 2 * Math.PI * r, on = C * Math.min(100, pct) / 100;
+  return `<svg class="ring" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" aria-hidden="true">
+    <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="var(--sunken)" stroke-width="6"/>
+    <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${color}" stroke-width="6" stroke-linecap="round"
+      stroke-dasharray="${on.toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 ${c} ${c})"/>
+    <text x="${c}" y="${c + 4}" text-anchor="middle" font-size="14" font-weight="700" fill="var(--fg)">${pct}%</text></svg>`;
+}
+
+function areaSvg(vals) {
+  const clean = vals.map((v) => Number(v) || 0);
+  if (clean.length < 2) return '<div class="empty">ยังไม่มีข้อมูลพอจะวาดกราฟ</div>';
+  const w = 620, h = 210, pl = 6, ptop = 16, pb = 22, mx = Math.max(...clean, 1);
+  const pt = clean.map((v, i) => [pl + i * (w - 2 * pl) / (clean.length - 1), h - pb - (v / mx) * (h - ptop - pb)]);
+  let grid = '';
+  for (let g = 0; g <= 3; g++) {
+    const y = (ptop + (h - ptop - pb) * g / 3).toFixed(1);
+    grid += `<line x1="0" x2="${w}" y1="${y}" y2="${y}" stroke="var(--line)" stroke-width="1"/>`;
+  }
+  const line = 'M' + pt.map((q) => q.map((n) => n.toFixed(1)).join(' ')).join(' L ');
+  const area = `M ${pt[0][0]} ${h - pb} L ` + pt.map((q) => q.map((n) => n.toFixed(1)).join(' ')).join(' L ')
+    + ` L ${pt[pt.length - 1][0]} ${h - pb} Z`;
+  const last = pt[pt.length - 1];
+  return `<svg class="areachart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="usage over time">
+    <defs><linearGradient id="ag" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="var(--c2)" stop-opacity=".28"/><stop offset="1" stop-color="var(--c2)" stop-opacity="0"/></linearGradient>
+      <linearGradient id="al" x1="0" y1="0" x2="${w}" y2="0"><stop offset="0" stop-color="var(--c1)"/><stop offset="1" stop-color="var(--c3)"/></linearGradient></defs>
+    ${grid}<path d="${area}" fill="url(#ag)"/>
+    <path d="${line}" fill="none" stroke="url(#al)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="3.6" fill="var(--c3)" stroke="var(--card)" stroke-width="2"/></svg>`;
+}
+
+const GAUGE_COLORS = ['var(--c2)', 'var(--c3)', 'var(--c1)', 'var(--c4)'];
+
 function renderQuota(me) {
   renderQuotaInto('quota', me);
 }
 
+// Quota as radial gauges: a member reads "how much is left" at a glance, which a
+// table of raw numbers never gave them. Colour turns to warn/bad past 80/100%.
 function renderQuotaInto(target, me) {
   const { used, limits } = me.quota;
-  const row = (label, u, limit) => {
-    const pct = limit ? Math.min(100, Math.round((u / limit) * 100)) : 0;
-    const cls = !limit ? 'mute' : pct >= 100 ? 'err' : pct >= 80 ? 'warn' : 'ok';
-    return `<tr><td>${label}</td><td class="num">${num(u)}</td>
-      <td class="num">${limit ? num(limit) : 'unlimited'}</td>
-      <td><span class="pill ${cls}">${limit ? pct + '%' : 'n/a'}</span></td></tr>`;
+  const rows = [
+    ['คำขอ', used.requests, limits.max_requests],
+    ['โทเคนขาเข้า', used.input_tokens, limits.max_input_tokens],
+    ['โทเคนขาออก', used.output_tokens, limits.max_output_tokens],
+    ['รูปภาพ', used.images, limits.max_images],
+  ].filter(([, u, lim]) => lim || u);
+  const cell = ([label, u, lim], i) => {
+    const pct = lim ? Math.min(100, Math.round((u / lim) * 100)) : null;
+    const color = pct >= 100 ? 'var(--bad)' : pct >= 80 ? 'var(--warn)' : GAUGE_COLORS[i % GAUGE_COLORS.length];
+    return `<div class="gaugecell">
+      ${pct != null ? ringSvg(pct, color) : '<div class="ring-none">∞</div>'}
+      <div class="g-meta"><b>${label}</b><div class="g-q">${num(u)}${lim ? ` / ${num(lim)}` : ' · ไม่จำกัด'}</div></div></div>`;
   };
-  $(target).innerHTML = `
-    <tr><th>Resource</th><th class="num">Used</th><th class="num">Limit</th><th>Status</th></tr>
-    ${row('Requests', used.requests, limits.max_requests)}
-    ${row('Input tokens', used.input_tokens, limits.max_input_tokens)}
-    ${row('&nbsp;&nbsp;· text', used.text_input_tokens, 0)}
-    ${row('&nbsp;&nbsp;· visual', used.visual_input_tokens, 0)}
-    ${row('Output tokens', used.output_tokens, limits.max_output_tokens)}
-    ${row('Images', used.images, limits.max_images)}
-    <tr><td colspan="4" class="empty">Window: ${esc(me.quota.window)} ·
-      resets ${new Date(me.quota.window_end).toLocaleString()}</td></tr>`;
+  $(target).innerHTML = `<div class="gaugewrap">${rows.map(cell).join('')}</div>
+    <div class="g-foot">รอบ ${esc(me.quota.window)} · รีเซ็ต ${new Date(me.quota.window_end).toLocaleString()}</div>`;
 }
 
 // Inline because a gateway may run air-gapped: no icon font, no CDN, no build.
@@ -212,6 +274,9 @@ const ICONS = {
   plug: '<path d="M9 3v6M15 3v6"/><path d="M6 9h12v3a6 6 0 0 1-12 0z"/><path d="M12 18v3"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   minus: '<path d="M5 12h14"/>',
+  download: '<path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>',
+  swap: '<path d="M4 7h11M12 4l3 3-3 3M20 17H9M12 14l-3 3 3 3"/>',
+  shield: '<path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/><path d="M9.5 12l2 2 3.5-3.5"/>',
 };
 
 // ป้ายความสามารถมาจากเซิร์ฟเวอร์เป็นคำเดียว ๆ (Text/Code/Tools/…) — ไอคอนช่วยให้
@@ -359,22 +424,110 @@ function renderHealth(report) {
       <td class="empty">${esc((r.last_error || '').slice(0, 70))}</td></tr>`).join('')}`;
 }
 
-function renderUsage(summary) {
-  if (!summary.by_model.length) {
-    $('usage').innerHTML = '<tr><td class="empty">No usage recorded yet.</td></tr>';
+// Usage for staff: four summary cards (each with a real sparkline from the daily
+// series), the daily-requests area chart, and a per-model share of requests.
+// Every number is a real aggregate — nothing is drawn that the data can't back.
+function renderUsage(summary, daily) {
+  const series = (daily && daily.series) || [];
+  const totalReq = summary.by_model.reduce((a, r) => a + r.requests, 0);
+  const totalTok = summary.by_model.reduce(
+    (a, r) => a + r.text_input_tokens + r.visual_input_tokens + r.output_tokens, 0);
+  const wLat = totalReq
+    ? Math.round(summary.by_model.reduce((a, r) => a + r.avg_latency_ms * r.requests, 0) / totalReq)
+    : 0;
+  const card = (label, iconName, val, foot, spark) => `
+    <div class="statcard"><div class="lbl"><span class="ic">${icon(iconName, 15)}</span>${label}</div>
+      <div class="val">${val}</div><div class="foot">${foot}</div>${spark || ''}</div>`;
+  $('usage-stats').innerHTML =
+    card('คำขอรวม', 'usage', num(totalReq), `${summary.window_days} วันล่าสุด`,
+      sparkSvg(series.map((d) => d.requests), 'var(--c2)'))
+    + card('โทเคนรวม', 'text', compact(totalTok), 'ขาเข้า + ขาออก',
+      sparkSvg(series.map((d) => d.input_tokens + d.output_tokens), 'var(--c3)'))
+    + card('โมเดลที่ถูกเรียก', 'models', String(summary.by_model.length), 'ในช่วงนี้', '')
+    + card('หน่วงเฉลี่ย', 'clock', wLat ? `${num(wLat)}<small>ms</small>` : '—',
+      'ถ่วงน้ำหนักตามจำนวนคำขอ', '');
+
+  $('usage-area').innerHTML = areaSvg(series.map((d) => d.requests));
+
+  const top = [...summary.by_model].sort((a, b) => b.requests - a.requests);
+  const max = top.reduce((m, r) => Math.max(m, r.requests), 0) || 1;
+  const grad = [
+    'linear-gradient(90deg,var(--c1),var(--c2))',
+    'linear-gradient(90deg,var(--c2),var(--c3))',
+    'linear-gradient(90deg,var(--c3),var(--c4))',
+  ];
+  const bars = top.length
+    ? `<div class="barlist">${top.map((r, i) => `<div class="bar-row">
+        <div class="t"><b>${esc(r.model)}</b><span>${num(r.requests)} คำขอ · ${
+          totalReq ? Math.round(r.requests / totalReq * 100) : 0}%</span></div>
+        <div class="bar-track"><div class="bar-fill" style="width:${
+          Math.max(2, Math.round(r.requests / max * 100))}%;background:${grad[i % grad.length]}"></div></div>
+      </div>`).join('')}</div>`
+    : '<div class="empty">ยังไม่มีการใช้งานในช่วงนี้</div>';
+  $('usage-bars').innerHTML = bars + (summary.errors.length
+    ? `<div class="g-foot">ข้อผิดพลาด: ${
+      summary.errors.map((e) => esc(e.code) + ' ×' + e.count).join(', ')}</div>`
+    : '');
+}
+
+/* --------------------------------------------------------- client tools */
+// The gateway mirrors these third-party tools and offers the OS-correct build,
+// pre-verified. See app/tools/ (mirror engine) and /admin/tools (the API).
+const TOOL_LOOK = {
+  'cc-switch': { icon: 'swap', grad: 'linear-gradient(135deg,#3b82f6,#8b5cf6)' },
+  rtk: { icon: 'bundle', grad: 'linear-gradient(135deg,#06b6d4,#3b82f6)' },
+};
+const OS_LABEL = { windows: 'Windows', macos: 'macOS', linux: 'Linux' };
+
+function detectOS() {
+  const s = `${navigator.platform} ${navigator.userAgent}`;
+  if (/Win/i.test(s)) return 'windows';
+  if (/Mac/i.test(s)) return 'macos';
+  if (/Linux|X11|Android/i.test(s)) return 'linux';
+  return '';
+}
+
+async function loadTools() {
+  const { tools } = await api('/admin/tools');
+  if (!tools.length) {
+    $('tools').innerHTML = '<div class="empty">ยังไม่มีเครื่องมือใน registry</div>';
     return;
   }
-  $('usage').innerHTML = `
-    <tr><th>Model</th><th class="num">Requests</th><th class="num">Text in</th>
-        <th class="num">Visual in</th><th class="num">Out</th><th class="num">Images</th>
-        <th class="num">Avg ms</th><th class="num">TTFT ms</th></tr>
-    ${summary.by_model.map((r) => `<tr>
-      <td><code>${esc(r.model)}</code></td><td class="num">${num(r.requests)}</td>
-      <td class="num">${num(r.text_input_tokens)}</td><td class="num">${num(r.visual_input_tokens)}</td>
-      <td class="num">${num(r.output_tokens)}</td><td class="num">${num(r.images)}</td>
-      <td class="num">${r.avg_latency_ms}</td><td class="num">${r.avg_ttft_ms ?? '-'}</td></tr>`).join('')}
-    ${summary.errors.length ? `<tr><td colspan="8" class="empty">Errors: ${
-      summary.errors.map((e) => esc(e.code) + ' ×' + e.count).join(', ')}</td></tr>` : ''}`;
+  const myOS = detectOS();
+  const card = (t) => {
+    const look = TOOL_LOOK[t.slug] || { icon: 'bundle', grad: 'var(--g-mix)' };
+    const dl = t.assets.filter((a) => a.download);
+    const proven = t.assets.filter((a) => a.verified === true).length;
+    const platforms = [...new Set(dl.map((a) => a.platform))];
+    const pick = dl.find((a) => a.platform === myOS) || dl[0];
+    const verifyPill = `<span class="pill ok">${icon('shield', 12)} ยืนยันด้วย ${
+      t.verify.method === 'minisign' ? 'minisign' : 'SHA-256'}</span>`;
+    const ver = t.published
+      ? `<span class="pill mute">v${esc(t.published)}</span>`
+      : '<span class="pill warn">ยังไม่เผยแพร่</span>';
+    return `<div class="card tool">
+      <div class="tool-top">
+        <div class="tool-logo" style="background:${look.grad}">${icon(look.icon, 22)}</div>
+        <div style="flex:1;min-width:0">
+          <div class="tool-name">${esc(t.name)} ${ver}</div>
+          <div class="tool-desc">${esc(t.summary || '')}</div>
+        </div>
+      </div>
+      <div class="meta-row">${t.published ? verifyPill : ''}<span class="pill mute">${esc(t.license.spdx)}</span></div>
+      ${platforms.length ? `<div class="meta-row">${platforms.map((p) =>
+        `<span class="os">${esc(OS_LABEL[p] || p)}</span>`).join('')}</div>` : ''}
+      <div class="verline">${t.published
+        ? `${icon('shield', 13)} ${proven}/${dl.length} ไฟล์ยืนยันแล้ว · เผยแพร่แล้ว`
+        : `ยังไม่ได้ mirror — รันบนเซิร์ฟเวอร์: <code>python -m app.tools sync ${esc(t.slug)}</code>`}</div>
+      <div class="tool-foot">
+        ${pick ? `<a class="tbtn primary" href="${esc(pick.download)}" download>${
+          icon('download', 15)} โหลดสำหรับ ${esc(OS_LABEL[pick.platform] || pick.platform)}</a>` : ''}
+        <a class="tbtn ghost" href="${esc(t.homepage || `https://github.com/${t.repo}`)}"
+           target="_blank" rel="noopener">รายละเอียด</a>
+      </div>
+    </div>`;
+  };
+  $('tools').innerHTML = `<div class="tools-grid">${tools.map(card).join('')}</div>`;
 }
 
 /* --------------------------------------------------------------- models */
@@ -2202,7 +2355,11 @@ async function load() {
   }
   showFleet(new Set(models.map((m) => m.id)).size, health);
   if (me.role === 'admin' || me.role === 'manager') {
-    renderUsage(await api('/admin/usage/summary?days=7'));
+    const [summary, daily] = await Promise.all([
+      api('/admin/usage/summary?days=14'),
+      api('/admin/usage/daily?days=14'),
+    ]);
+    renderUsage(summary, daily);
   }
 }
 
