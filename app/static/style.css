@@ -801,3 +801,60 @@ table tr:not(.alias-row):not(.ep-row):hover > td {
 /* Inline usage bar for leaderboards (top users) */
 .usebar { display: flex; flex-direction: column; gap: 5px; min-width: 130px; }
 .usebar-n { font-variant-numeric: tabular-nums; font-size: 0.8125rem; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   Models as cards — replaces the dense table. Overflow is visible so the
+   per-card ⋯ menu isn't clipped (a table's overflow:hidden clipped it).
+   ════════════════════════════════════════════════════════════════════ */
+#model-table { display: flex; flex-direction: column; gap: 12px; }
+.mcard { background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg);
+  box-shadow: var(--shadow); position: relative; }
+.mcard::before { content: ""; position: absolute; inset: 0 0 auto; height: 2px;
+  background: var(--g-mix); opacity: .5; border-radius: var(--r-lg) var(--r-lg) 0 0; }
+.mcard.deg { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
+.mcard.deg::before { background: var(--bad); opacity: .55; }
+.mcard.mdim > .mtop { opacity: .66; }
+.mtop { display: grid; grid-template-columns: 1fr auto; gap: 9px 18px; padding: 15px 18px; align-items: start; }
+.mid { display: flex; gap: 11px; align-items: flex-start; min-width: 0; }
+.mcard .expand { margin-top: 1px; }
+.minfo { min-width: 0; }
+.malias { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.malias code { font-size: 0.94rem; font-weight: 600; background: var(--sunken);
+  border: 1px solid var(--line); padding: 2px 8px; border-radius: var(--r-sm); }
+.minfo .hint { margin-top: 4px; }
+.mmeta { color: var(--fg3); font-size: 0.7rem; margin-top: 2px; }
+.mright { display: flex; flex-direction: column; align-items: flex-end; gap: 9px; }
+.acts { display: flex; gap: 6px; align-items: center; }
+.caps, .upstream, .measured { grid-column: 1 / -1; }
+.caps { padding-top: 2px; }
+.upstream { color: var(--fg3); font-size: 0.76rem; display: flex; gap: 7px; align-items: center; flex-wrap: wrap; }
+.upstream code { color: var(--fg2); }
+.measured { font-size: 0.72rem; color: var(--fg3); }
+.measured.fail { color: var(--bad); }
+
+/* overflow menu (⋯) */
+.rowmenu { position: relative; display: inline-flex; }
+.rowmenu .menu-t { padding: 5px 9px; }
+.menu-pop { position: absolute; right: 0; top: calc(100% + 5px); z-index: 30; min-width: 152px;
+  background: var(--card); border: 1px solid var(--line2); border-radius: 10px;
+  box-shadow: var(--shadow-lg); padding: 5px; display: none; }
+.rowmenu.open .menu-pop { display: block; }
+.menu-pop button { display: block; width: 100%; text-align: left; border: 0; background: transparent;
+  color: var(--fg2); padding: 8px 10px; border-radius: 7px; cursor: pointer; font: 500 0.8rem/1 var(--sans); }
+.menu-pop button:hover { background: var(--sunken); color: var(--fg); }
+.menu-pop button.danger { color: var(--fg2); }
+.menu-pop button.danger:hover { background: var(--bad-bg); color: var(--bad); }
+
+/* expanded backends tray */
+.mback { display: none; border-top: 1px solid var(--line); background: var(--sunken);
+  padding: 4px 18px 10px; border-radius: 0 0 var(--r-lg) var(--r-lg); }
+.mcard.open .mback { display: block; }
+.brow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 9px 0; border-top: 1px solid var(--line); font-size: 0.78rem; }
+.brow:first-child { border-top: 0; }
+.brow .ep-mark { color: var(--fg3); }
+.brow .ep-url { color: var(--fg2); }
+.brow .grow { flex: 1; }
+.brow label.tune { display: inline-flex; align-items: center; gap: 5px; color: var(--fg3);
+  font-size: 0.72rem; white-space: nowrap; }
+.brow label.tune input { width: 64px; padding: 4px 7px; }

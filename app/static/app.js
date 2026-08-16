@@ -402,6 +402,14 @@ document.addEventListener('click', (event) => {
   setTimeout(() => { button.innerHTML = was; }, 1200);
 });
 
+// Close any open row overflow menu (⋯) when clicking elsewhere. Registered once;
+// the toggle button stops propagation so its own click does not immediately close it.
+document.addEventListener('click', (event) => {
+  for (const menu of document.querySelectorAll('.rowmenu.open')) {
+    if (!menu.contains(event.target)) menu.classList.remove('open');
+  }
+});
+
 function renderCatalog(data) {
   const sections = data.sections.map((s) => `
     <h3 class="model-section">${esc(s.title)}
@@ -627,105 +635,105 @@ async function loadModels() {
 
   // แถวบนคือสิ่งที่ client เรียก · แถวย่อยคือเครื่องจริงที่ตอบให้ สองอย่างนี้เคยอัดอยู่ใน
   // เซลล์เดียวกัน พออ่านแล้วแยกไม่ออกว่าอะไรเป็นของ alias อะไรเป็นของเครื่อง
-  const endpointRow = (m, e, isLast) => {
+  // One backend that answers for this alias — a row inside the card's expanded
+  // tray. Same data-attrs as before, so the tune/enable handlers below still bind.
+  const endpointRow = (m, e) => {
     const dead = !e.health?.healthy;
     const speaks = [
       e.protocols?.openai ? 'OpenAI' : '',
       e.protocols?.anthropic ? 'Anthropic' : '',
       e.modalities?.image ? 'images' : '',
     ].filter(Boolean);
-    const shown = openAliases().has(m.alias);
-    return `<tr class="ep-row${isLast ? ' ep-last' : ''}" data-under="${esc(m.alias)}"${
-      shown ? '' : ' hidden'}>
-      <td><span class="ep-mark">↳</span> <code>${esc(e.name)}</code>
-          <div class="hint">${esc(e.server_type)}</div></td>
-      <td class="mono">${esc(e.base_url)}</td>
-      <td><div class="badges tight">${speaks.map(badgeChip).join('')}</div></td>
-      <td>${e.enabled === false
-            ? '<span class="pill mute">ปิดไว้</span>'
-            : `<span class="pill ${dead ? 'err' : 'ok'}">${dead ? 'down' : 'up'}</span>`}</td>
-      <td class="ep-tune">
-        <label>priority
-          <input type="number" min="0" max="1000" value="${esc(e.priority)}"
-            data-tune="priority" data-model="${esc(m.alias)}" data-ep="${esc(e.name)}"></label>
-        <label>พร้อมกัน
-          <input type="number" min="1" max="4096" value="${esc(e.max_concurrency)}"
-            data-tune="max_concurrency" data-model="${esc(m.alias)}"
-            data-ep="${esc(e.name)}"></label>
-        ${e.health?.in_flight ? `<span class="hint">กำลังวิ่ง ${esc(e.health.in_flight)}</span>` : ''}
-      </td>
-      <td><button class="ghost small" data-ep-model="${esc(m.alias)}" data-ep="${esc(e.name)}"
-            data-ep-to="${e.enabled === false ? '1' : '0'}"
-            >${e.enabled === false ? 'เปิดเครื่องนี้' : 'ปิดเครื่องนี้'}</button></td>
-    </tr>`;
+    return `<div class="brow">
+      <span class="ep-mark">↳</span> <code>${esc(e.name)}</code>
+      <span class="hint">${esc(e.server_type)}</span>
+      <code class="mono ep-url">${esc(e.base_url)}</code>
+      <div class="badges tight">${speaks.map(badgeChip).join('')}</div>
+      ${e.enabled === false
+        ? '<span class="pill mute">ปิดไว้</span>'
+        : `<span class="pill ${dead ? 'err' : 'ok'}">${dead ? 'down' : 'up'}</span>`}
+      <span class="grow"></span>
+      <label class="tune">priority
+        <input type="number" min="0" max="1000" value="${esc(e.priority)}"
+          data-tune="priority" data-model="${esc(m.alias)}" data-ep="${esc(e.name)}"></label>
+      <label class="tune">พร้อมกัน
+        <input type="number" min="1" max="4096" value="${esc(e.max_concurrency)}"
+          data-tune="max_concurrency" data-model="${esc(m.alias)}" data-ep="${esc(e.name)}"></label>
+      ${e.health?.in_flight ? `<span class="hint">กำลังวิ่ง ${esc(e.health.in_flight)}</span>` : ''}
+      <button class="ghost small" data-ep-model="${esc(m.alias)}" data-ep="${esc(e.name)}"
+        data-ep-to="${e.enabled === false ? '1' : '0'}"
+        >${e.enabled === false ? 'เปิดเครื่องนี้' : 'ปิดเครื่องนี้'}</button>
+    </div>`;
   };
 
-  $('model-table').innerHTML = `
-    <tr><th>Alias / backend</th><th>Upstream / address</th><th>Capabilities · declared</th>
-        <th>Health</th><th>Test status · measured</th><th></th></tr>
-    ${registry.data.map((m, i) => {
-      // นับเฉพาะเครื่องที่เปิดอยู่ — เครื่องที่ถูกปิดไว้ไม่ได้รับงาน การนับรวมเข้าไป
-      // ทำให้ตัวเลขบอกกำลังที่ไม่มีจริง ส่วนที่ปิดไว้บอกแยกเพราะเป็นคนละเรื่องกับ down
-      const serving = m.endpoints.filter((e) => e.enabled !== false);
-      const healthy = serving.filter((e) => e.health?.healthy).length;
-      const total = serving.length;
-      const off = m.endpoints.length - total;
-      const cls = healthy === total ? 'ok' : healthy ? 'warn' : 'err';
-      const c = compat[i];
-      const ccls = c.status === 'READY' ? 'ok' : c.status === 'DEGRADED' ? 'err' : 'mute';
-      // ป้ายความสามารถคือสิ่งที่ *ประกาศไว้* · ผลทดสอบคือสิ่งที่ *วัดได้จริง* สองอย่างนี้
-      // ไม่ตรงกันได้ และเคสที่เจ็บคือประกาศว่าทำได้แต่วัดแล้วไม่ผ่าน จึงต้องบอกให้เห็น
-      const results = c.results || [];
-      const times = results.map((r) => r.tested_at).filter(Boolean).map((t) => stamp(t));
-      const last = times.length ? new Date(Math.max(...times)) : null;
-      const failed = results.filter((r) => r.status === 'fail').map((r) => r.feature);
-      return `<tr class="alias-row${openAliases().has(m.alias) ? ' open' : ''}">
-        <td><div class="alias-cell">
-              <button class="expand" data-expand="${esc(m.alias)}"
-                aria-expanded="${openAliases().has(m.alias)}"
-                title="ดูเครื่องที่รองรับ alias นี้">${
-                  icon(openAliases().has(m.alias) ? 'minus' : 'plus', 13)}</button>
-              <div>
-                <code>${esc(m.alias)}</code>${m.enabled === false
-                  ? ' <span class="pill mute">off</span>' : ''}
-                <div class="hint">${esc(m.display_name)}</div>
-                <div class="hint">${total} เครื่อง${off ? ` · ปิดไว้ ${off}` : ''}</div>
-              </div></div></td>
-        <td><code>${esc(m.upstream_model)}</code></td>
-        <td><div class="badges tight">${m.badges.map(badgeChip).join('')}</div></td>
-        <td><span class="pill ${cls}">${healthy}/${total} up</span>
-            ${off ? `<div class="hint">ปิดไว้ ${off}</div>` : ''}</td>
-        <td><span class="pill ${ccls}">${esc(c.status)}</span>
-            <div class="hint">${last
-              ? `วัดล่าสุด ${esc(last.toLocaleString())}`
-              : 'ยังไม่เคยวัด — ป้ายทางซ้ายเป็นสิ่งที่ประกาศไว้เท่านั้น'}</div>
-            ${failed.length
-              ? `<div class="hint" style="color:var(--bad)">ไม่ผ่าน: ${failed.map(esc).join(', ')}</div>`
-              : ''}
-            <div class="hint" id="run-${esc(m.alias)}"></div></td>
-        <td><div class="rowacts">
-          <button class="ghost small" data-verify="${esc(m.alias)}">Verify</button>
-          <button class="ghost small" data-test="${esc(m.alias)}">Run tests</button>
-          <button class="ghost small" data-edit="${esc(m.alias)}">Edit</button>
-          <button class="ghost small" data-enable="${esc(m.alias)}"
-            data-to="${m.enabled === false ? '1' : '0'}"
-            >${m.enabled === false ? 'Enable' : 'Disable'}</button>
-          <button class="danger small" data-del="${esc(m.alias)}">Delete</button>
-        </div></td></tr>
-        ${m.endpoints.map((e, n) => endpointRow(m, e, n === m.endpoints.length - 1)).join('')}`;
-    }).join('')}`;
+  $('model-table').innerHTML = registry.data.map((m, i) => {
+    // นับเฉพาะเครื่องที่เปิดอยู่ — เครื่องที่ถูกปิดไว้ไม่ได้รับงาน การนับรวมเข้าไป
+    // ทำให้ตัวเลขบอกกำลังที่ไม่มีจริง ส่วนที่ปิดไว้บอกแยกเพราะเป็นคนละเรื่องกับ down
+    const serving = m.endpoints.filter((e) => e.enabled !== false);
+    const healthy = serving.filter((e) => e.health?.healthy).length;
+    const total = serving.length;
+    const off = m.endpoints.length - total;
+    const cls = healthy === total ? 'ok' : healthy ? 'warn' : 'err';
+    const c = compat[i];
+    const ccls = c.status === 'READY' ? 'ok' : c.status === 'DEGRADED' ? 'err' : 'mute';
+    // ป้ายความสามารถคือสิ่งที่ *ประกาศไว้* · ผลทดสอบคือสิ่งที่ *วัดได้จริง* สองอย่างนี้
+    // ไม่ตรงกันได้ และเคสที่เจ็บคือประกาศว่าทำได้แต่วัดแล้วไม่ผ่าน จึงต้องบอกให้เห็น
+    const results = c.results || [];
+    const times = results.map((r) => r.tested_at).filter(Boolean).map((t) => stamp(t));
+    const last = times.length ? new Date(Math.max(...times)) : null;
+    const failed = results.filter((r) => r.status === 'fail').map((r) => r.feature);
+    const open = openAliases().has(m.alias);
+    return `<div class="mcard${ccls === 'err' ? ' deg' : ''}${open ? ' open' : ''}${
+        m.enabled === false ? ' mdim' : ''}">
+      <div class="mtop">
+        <div class="mid">
+          <button class="expand" data-expand="${esc(m.alias)}" aria-expanded="${open}"
+            title="ดูเครื่องที่รองรับ alias นี้">${icon(open ? 'minus' : 'plus', 13)}</button>
+          <div class="minfo">
+            <div class="malias"><code>${esc(m.alias)}</code>${m.enabled === false
+              ? ' <span class="pill mute">off</span>' : ''}
+              <span class="pill ${cls}">${healthy}/${total} up${off ? ` · ปิดไว้ ${off}` : ''}</span></div>
+            <div class="hint">${esc(m.display_name)}</div>
+            <div class="mmeta">${total} เครื่อง</div>
+          </div>
+        </div>
+        <div class="mright">
+          <span class="pill ${ccls}">${esc(c.status)}</span>
+          <div class="acts">
+            <button class="ghost small" data-verify="${esc(m.alias)}">Verify</button>
+            <button class="ghost small" data-edit="${esc(m.alias)}">Edit</button>
+            <span class="rowmenu"><button class="ghost small menu-t" data-menu aria-label="More actions"
+              >${icon('chevron', 14)}</button>
+              <div class="menu-pop">
+                <button data-test="${esc(m.alias)}">Run tests</button>
+                <button data-enable="${esc(m.alias)}" data-to="${m.enabled === false ? '1' : '0'}"
+                  >${m.enabled === false ? 'Enable' : 'Disable'}</button>
+                <button class="danger" data-del="${esc(m.alias)}">Delete</button>
+              </div></span>
+          </div>
+        </div>
+        <div class="caps"><div class="badges tight">${m.badges.map(badgeChip).join('')}</div></div>
+        <div class="upstream">upstream <code>${esc(m.upstream_model)}</code></div>
+        <div class="measured${failed.length ? ' fail' : ''}">
+          ${last
+            ? `วัดล่าสุด ${esc(last.toLocaleString())}`
+            : 'ยังไม่เคยวัด — ป้ายทางซ้ายเป็นสิ่งที่ประกาศไว้เท่านั้น'}${
+            failed.length ? ` · ไม่ผ่าน: ${failed.map(esc).join(', ')}` : ''}
+          <span class="hint" id="run-${esc(m.alias)}"></span>
+        </div>
+      </div>
+      <div class="mback">${m.endpoints.map((e) => endpointRow(m, e)).join('')}</div>
+    </div>`;
+  }).join('');
 
   // ยุบไว้ก่อนเป็นค่าตั้งต้น · 7 โมเดล x 2 เครื่อง = 21 แถวรวด ซึ่งอ่านไม่ออกว่า
   // แถวไหนเป็นของใคร · กางทีละตัวเมื่อจะดูจริง
   const setOpen = (alias, opening) => {
-    for (const row of $('model-table').querySelectorAll(`[data-under="${alias}"]`)) {
-      row.hidden = !opening;
-    }
     const btn = $('model-table').querySelector(`[data-expand="${alias}"]`);
     if (!btn) return;
     btn.setAttribute('aria-expanded', String(opening));
     btn.innerHTML = icon(opening ? 'minus' : 'plus', 13);
-    btn.closest('tr').classList.toggle('open', opening);
+    btn.closest('.mcard')?.classList.toggle('open', opening);
   };
 
   for (const btn of $('model-table').querySelectorAll('[data-expand]')) {
@@ -756,6 +764,9 @@ async function loadModels() {
     paint();
   }
 
+  for (const btn of $('model-table').querySelectorAll('[data-menu]')) {
+    btn.onclick = (ev) => { ev.stopPropagation(); btn.closest('.rowmenu').classList.toggle('open'); };
+  }
   for (const btn of $('model-table').querySelectorAll('[data-verify]')) {
     btn.onclick = () => verifyModel(btn.dataset.verify, btn);
   }
