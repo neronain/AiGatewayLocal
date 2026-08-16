@@ -438,10 +438,16 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 }
 .meter-bar span {
   display: block; height: 100%; border-radius: 999px;
-  background: var(--ok); transition: width .2s ease;
+  /* Gradient so a quota bar speaks the same visual language as the dashboard
+     bars; warn/err stay solid semantic colours below (they carry meaning). */
+  background: linear-gradient(90deg, var(--c1), var(--c2)); transition: width .2s ease;
 }
 .meter-bar span.warn { background: var(--warn); }
 .meter-bar span.err { background: var(--bad); }
+
+/* Model-row action cluster — keep the five actions as one tidy, right-aligned
+   group that wraps neatly instead of a single overflowing line. */
+.rowacts { display: inline-flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; }
 .meter-text {
   font-size: 0.7188rem; color: var(--fg2);
   font-variant-numeric: tabular-nums; white-space: nowrap;

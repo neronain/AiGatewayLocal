@@ -703,7 +703,7 @@ async function loadModels() {
               ? `<div class="hint" style="color:var(--bad)">ไม่ผ่าน: ${failed.map(esc).join(', ')}</div>`
               : ''}
             <div class="hint" id="run-${esc(m.alias)}"></div></td>
-        <td style="white-space:nowrap">
+        <td><div class="rowacts">
           <button class="ghost small" data-verify="${esc(m.alias)}">Verify</button>
           <button class="ghost small" data-test="${esc(m.alias)}">Run tests</button>
           <button class="ghost small" data-edit="${esc(m.alias)}">Edit</button>
@@ -711,7 +711,7 @@ async function loadModels() {
             data-to="${m.enabled === false ? '1' : '0'}"
             >${m.enabled === false ? 'Enable' : 'Disable'}</button>
           <button class="danger small" data-del="${esc(m.alias)}">Delete</button>
-        </td></tr>
+        </div></td></tr>
         ${m.endpoints.map((e, n) => endpointRow(m, e, n === m.endpoints.length - 1)).join('')}`;
     }).join('')}`;
 
