@@ -949,11 +949,15 @@ async def probe_backend(
                 pass
 
         # 4. tools - 200 alone is not enough; the backend must emit tool_calls.
+        #    Budget generously: a reasoning model (Qwen3, DeepSeek-R1) writes a
+        #    whole <think> block *before* the tool call, and 128 tokens ran out
+        #    mid-thought — the call never arrived and a working model measured
+        #    tools=false. 512 leaves room to think and still call.
         response = await try_chat(
             {
                 "model": model,
                 "messages": [{"role": "user", "content": "What is the weather in Bangkok?"}],
-                "max_tokens": 128,
+                "max_tokens": 512,
                 "tools": [
                     {
                         "type": "function",
