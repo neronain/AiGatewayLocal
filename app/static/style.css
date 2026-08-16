@@ -858,3 +858,27 @@ table tr:not(.alias-row):not(.ep-row):hover > td {
 .brow label.tune { display: inline-flex; align-items: center; gap: 5px; color: var(--fg3);
   font-size: 0.72rem; white-space: nowrap; }
 .brow label.tune input { width: 64px; padding: 4px 7px; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   Issue-an-API-key form — balanced two columns instead of a sparse row with
+   the model checkboxes floating off to one side.
+   ════════════════════════════════════════════════════════════════════ */
+.issue { display: grid; grid-template-columns: 1.1fr .9fr; gap: 22px; margin-top: 14px; }
+@media (max-width: 780px) { .issue { grid-template-columns: 1fr; } }
+.issue-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; align-content: start; }
+.issue-form .field { margin: 0; }
+.issue-form .field.full { grid-column: 1 / -1; }
+.issue-foot { grid-column: 1 / -1; margin-top: 2px; }
+.field label .opt { font-weight: 400; color: var(--fg3); }
+/* the model picker as a framed, two-column grid of rows that highlight when ticked */
+.modelbox { border: 1px solid var(--line); border-radius: var(--r); background: var(--sunken); padding: 4px; }
+.modelbox .mb-hd { padding: 9px 11px 6px; font-size: 0.75rem; font-weight: 600; color: var(--fg2);
+  text-transform: uppercase; letter-spacing: .04em; }
+.checks.mgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 2px; }
+@media (max-width: 460px) { .checks.mgrid { grid-template-columns: 1fr; } }
+.checks.mgrid label { display: flex; align-items: center; gap: 9px; margin: 0;
+  padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 0.83rem; color: var(--fg2); }
+.checks.mgrid label:hover { background: var(--card); color: var(--fg); }
+.checks.mgrid input { width: 16px; height: 16px; accent-color: var(--accent); box-shadow: none; }
+.checks.mgrid label:has(input:checked) { background: var(--card); color: var(--fg); font-weight: 500; }
+.issue-models .hint { margin-top: 8px; }

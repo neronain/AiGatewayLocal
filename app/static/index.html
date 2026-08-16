@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.32.0">
+<link rel="stylesheet" href="style.css?v=1.33.0">
 </head>
 <body>
 
@@ -293,31 +293,37 @@
     <div class="card">
       <h3>Issue an API key</h3>
       <p class="hint">The key is shown once and stored only as a hash. A lost key must be re-issued.</p>
-      <div class="row" style="margin-top:12px">
-        <div class="field">
-          <label for="k-user">User</label>
-          <select id="k-user"></select>
+      <div class="issue">
+        <div class="issue-form">
+          <div class="field">
+            <label for="k-user">User</label>
+            <select id="k-user"></select>
+          </div>
+          <div class="field">
+            <label for="k-workspace" title="ผูกกับ workspace = จำกัดเฉพาะโมเดลของ workspace นั้น">Workspace <span class="opt">(optional)</span></label>
+            <select id="k-workspace"><option value="">— none —</option></select>
+          </div>
+          <div class="field full">
+            <label for="k-name">Label</label>
+            <input id="k-name" placeholder="CS101 laptop" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="k-days">Expires in (days)</label>
+            <input id="k-days" type="number" value="180">
+          </div>
+          <div class="issue-foot">
+            <button id="issue-key" class="primary">Issue key</button>
+          </div>
         </div>
-        <div class="field">
-          <label for="k-workspace">Workspace (optional — restricts to that workspace's models)</label>
-          <select id="k-workspace"><option value="">— none —</option></select>
-        </div>
-        <div class="field">
-          <label for="k-name">Label</label>
-          <input id="k-name" placeholder="CS101 laptop" autocomplete="off">
-        </div>
-        <div class="field">
-          <label for="k-days">Expires in (days)</label>
-          <input id="k-days" type="number" value="180">
-        </div>
-        <div class="field" style="width:100%">
-          <label>Models this key may use</label>
-          <div id="k-models" class="checks"></div>
+        <div class="issue-models">
+          <div class="modelbox">
+            <div class="mb-hd">Models this key may use</div>
+            <div id="k-models" class="checks mgrid"></div>
+          </div>
           <span class="hint">ไม่ติ๊กเลย = ใช้ได้เท่าที่ workspace และ role อนุญาต ·
             ติ๊กแล้ว = จำกัดเฉพาะที่ติ๊ก (จำกัดได้อย่างเดียว ขยายไม่ได้)</span>
         </div>
       </div>
-      <button id="issue-key" class="primary">Issue key</button>
       <div id="key-out"></div>
     </div>
 
@@ -705,6 +711,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.32.0"></script>
+<script src="app.js?v=1.33.0"></script>
 </body>
 </html>
