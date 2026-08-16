@@ -520,19 +520,24 @@ cannot check: the tool knows what it *generated*, not what the process is *doing
               you apply it
 ```
 
-**Verify** re-probes every backend of a model and reports what to change:
+**Verify** re-probes every backend of a model and reports what to change. The probe
+is **engine-aware**: it reads the registry's `server_type` (the authoritative
+source) and gives engine-correct advice. A llama.cpp backend that did not accept
+tools hears about `--jinja`; a vLLM backend hears about tool-parser flags. For
+reasoning models, the probe budgets enough token context so they have room to think
+before calling a tool.
 
 ```
-[warning] tools_flag_missing
-  vLLM rejected the tool request: it was started without
-  --enable-auto-tool-choice and a --tool-call-parser.
-  → ./<controller>.sh restart --tool-parser qwen3_coder
+[warning] jinja_missing
+  The backend accepted a tool request but returned no tool_calls. llama.cpp
+  applies the model's tool template only when started with --jinja.
+  → ./<controller>.sh restart --jinja
 ```
 
 If a model file records where its backend came from (`managed_by`), that becomes
 a command you can paste rather than a placeholder — and if the deploy tool is
 **LMDS**, the finding gains an **Apply** button that asks LMDS to restart that
-bundle with the parser set. The button reports what it sent, not that it
+bundle with the setting applied. The button reports what it sent, not that it
 succeeded: whether it worked is a question only a fresh probe answers.
 
 <details>
@@ -626,16 +631,28 @@ land under `GW_TOOLS_DIR` (`data/tools/`, git-ignored). Adding a tool later is
 one entry in that file, not new code. Auto-sync is **off by design**
 (`GW_TOOLS_AUTO_SYNC=false`).
 
-**In the console** (the *เครื่องมือ* tab, staff): each published tool is a card
-with its verify badge, licence, the platforms it ships for, and a **download
-button that picks the build for the viewer's OS**. It reads the mirror over
-`GET /admin/tools`; the download route (`GET /admin/tools/{slug}/download`)
-serves only an allow-listed asset from the published version — never a candidate,
-never a path outside the manifest.
+**In the console** (the *เครื่องมือ* tab, staff): each published tool appears as a card
+with its verification badge, licence, supported platforms, and a **download
+button that auto-detects the viewer's OS**. A Connect button mints a scoped key
+and displays the `ANTHROPIC_BASE_URL`, `AUTH_TOKEN`, and `MODEL` the tool needs
+to wire itself to this gateway, ready to paste into a client config.
 
-> Next phase (not yet wired): the download also mints a scoped key and
-> pre-points the tool at this gateway, so a customer is one click from a working
-> switcher wired to their own site.
+---
+
+## Part of the DGX-Spark stack
+
+LiteGate is one piece of an integrated system for deploying and serving models on
+your own hardware. The others handle deployment, controller curation, and
+versioning of validated recipes across the fleet.
+
+| Repo | Role |
+|---|---|
+| [AutoDeployDGXProject](https://github.com/neronain/AutoDeployDGXProject) | **LMDS** — downloads weights, generates launch bundles, deploys and runs models across the fleet |
+| [AiGatewayLocal](https://github.com/neronain/AiGatewayLocal) | **LiteGate** (this repo) — serves the running models through OpenAI/Anthropic-compatible endpoints, manages keys and quota, and verifies what each model can actually do |
+| [dgx-spark-all-controllers](https://github.com/neronain/dgx-spark-all-controllers) | **Canonical controllers** — the curated, tested launch scripts every machine syncs from |
+| [script-update](https://github.com/neronain/script-update) | **Candidate controllers** — newly published scripts staged for review before promotion to canonical |
+
+Together: LMDS deploys a model with a controller; once proved in service, that controller is published to candidates and promoted to canonical, where every machine picks it up. LiteGate measures what the running model actually does and can send findings back to LMDS for repair — the loop closes automatically.
 
 ---
 
