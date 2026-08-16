@@ -522,12 +522,77 @@ async function loadTools() {
       <div class="tool-foot">
         ${pick ? `<a class="tbtn primary" href="${esc(pick.download)}" download>${
           icon('download', 15)} Download for ${esc(OS_LABEL[pick.platform] || pick.platform)}</a>` : ''}
+        ${t.published ? `<button class="tbtn ghost" data-connect="${esc(t.slug)}">${
+          icon('plug', 15)} Connect</button>` : ''}
         <a class="tbtn ghost" href="${esc(t.homepage || `https://github.com/${t.repo}`)}"
            target="_blank" rel="noopener">Details</a>
       </div>
     </div>`;
   };
   $('tools').innerHTML = `<div class="tools-grid">${tools.map(card).join('')}</div>`;
+
+  // "Connect" is only drawn on published tools, so a click always has a mirrored
+  // build to point at. The tool row is looked up here where the list is in hand,
+  // rather than re-fetched, so the button carries only the slug.
+  for (const btn of $('tools').querySelectorAll('[data-connect]')) {
+    const tool = tools.find((x) => x.slug === btn.dataset.connect);
+    btn.onclick = () => connectTool(tool).catch((e) => showError(e.message));
+  }
+}
+
+// The first alias a person may actually call — a real value makes the snippet
+// runnable as handed over, instead of a placeholder they have to go find.
+function firstAlias(catalog) {
+  for (const section of catalog?.sections || []) {
+    if (section.models?.length) return section.models[0].id;
+  }
+  return '';
+}
+
+// One click mints a personal key and shows the exact settings that wire a
+// downloaded client (Claude Code / cc-switch) at THIS gateway. The key comes
+// back once from the same endpoint the account page uses, so it is shown here
+// and nowhere else — not logged, not put in a URL.
+async function connectTool(t) {
+  const today = new Date().toISOString().slice(0, 10);
+  const created = await post('/v1/me/api-keys', { name: `cc-switch ${today}` });
+  const key = created.api_key;
+  const baseUrl = `${location.origin}/v1`;
+
+  // The catalogue is the list of models this person is allowed to call. Cached
+  // by the account page; fetched here on demand for anyone who lands on Tools
+  // first. If it cannot be read, fall back to a placeholder they can edit.
+  if (!state.cache.catalog) {
+    try { state.cache.catalog = await api('/v1/catalog'); } catch { /* placeholder below */ }
+  }
+  const model = firstAlias(state.cache.catalog) || 'your-model-alias';
+
+  const settings = JSON.stringify(
+    { env: { ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_AUTH_TOKEN: key, ANTHROPIC_MODEL: model } },
+    null, 2,
+  );
+  const href = `data:application/json,${encodeURIComponent(settings)}`;
+
+  const row = (label, value) => `<div class="connect-row">
+    <div class="connect-key">${label}</div>
+    <div class="connect-val">
+      <code class="mono">${esc(value)}</code>
+      <button class="ghost small" data-copy-model="${esc(value)}">${icon('copy', 14)} Copy</button>
+    </div>
+  </div>`;
+
+  modal(`Connect — ${esc(t.name)}`, `
+    <p class="hint" style="margin:0 0 14px">
+      ตั้งค่าให้ ${esc(t.name)} ชี้มาที่เกตเวย์นี้ · คีย์นี้เพิ่งถูกสร้างและจะแสดงเพียงครั้งเดียว
+      ผูกกับบัญชีของคุณคนเดียว เพิกถอนได้ที่ My account → API keys</p>
+    ${row('ANTHROPIC_BASE_URL', baseUrl)}
+    ${row('ANTHROPIC_AUTH_TOKEN', key)}
+    ${row('ANTHROPIC_MODEL', model)}
+    <div class="tool-foot" style="margin-top:16px">
+      <a class="tbtn primary" download="settings.json" href="${href}">${
+        icon('download', 15)} Download settings.json</a>
+      <span class="hint" style="margin:0">วางไว้ที่ <code>~/.claude/settings.json</code></span>
+    </div>`);
 }
 
 /* --------------------------------------------------------------- models */
@@ -2014,6 +2079,7 @@ async function loadAccount() {
     api('/v1/me'), api('/v1/me/api-keys'), api('/v1/catalog'),
   ]);
   state.me = me;
+  state.cache.catalog = catalog;
   renderQuotaInto('my-quota', me);
 
   $('key-count').textContent = `${keys.active} of ${keys.limit} active`;

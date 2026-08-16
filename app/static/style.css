@@ -776,6 +776,13 @@ nav button[aria-selected="true"] .ti { opacity: 1; }
 .tbtn.ghost { background: transparent; color: var(--fg2); border: 1px solid var(--line); }
 .tbtn.ghost:hover { color: var(--fg); border-color: var(--line2); }
 
+/* Connect — the exact settings that wire a downloaded client at this gateway. */
+.connect-row { margin-bottom: 12px; }
+.connect-key { font: 600 0.72rem/1 var(--sans); letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--fg3); margin-bottom: 5px; }
+.connect-val { display: flex; align-items: center; gap: 8px; }
+.connect-val .mono { flex: 1; min-width: 0; word-break: break-all; font-size: 0.8125rem; }
+
 /* ══════════════════════════════════════════════════════════════════════
    Global table polish — one change lifts every page's tables at once.
    ════════════════════════════════════════════════════════════════════ */
