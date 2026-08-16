@@ -626,9 +626,16 @@ land under `GW_TOOLS_DIR` (`data/tools/`, git-ignored). Adding a tool later is
 one entry in that file, not new code. Auto-sync is **off by design**
 (`GW_TOOLS_AUTO_SYNC=false`).
 
-> Next phases (not yet wired): a **Client Tools** panel in the console that
-> serves the OS-correct installer, and a one-click download that mints a scoped
-> key and pre-points the tool at this gateway.
+**In the console** (the *เครื่องมือ* tab, staff): each published tool is a card
+with its verify badge, licence, the platforms it ships for, and a **download
+button that picks the build for the viewer's OS**. It reads the mirror over
+`GET /admin/tools`; the download route (`GET /admin/tools/{slug}/download`)
+serves only an allow-listed asset from the published version — never a candidate,
+never a path outside the manifest.
+
+> Next phase (not yet wired): the download also mints a scoped key and
+> pre-points the tool at this gateway, so a customer is one click from a working
+> switcher wired to their own site.
 
 ---
 
