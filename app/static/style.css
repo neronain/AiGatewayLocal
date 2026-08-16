@@ -775,3 +775,16 @@ nav button[aria-selected="true"] .ti { opacity: 1; }
 .tbtn.primary:hover { filter: brightness(1.06); }
 .tbtn.ghost { background: transparent; color: var(--fg2); border: 1px solid var(--line); }
 .tbtn.ghost:hover { color: var(--fg); border-color: var(--line2); }
+
+/* ══════════════════════════════════════════════════════════════════════
+   Global table polish — one change lifts every page's tables at once.
+   ════════════════════════════════════════════════════════════════════ */
+td { font-variant-numeric: tabular-nums; }
+/* Row hover for scannability — skip the two-level alias/endpoint rows, which
+   already carry their own surface to show the grouping. */
+table tr:not(.alias-row):not(.ep-row):hover > td {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+/* Inline usage bar for leaderboards (top users) */
+.usebar { display: flex; flex-direction: column; gap: 5px; min-width: 130px; }
+.usebar-n { font-variant-numeric: tabular-nums; font-size: 0.8125rem; }

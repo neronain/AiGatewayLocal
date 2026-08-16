@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.28.0">
+<link rel="stylesheet" href="style.css?v=1.29.0">
 </head>
 <body>
 
@@ -59,7 +59,7 @@
       <button data-tab="quota" aria-label="Quota" role="tab" aria-selected="false" data-staff>
         <span data-icon="quota" aria-hidden="true"></span><span class="tab-label">Quota</span></button>
       <button data-tab="tools" aria-label="Client tools" role="tab" aria-selected="false" data-staff>
-        <span data-icon="download" aria-hidden="true"></span><span class="tab-label">เครื่องมือ</span></button>
+        <span data-icon="download" aria-hidden="true"></span><span class="tab-label">Client tools</span></button>
     </nav>
   </div>
 </header>
@@ -96,7 +96,7 @@
   <!-- ================= My account ================= -->
   <section id="tab-account" class="stack" hidden>
     <div>
-      <h2><span class="hi" data-icon="quota" data-icon-size="15" aria-hidden="true"></span>โควตาของฉัน</h2>
+      <h2><span class="hi" data-icon="quota" data-icon-size="15" aria-hidden="true"></span>My quota</h2>
       <div class="card"><div id="my-quota"></div></div>
     </div>
 
@@ -140,7 +140,7 @@
   <!-- ================= Dashboard ================= -->
   <section id="tab-dashboard" class="stack">
     <div>
-      <h2><span class="hi" data-icon="quota" data-icon-size="15" aria-hidden="true"></span>โควตาของฉัน</h2>
+      <h2><span class="hi" data-icon="quota" data-icon-size="15" aria-hidden="true"></span>My quota</h2>
       <div class="card"><div id="quota"></div></div>
     </div>
 
@@ -148,23 +148,23 @@
     <div id="usage-wrap" class="stack" hidden>
       <div class="statgrid" id="usage-stats"></div>
       <div class="panel">
-        <div class="panel-hd"><div><h3>ปริมาณการใช้งานรายวัน</h3>
-          <div class="sub">คำขอต่อวัน · 14 วันล่าสุด</div></div></div>
+        <div class="panel-hd"><div><h3>Daily usage</h3>
+          <div class="sub">requests per day · last 14 days</div></div></div>
         <div class="panel-bd"><div id="usage-area"></div></div>
       </div>
       <div class="panel">
-        <div class="panel-hd"><div><h3>สัดส่วนการใช้งานตามโมเดล</h3>
-          <div class="sub">แบ่งตามจำนวนคำขอ</div></div></div>
+        <div class="panel-hd"><div><h3>Usage by model</h3>
+          <div class="sub">share of requests</div></div></div>
         <div class="panel-bd"><div id="usage-bars"></div></div>
       </div>
     </div>
 
     <div>
-      <h2><span class="hi" data-icon="models" data-icon-size="15" aria-hidden="true"></span>โมเดล AI ที่ใช้ได้</h2>
+      <h2><span class="hi" data-icon="models" data-icon-size="15" aria-hidden="true"></span>Available AI models</h2>
       <div id="catalog"></div>
     </div>
     <div id="health-wrap" hidden>
-      <h2><span class="hi" data-icon="health" data-icon-size="15" aria-hidden="true"></span>สถานะ backend</h2>
+      <h2><span class="hi" data-icon="health" data-icon-size="15" aria-hidden="true"></span>Backend health</h2>
       <div class="scroll"><table id="health"></table></div>
     </div>
   </section>
@@ -607,7 +607,7 @@
   <!-- ================= Client tools ================= -->
   <section id="tab-tools" class="stack" hidden>
     <div>
-      <h2><span class="hi" data-icon="download" data-icon-size="15" aria-hidden="true"></span>เครื่องมือสำหรับเครื่องลูกค้า</h2>
+      <h2><span class="hi" data-icon="download" data-icon-size="15" aria-hidden="true"></span>Client tools</h2>
       <p class="hint" style="margin:2px 0 0">
         โหลดเครื่องมือที่ชี้มาที่ gateway นี้ได้จากที่นี่ ออฟไลน์ — ทุกไฟล์ผ่านการตรวจลายเซ็น/checksum
         และผู้ดูแลอนุมัติเผยแพร่แล้ว
@@ -705,6 +705,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.28.0"></script>
+<script src="app.js?v=1.29.0"></script>
 </body>
 </html>

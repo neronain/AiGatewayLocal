@@ -159,7 +159,7 @@ function ringSvg(pct, color, size = 64) {
 
 function areaSvg(vals) {
   const clean = vals.map((v) => Number(v) || 0);
-  if (clean.length < 2) return '<div class="empty">ยังไม่มีข้อมูลพอจะวาดกราฟ</div>';
+  if (clean.length < 2) return '<div class="empty">Not enough data yet</div>';
   const w = 620, h = 210, pl = 6, ptop = 16, pb = 22, mx = Math.max(...clean, 1);
   const pt = clean.map((v, i) => [pl + i * (w - 2 * pl) / (clean.length - 1), h - pb - (v / mx) * (h - ptop - pb)]);
   let grid = '';
@@ -191,20 +191,20 @@ function renderQuota(me) {
 function renderQuotaInto(target, me) {
   const { used, limits } = me.quota;
   const rows = [
-    ['คำขอ', used.requests, limits.max_requests],
-    ['โทเคนขาเข้า', used.input_tokens, limits.max_input_tokens],
-    ['โทเคนขาออก', used.output_tokens, limits.max_output_tokens],
-    ['รูปภาพ', used.images, limits.max_images],
+    ['Requests', used.requests, limits.max_requests],
+    ['Input tokens', used.input_tokens, limits.max_input_tokens],
+    ['Output tokens', used.output_tokens, limits.max_output_tokens],
+    ['Images', used.images, limits.max_images],
   ].filter(([, u, lim]) => lim || u);
   const cell = ([label, u, lim], i) => {
     const pct = lim ? Math.min(100, Math.round((u / lim) * 100)) : null;
     const color = pct >= 100 ? 'var(--bad)' : pct >= 80 ? 'var(--warn)' : GAUGE_COLORS[i % GAUGE_COLORS.length];
     return `<div class="gaugecell">
       ${pct != null ? ringSvg(pct, color) : '<div class="ring-none">∞</div>'}
-      <div class="g-meta"><b>${label}</b><div class="g-q">${num(u)}${lim ? ` / ${num(lim)}` : ' · ไม่จำกัด'}</div></div></div>`;
+      <div class="g-meta"><b>${label}</b><div class="g-q">${num(u)}${lim ? ` / ${num(lim)}` : ' · unlimited'}</div></div></div>`;
   };
   $(target).innerHTML = `<div class="gaugewrap">${rows.map(cell).join('')}</div>
-    <div class="g-foot">รอบ ${esc(me.quota.window)} · รีเซ็ต ${new Date(me.quota.window_end).toLocaleString()}</div>`;
+    <div class="g-foot">Window ${esc(me.quota.window)} · resets ${new Date(me.quota.window_end).toLocaleString()}</div>`;
 }
 
 // Inline because a gateway may run air-gapped: no icon font, no CDN, no build.
@@ -439,13 +439,13 @@ function renderUsage(summary, daily) {
     <div class="statcard"><div class="lbl"><span class="ic">${icon(iconName, 15)}</span>${label}</div>
       <div class="val">${val}</div><div class="foot">${foot}</div>${spark || ''}</div>`;
   $('usage-stats').innerHTML =
-    card('คำขอรวม', 'usage', num(totalReq), `${summary.window_days} วันล่าสุด`,
+    card('Requests', 'usage', num(totalReq), `${summary.window_days} days`,
       sparkSvg(series.map((d) => d.requests), 'var(--c2)'))
-    + card('โทเคนรวม', 'text', compact(totalTok), 'ขาเข้า + ขาออก',
+    + card('Tokens', 'text', compact(totalTok), 'in + out',
       sparkSvg(series.map((d) => d.input_tokens + d.output_tokens), 'var(--c3)'))
-    + card('โมเดลที่ถูกเรียก', 'models', String(summary.by_model.length), 'ในช่วงนี้', '')
-    + card('หน่วงเฉลี่ย', 'clock', wLat ? `${num(wLat)}<small>ms</small>` : '—',
-      'ถ่วงน้ำหนักตามจำนวนคำขอ', '');
+    + card('Models used', 'models', String(summary.by_model.length), 'in this window', '')
+    + card('Avg latency', 'clock', wLat ? `${num(wLat)}<small>ms</small>` : '—',
+      'weighted by requests', '');
 
   $('usage-area').innerHTML = areaSvg(series.map((d) => d.requests));
 
@@ -458,14 +458,14 @@ function renderUsage(summary, daily) {
   ];
   const bars = top.length
     ? `<div class="barlist">${top.map((r, i) => `<div class="bar-row">
-        <div class="t"><b>${esc(r.model)}</b><span>${num(r.requests)} คำขอ · ${
+        <div class="t"><b>${esc(r.model)}</b><span>${num(r.requests)} requests · ${
           totalReq ? Math.round(r.requests / totalReq * 100) : 0}%</span></div>
         <div class="bar-track"><div class="bar-fill" style="width:${
           Math.max(2, Math.round(r.requests / max * 100))}%;background:${grad[i % grad.length]}"></div></div>
       </div>`).join('')}</div>`
-    : '<div class="empty">ยังไม่มีการใช้งานในช่วงนี้</div>';
+    : '<div class="empty">ยังไม่มีการใช้งานin this window</div>';
   $('usage-bars').innerHTML = bars + (summary.errors.length
-    ? `<div class="g-foot">ข้อผิดพลาด: ${
+    ? `<div class="g-foot">Errors: ${
       summary.errors.map((e) => esc(e.code) + ' ×' + e.count).join(', ')}</div>`
     : '');
 }
@@ -490,7 +490,7 @@ function detectOS() {
 async function loadTools() {
   const { tools } = await api('/admin/tools');
   if (!tools.length) {
-    $('tools').innerHTML = '<div class="empty">ยังไม่มีเครื่องมือใน registry</div>';
+    $('tools').innerHTML = '<div class="empty">No tools in the registry</div>';
     return;
   }
   const myOS = detectOS();
@@ -500,11 +500,11 @@ async function loadTools() {
     const proven = t.assets.filter((a) => a.verified === true).length;
     const platforms = [...new Set(dl.map((a) => a.platform))];
     const pick = dl.find((a) => a.platform === myOS) || dl[0];
-    const verifyPill = `<span class="pill ok">${icon('shield', 12)} ยืนยันด้วย ${
+    const verifyPill = `<span class="pill ok">${icon('shield', 12)} Verified · ${
       t.verify.method === 'minisign' ? 'minisign' : 'SHA-256'}</span>`;
     const ver = t.published
       ? `<span class="pill mute">v${esc(t.published)}</span>`
-      : '<span class="pill warn">ยังไม่เผยแพร่</span>';
+      : '<span class="pill warn">not published</span>';
     return `<div class="card tool">
       <div class="tool-top">
         <div class="tool-logo" style="background:${look.grad}">${icon(look.icon, 22)}</div>
@@ -517,13 +517,13 @@ async function loadTools() {
       ${platforms.length ? `<div class="meta-row">${platforms.map((p) =>
         `<span class="os">${esc(OS_LABEL[p] || p)}</span>`).join('')}</div>` : ''}
       <div class="verline">${t.published
-        ? `${icon('shield', 13)} ${proven}/${dl.length} ไฟล์ยืนยันแล้ว · เผยแพร่แล้ว`
-        : `ยังไม่ได้ mirror — รันบนเซิร์ฟเวอร์: <code>python -m app.tools sync ${esc(t.slug)}</code>`}</div>
+        ? `${icon('shield', 13)} ${proven}/${dl.length} assets verified · published`
+        : `Not mirrored yet — run on the server: <code>python -m app.tools sync ${esc(t.slug)}</code>`}</div>
       <div class="tool-foot">
         ${pick ? `<a class="tbtn primary" href="${esc(pick.download)}" download>${
-          icon('download', 15)} โหลดสำหรับ ${esc(OS_LABEL[pick.platform] || pick.platform)}</a>` : ''}
+          icon('download', 15)} Download for ${esc(OS_LABEL[pick.platform] || pick.platform)}</a>` : ''}
         <a class="tbtn ghost" href="${esc(t.homepage || `https://github.com/${t.repo}`)}"
-           target="_blank" rel="noopener">รายละเอียด</a>
+           target="_blank" rel="noopener">Details</a>
       </div>
     </div>`;
   };
@@ -1305,7 +1305,7 @@ function renderAccessGroups(groups, aliases) {
 // otherwise answer: which of these is still in use.
 function activityCell(a) {
   if (!a || !a.requests) return '<span class="hint">—</span>';
-  return `<span title="7 วันล่าสุด">${num(a.requests)} ครั้ง</span>
+  return `<span title="7 days">${num(a.requests)} ครั้ง</span>
     <div class="hint">${num(a.tokens)} โทเคน</div>`;
 }
 
@@ -1965,13 +1965,21 @@ async function loadQuota() {
     };
   }
 
+  // A leaderboard reads better with a bar than a column of digits: the tokens
+  // column carries an inline share-of-the-top bar so the heaviest users show at
+  // a glance. The width is relative to the top user, not the total.
+  const maxTok = Math.max(1, ...top.data.map((r) => r.total_tokens || 0));
   $('top-users').innerHTML = `
     <tr><th>User</th><th>Name</th><th class="num">Requests</th>
-        <th class="num">Total tokens</th><th class="num">Images</th></tr>
+        <th>Total tokens</th><th class="num">Images</th></tr>
     ${top.data.map((r) => `<tr>
       <td><code>${esc(r.external_id || r.user_id || '—')}</code></td>
       <td>${esc(r.display_name || '')}</td>
-      <td class="num">${num(r.requests)}</td><td class="num">${num(r.total_tokens)}</td>
+      <td class="num">${num(r.requests)}</td>
+      <td><div class="usebar"><span class="usebar-n">${num(r.total_tokens)}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${
+          Math.max(2, Math.round((r.total_tokens || 0) / maxTok * 100))
+        }%;background:linear-gradient(90deg,var(--c1),var(--c3))"></div></div></div></td>
       <td class="num">${num(r.images)}</td></tr>`).join('')
       || '<tr><td class="empty">No usage yet.</td></tr>'}`;
 }
