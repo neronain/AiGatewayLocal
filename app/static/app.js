@@ -1560,7 +1560,7 @@ async function loadAccess() {
           : 'never'}</td>
         <td class="hint">${k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'never'}</td>
         <td><span class="pill ${k.revoked ? 'err' : 'ok'}">${k.revoked ? 'revoked' : 'active'}</span></td>
-        <td style="white-space:nowrap">${k.revoked
+        <td><div class="rowacts">${k.revoked
           ? `<button class="small" data-purge="${esc(k.id)}" title="ลบแถวนี้ถาวร — ประวัติการใช้งานยังอยู่">Delete</button>`
           : `<button class="ghost small" data-extend="${esc(k.id)}"
                data-name="${esc(k.name || k.key_prefix)}"
@@ -1578,7 +1578,7 @@ async function loadAccess() {
                // (เกิดจริง) · บอกไปตรง ๆ ว่าทำไมใบนี้เปิดดูไม่ได้
                : `<span class="hint" title="ตอนออก key ใบนี้ ระบบเก็บแค่ hash จึงไม่มีตัวจริงให้เปิดดู${
                     ''} · key ที่ออกหลังจากนี้จะมีปุ่มให้">ดูไม่ได้</span>`}
-             <button class="danger small" data-revoke="${esc(k.id)}">Revoke</button>`}</td>
+             <button class="danger small" data-revoke="${esc(k.id)}">Revoke</button>`}</div></td>
       </tr>`;
     }).join('') || '<tr><td class="empty">No keys issued yet.</td></tr>'}`;
 
