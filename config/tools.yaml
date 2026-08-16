@@ -1,0 +1,58 @@
+# Curated client-tools registry — third-party tools the gateway mirrors and
+# offers to customers. Committed to git and vetted by us; the mirrored binaries
+# live under GW_TOOLS_DIR (data/tools/, git-ignored) after `python -m app.tools sync`.
+#
+# Adding a tool later = add one entry here (data), no code change.
+# Pinned pubkeys / checksum files decide HOW each download is proven trustworthy.
+apiVersion: tools.litegate/v1
+kind: ClientToolRegistry
+tools:
+  - slug: cc-switch
+    name: CC Switch
+    summary: >-
+      Desktop switcher for AI coding tools (Claude Code, Codex, Gemini CLI,
+      OpenClaw, Hermes Agent…). One-click provider/model switching from the tray.
+    repo: farion1231/cc-switch
+    homepage: https://ccswitch.io
+    license:
+      spdx: MIT
+      files: [LICENSE]
+    verify:
+      method: minisign
+      # Pinned from src-tauri/tauri.conf.json (Tauri updater pubkey). Rotating
+      # this key upstream must be a conscious re-vet here, never an auto-pull.
+      pubkey: RWTjKDlXmowCyC9Q/dOAftdyN/oC70kgS2Zbl5CRd63EFO5NZwtHjEVQ
+      key_id: C8028C9A573928E3
+    assets:
+      # Windows — the .msi carries a .sig; the portable .zip does not.
+      - { platform: windows, arch: x86_64, file: "CC-Switch-v{version}-Windows.msi", kind: installer, signed: true }
+      - { platform: windows, arch: x86_64, file: "CC-Switch-v{version}-Windows-Portable.zip", kind: portable, signed: false }
+      - { platform: windows, arch: arm64,  file: "CC-Switch-v{version}-Windows-arm64.msi", kind: installer, signed: true }
+      # macOS — NOTE: the .dmg is NOT signed upstream; the .tar.gz is. Offer the
+      # signed .tar.gz as the verifiable path, keep .dmg as convenience only.
+      - { platform: macos, arch: universal, file: "CC-Switch-v{version}-macOS.tar.gz", kind: archive, signed: true }
+      - { platform: macos, arch: universal, file: "CC-Switch-v{version}-macOS.dmg", kind: installer, signed: false }
+      # Linux — AppImage is signed; .deb/.rpm are not.
+      - { platform: linux, arch: x86_64, file: "CC-Switch-v{version}-Linux-x86_64.AppImage", kind: portable, signed: true }
+      - { platform: linux, arch: arm64,  file: "CC-Switch-v{version}-Linux-arm64.AppImage", kind: portable, signed: true }
+
+  - slug: rtk
+    name: RTK (Rust Token Killer)
+    summary: >-
+      CLI proxy that filters and compresses shell-command output before it
+      reaches an LLM context — 60–90% fewer tokens on common dev commands.
+    repo: rtk-ai/rtk
+    homepage: https://github.com/rtk-ai/rtk
+    license:
+      spdx: Apache-2.0
+      files: [LICENSE, NOTICE]
+    verify:
+      method: sha256sums
+      checksums_asset: checksums.txt
+    assets:
+      # rtk's tarball/zip names carry no version, so no {version} placeholder.
+      - { platform: windows, arch: x86_64, file: "rtk-x86_64-pc-windows-msvc.zip", kind: archive, signed: false }
+      - { platform: macos, arch: x86_64, file: "rtk-x86_64-apple-darwin.tar.gz", kind: archive, signed: false }
+      - { platform: macos, arch: arm64,  file: "rtk-aarch64-apple-darwin.tar.gz", kind: archive, signed: false }
+      - { platform: linux, arch: x86_64, file: "rtk-x86_64-unknown-linux-musl.tar.gz", kind: archive, signed: false }
+      - { platform: linux, arch: arm64,  file: "rtk-aarch64-unknown-linux-gnu.tar.gz", kind: archive, signed: false }

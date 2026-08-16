@@ -591,6 +591,47 @@ and the parsers LiteGate reports as missing being exactly the knobs LMDS exposes
 
 ---
 
+## Client tools (mirror)
+
+A customer who runs the gateway on their own site can get the client-side tools
+that point at it — a provider switcher like
+[cc-switch](https://github.com/farion1231/cc-switch), a token-saving CLI proxy
+like [rtk](https://github.com/rtk-ai/rtk) — *from the gateway itself*, offline,
+instead of hunting GitHub releases. The gateway mirrors those releases into its
+own store so the whole loop stays on-premises.
+
+The discipline is deliberate: **mirror → verify → stage → (human) promote**, the
+same two tiers the fleet uses for deploy recipes. Nothing reaches a customer on
+an automatic pull — once a school runs what we hand them, we are the trust
+anchor, so a compromised upstream must never flow straight through.
+
+```bash
+python -m app.tools list                    # registry + what's mirrored/published
+python -m app.tools sync --check             # is the latest release + its assets there?
+python -m app.tools sync cc-switch rtk       # download, verify, stage as CANDIDATE
+python -m app.tools promote cc-switch 3.19.2  # publish a vetted candidate (gated)
+```
+
+Each tool declares **how it is verified**, per asset:
+
+| Tool | Licence | Verify | Note |
+|---|---|---|---|
+| cc-switch | MIT | **minisign** against a pinned public key | authenticity; only the assets that ship a `.sig` (the `.dmg` is unsigned upstream) |
+| rtk | Apache-2.0 | **SHA-256** against the release `checksums.txt` | integrity; the checksums file is itself unsigned, so the gated promote carries authenticity |
+
+Verification is pure-Python (`cryptography`), so it runs the same inside the
+hardened Docker image — no `minisign` binary needed. The curated registry is
+[`config/tools.yaml`](config/tools.yaml) (in git, vetted); the mirrored binaries
+land under `GW_TOOLS_DIR` (`data/tools/`, git-ignored). Adding a tool later is
+one entry in that file, not new code. Auto-sync is **off by design**
+(`GW_TOOLS_AUTO_SYNC=false`).
+
+> Next phases (not yet wired): a **Client Tools** panel in the console that
+> serves the OS-correct installer, and a one-click download that mints a scoped
+> key and pre-points the tool at this gateway.
+
+---
+
 ## Documentation
 
 | | |

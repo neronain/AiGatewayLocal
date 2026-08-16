@@ -1,0 +1,12 @@
+slug: qwen3-coder-30b-a3b-instruct-gguf
+validated_on: 2026-08-16 12:29 · dgx-msi
+validated_host: dgx-msi
+source:
+  id: unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
+  revision: b17cb02dd882d5b6ab62fc777ad2995f19668350
+  gguf: Qwen3-Coder-30B-A3B-Instruct-UD-Q8_K_XL.gguf
+engine: llamacpp
+measured_features:
+- tools
+- coding
+note: model-intrinsic only; per-machine port/context live in bundle.env

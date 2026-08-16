@@ -55,6 +55,16 @@ class Settings(BaseSettings):
     config_dir: Path = Path("./config")
     registry_reload_seconds: int = 30
 
+    # Client tools — third-party downloads the gateway mirrors and offers to
+    # customers (cc-switch, rtk…). Definitions are curated in tools_registry_file
+    # (git, vetted); mirrored binaries land in tools_dir (writable, git-ignored).
+    # auto_sync stays OFF by design: we become the trust anchor once a school
+    # runs what we hand them, so promotion is a conscious human step, never a pull.
+    tools_dir: Path = Path("./data/tools")
+    tools_registry_file: Path = Path("./config/tools.yaml")
+    tools_auto_sync: bool = False
+    tools_github_token: str = ""  # optional, raises the GitHub API rate limit
+
     # Upstream
     upstream_connect_timeout: float = 10.0
     upstream_read_timeout: float = 600.0
