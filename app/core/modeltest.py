@@ -606,6 +606,10 @@ class Advice:
 # where the served name is unambiguous, and say when it is a guess.
 _PARSER_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("qwen3-coder", "qwen3_coder", "qwen3coder"), "qwen3_coder"),
+    # Qwen3 / Qwen3.5 / Qwen3.6 emit <tool_call>{json}</tool_call> — vLLM's qwen3_xml
+    # parser (measured against Qwen3.5-122B-A10B). Older Qwen (2.x) used hermes; keep
+    # that as the bare-"qwen" fallback below. Coder is matched first (line above).
+    (("qwen3", "qwen-3"), "qwen3_xml"),
     (("llama-4", "llama4"), "llama4_pythonic"),
     (("llama-3", "llama3"), "llama3_json"),
     (("mistral", "mixtral"), "mistral"),

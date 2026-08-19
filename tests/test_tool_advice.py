@@ -7,7 +7,21 @@ The trap this locks down: a llama.cpp backend that emits no tool_calls needs
 
 from __future__ import annotations
 
-from app.core.modeltest import ProbeResult, _normalize_kind, build_advice
+from app.core.modeltest import (
+    ProbeResult,
+    _normalize_kind,
+    build_advice,
+    suggest_tool_parser,
+)
+
+
+def test_qwen_tool_parser_mapping():
+    # Measured mapping (Qwen3.5-122B-A10B research): Qwen3/3.5 use qwen3_xml,
+    # Qwen3-Coder uses qwen3_coder; older bare "qwen" falls back to hermes.
+    assert suggest_tool_parser("Qwen3.5-122B-A10B-int4-AutoRound") == ("qwen3_xml", True)
+    assert suggest_tool_parser("qwen3-6-35b-a3b") == ("qwen3_xml", True)
+    assert suggest_tool_parser("Qwen3-Coder-30B-A3B") == ("qwen3_coder", True)
+    assert suggest_tool_parser("Qwen2.5-7B") == ("hermes", False)  # bare qwen fallback
 
 
 def _issues(result: ProbeResult) -> set[str]:
