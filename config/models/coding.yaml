@@ -39,6 +39,7 @@ spec:
   protocols:
     openai: true
     anthropic: true
+    responses: true        # -> Codex · แปลจาก/เป็น chat completions ให้อัตโนมัติ
 
   agent_clients:
     claude_code:

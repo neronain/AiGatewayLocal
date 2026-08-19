@@ -88,6 +88,12 @@ async def list_models(
                 "input": [m.value for m in model.spec.modalities.input],
                 "output": [m.value for m in model.spec.modalities.output],
             },
+            # surface ไหนใช้ alias นี้ได้บ้าง — Codex กับ Claude Code ไม่ได้คุย protocol
+            # เดียวกัน การเดาเอาจากรายชื่อโมเดลแล้วยิงผิดทางคือได้ 400 หลังพิมพ์ prompt เสร็จ
+            "protocols": [
+                name for name in ("openai", "anthropic", "responses")
+                if getattr(model.spec.protocols, name, False)
+            ],
             "context_window": model.spec.limits.context_tokens,
             "max_output_tokens": model.spec.limits.max_output_tokens,
             "badges": compatibility_badges(model),

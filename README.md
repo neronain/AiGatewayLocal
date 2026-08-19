@@ -53,7 +53,7 @@ assumes a particular sector.
 | 🏷 **Stable aliases** | Members use `coding`. Admins repoint it from one model to another with zero member-side change. Repository names are never member-visible. |
 | ♻️ **Failover between endpoints** | Two machines behind one alias take over for each other — retried only before the first byte is streamed, so nobody sees half an answer twice. |
 | 📊 **Real quota** | Per member, workspace, model or group — over requests, text tokens, **visual tokens**, output tokens and images, plus per-minute rate limits. |
-| 🤖 **Claude Code works** | `/v1/messages` is served even when the backend only speaks OpenAI — the gateway translates both directions, streaming included. |
+| 🤖 **Claude Code + Codex work** | `/v1/messages` และ `/v1/responses` เสิร์ฟได้แม้ backend พูดแต่ OpenAI — เกตเวย์แปลให้ทั้งสองทาง รวม streaming |
 | 🔒 **Private by default** | No prompt, no response, no image is ever written to disk. The schema has no column for them. |
 
 ---
@@ -134,6 +134,39 @@ export ANTHROPIC_AUTH_TOKEN=lg_sk_...
 export ANTHROPIC_MODEL=coding
 claude
 ```
+
+### Codex
+
+Codex speaks the **Responses API**, which is a different protocol from the one
+Claude Code uses — not a different endpoint of the same one. The gateway serves
+`/v1/responses` and translates to chat completions on the way out and back on
+the way in, streaming included:
+
+```bash
+export OPENAI_BASE_URL=http://127.0.0.1:8080/v1
+export OPENAI_API_KEY=lg_sk_...
+codex --model coding
+```
+
+เปิดให้ alias ไหนก็ได้ที่ backend พูด chat completions:
+
+```yaml
+spec:
+  protocols:
+    openai: true
+    anthropic: true
+    responses: true      # -> Codex
+```
+
+`GET /v1/models` บอกว่า alias ไหนเปิด surface อะไรไว้ (`"protocols": ["openai",
+"anthropic", "responses"]`) — เดาแล้วยิงผิดทางคือได้ `400` หลังพิมพ์ prompt เสร็จ
+
+> **`previous_response_id` ใช้ไม่ได้ และตอบ 400 แทนที่จะแกล้งทำเป็นรองรับ** — Codex
+> ใช้ตัวนี้ให้เซิร์ฟเวอร์เก็บบทสนทนาไว้ต่อให้ แต่เกตเวย์**ไม่เก็บ prompt หรือคำตอบลงดิสก์เลย**
+> (PRD §12) จึงไม่มีหัวบทสนทนาให้ต่อ · Codex ส่ง input เต็มมาทุกเทิร์นอยู่แล้วเมื่อไม่ได้
+> เปิดโหมดนั้น
+
+---
 
 Claude's third-party provider settings refuse anything that is not **https, or
 http on loopback** — `baseUrl: must use https (or http on loopback)`. A plain

@@ -82,6 +82,9 @@ class Protocols(BaseModel):
 
     openai: bool = True
     anthropic: bool = False
+    # OpenAI Responses API (/v1/responses) — Codex คุยด้วย protocol นี้เท่านั้น
+    # backend ส่วนใหญ่ยังพูดแค่ chat completions เกตเวย์จึงแปลให้ เหมือนที่ทำกับ Anthropic
+    responses: bool = False
 
 
 class Modalities(BaseModel):
@@ -300,6 +303,13 @@ class ModelSpec(BaseModel):
             raise ValueError(
                 "protocols.anthropic=true requires an enabled endpoint speaking either "
                 "the Anthropic API (native passthrough) or the OpenAI API (translated)"
+            )
+        if self.protocols.responses and not any(
+            e.protocols.responses or e.protocols.openai for e in enabled
+        ):
+            raise ValueError(
+                "protocols.responses=true requires an enabled endpoint speaking either "
+                "the Responses API (native passthrough) or the OpenAI API (translated)"
             )
 
         # Same for modalities: model says vision, backend must serve images.

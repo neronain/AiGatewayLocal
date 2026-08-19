@@ -295,6 +295,99 @@ def profile_openai_request(body: dict[str, Any], policy: VisionPolicy) -> Reques
     return profile
 
 
+def profile_responses_request(body: dict[str, Any], policy: VisionPolicy) -> RequestProfile:
+    """Inspect an OpenAI Responses body (/v1/responses) — Codex's native shape.
+
+    `input` is either a bare string or a list of items, and the items are not all
+    messages: a turn that used tools comes back as `function_call` /
+    `function_call_output` items sitting at the same level as the messages. Reading
+    only `{role, content}` would silently drop the entire tool history from the
+    size estimate, which is exactly the traffic that makes Codex conversations
+    long in the first place.
+    """
+    profile = RequestProfile()
+    profile.requires_streaming = bool(body.get("stream"))
+    if body.get("tools") or body.get("tool_choice"):
+        profile.requires_tools = True
+
+    instructions = body.get("instructions")
+    if isinstance(instructions, str):
+        profile.text_chars += len(instructions)
+
+    payload = body.get("input")
+    if isinstance(payload, str):
+        if not payload:
+            raise GatewayError(
+                ErrorCode.INVALID_REQUEST, "'input' must not be empty.", param="input"
+            )
+        profile.text_chars += len(payload)
+        return profile
+
+    if not isinstance(payload, list) or not payload:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            "'input' must be a string or a non-empty array of items.",
+            param="input",
+        )
+
+    for idx, item in enumerate(payload):
+        path = f"input[{idx}]"
+        if not isinstance(item, dict):
+            raise GatewayError(
+                ErrorCode.INVALID_REQUEST, f"{path} must be an object.", param=path
+            )
+
+        itype = item.get("type")
+        if itype in {"function_call", "function_call_output"}:
+            profile.requires_tools = True
+            profile.text_chars += len(str(item.get("arguments") or item.get("output") or ""))
+            continue
+
+        content = item.get("content")
+        if isinstance(content, str):
+            profile.text_chars += len(content)
+            continue
+        if content is None:
+            continue
+        if not isinstance(content, list):
+            raise GatewayError(
+                ErrorCode.INVALID_CONTENT_BLOCK,
+                f"{path}.content must be a string or an array of content parts.",
+                param=f"{path}.content",
+            )
+
+        for p_idx, part in enumerate(content):
+            ppath = f"{path}.content[{p_idx}]"
+            if not isinstance(part, dict):
+                raise GatewayError(
+                    ErrorCode.INVALID_CONTENT_BLOCK, f"{ppath} must be an object.", param=ppath
+                )
+            ptype = part.get("type")
+            if ptype in {"input_text", "output_text", "text"}:
+                profile.text_chars += len(part.get("text") or "")
+            elif ptype == "input_image":
+                url = part.get("image_url")
+                if isinstance(url, dict):  # tolerated: some clients send the chat shape
+                    url = url.get("url")
+                if not isinstance(url, str) or not url:
+                    raise GatewayError(
+                        ErrorCode.INVALID_CONTENT_BLOCK,
+                        f"{ppath}.image_url is required for input_image.",
+                        param=ppath,
+                    )
+                profile.modalities.add("image")
+                profile.images.append(_handle_image_source(url, policy))
+            elif ptype in {"input_audio", "input_file"}:
+                # เจตนาไม่รองรับ: บอกให้ชัดดีกว่าเงียบแล้วส่งของที่ backend อ่านไม่ออกไป
+                raise GatewayError(
+                    ErrorCode.INVALID_CONTENT_BLOCK,
+                    f"{ppath}: '{ptype}' is not supported on this gateway.",
+                    param=ppath,
+                )
+
+    return profile
+
+
 def profile_anthropic_request(body: dict[str, Any], policy: VisionPolicy) -> RequestProfile:
     """Inspect an Anthropic /v1/messages body (Claude Code's native shape)."""
     profile = RequestProfile()
