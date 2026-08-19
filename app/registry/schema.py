@@ -211,6 +211,45 @@ class ModelMetadata(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class SmallPromptRule(BaseModel):
+    """งานจุกจิกให้ตัวเล็กรับไป — Claude Code ยิงพวกตั้งชื่อ session/สรุปหัวข้อตลอดเวลา
+
+    ตัดสินจากขนาดคำขอเท่านั้น ไม่เดาเจตนา: เกณฑ์เป็นตัวเลขที่อ่านได้จากไฟล์ ตรวจซ้ำได้
+    และอธิบายให้ผู้ใช้ฟังได้ว่าทำไมคำขอนี้ถึงไปโมเดลนั้น
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    under_tokens: int = Field(ge=1)
+    # ข้ามกฎนี้เมื่อผู้ใช้ขอ output ยาว — prompt สั้นไม่ได้แปลว่างานเบาเสมอ
+    max_output_tokens: int | None = Field(default=None, ge=1)
+    target: str
+
+
+class RoutingRules(BaseModel):
+    """เลือก *โมเดล* ตามรูปร่างคำขอ — คนละชั้นกับ Router ที่เลือก *เครื่อง*
+
+    alias ที่สมาชิกเรียกไม่เปลี่ยน สิทธิ์และโควตายังคิดจาก alias เดิมเสมอ
+    (ดู PRD §6: ชื่อ repo ไม่เคยหลุดถึงสมาชิก) กฎพวกนี้จึงเป็นการตัดสินใจของแอดมิน
+    แบบเดียวกับการ repoint alias ไม่ใช่ทางให้ผู้ใช้ข้ามสิทธิ์
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # prompt ยาวเกิน window ของตัวนี้ → ส่งต่อแทนที่จะตอบ 400 ทิ้ง
+    overflow: str | None = None
+    small_prompt: SmallPromptRule | None = None
+    # ไม่เหลือ endpoint ที่รับไหว → ไล่ตามลำดับนี้
+    fallback: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _no_self_reference(self) -> RoutingRules:
+        # ตัว alias เองยังไม่รู้จักตรงนี้ (validator ระดับ spec) — เช็คได้แค่ว่าไม่ซ้ำกันเอง
+        if len(self.fallback) != len(set(self.fallback)):
+            raise ValueError("routing.fallback contains duplicates")
+        return self
+
+
 class ModelSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -223,6 +262,7 @@ class ModelSpec(BaseModel):
     protocols: Protocols = Field(default_factory=Protocols)
     agent_clients: dict[str, AgentClientProfile] = Field(default_factory=dict)
     vision_policy: VisionPolicy | None = None
+    routing: RoutingRules = Field(default_factory=RoutingRules)
     endpoints: list[Endpoint] = Field(min_length=1)
     enabled: bool = True
 

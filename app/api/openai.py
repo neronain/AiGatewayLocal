@@ -38,6 +38,7 @@ from app.core.errors import ErrorCode, GatewayError
 from app.core.multimodal import RequestProfile, profile_openai_request
 from app.core.quota import Consumption
 from app.core.routing import RETRYABLE_ERRORS, is_retryable_status
+from app.core.rules import fallback_models, resolve_route
 from app.core.tokens import TokenUsage, resolve_usage
 from app.db.session import get_session
 from app.registry.schema import Endpoint, ModelDefinition
@@ -139,28 +140,63 @@ async def run_chat(
 
     policy = state.registry.snapshot.vision_policy_for(model)
     profile = profile_openai_request(body, policy)
+
+    # กฎ routing ทำงานหลัง profile (ต้องรู้ขนาดคำขอ) แต่ก่อนด่าน capability/context
+    # เพื่อให้ด่านตรวจ *ตัวที่จะรันจริง* · สิทธิ์กับโควตาเช็คไปแล้วด้วย alias เดิม ตามที่
+    # app/core/rules.py อธิบายไว้ว่าทำไมถึงต้องเป็นแบบนั้น
+    requested_max = body.get("max_tokens") or body.get("max_completion_tokens")
+    decision = resolve_route(
+        state.registry.snapshot, model, profile, "openai", requested_max
+    )
+    if decision.rerouted:
+        log.info(
+            "routing %s -> %s (%s, request %s)",
+            alias, decision.model.alias, decision.reason, request_id,
+        )
+        model = decision.model
+
     validate_model_capabilities(model, profile)
 
-    effective_max_tokens = validate_context_budget(
-        model, profile, body.get("max_tokens") or body.get("max_completion_tokens")
-    )
+    effective_max_tokens = validate_context_budget(model, profile, requested_max)
 
     limits = await state.quota.resolve_limits(
         session, principal.user_id, principal.workspace_id, alias
     )
     await state.quota.check(principal.user_id, limits)
 
-    endpoint = state.router.select(model, profile, "openai")
+    try:
+        endpoint = state.router.select(model, profile, "openai")
+    except GatewayError:
+        # endpoint failover แก้ "เครื่องนี้ล่ม" · ตรงนี้แก้ "ทุกเครื่องของ alias นี้ล่ม"
+        # ซึ่งเดิมจบที่ 503 ทั้งที่โมเดลเทียบเท่าอาจว่างอยู่อีกเครื่อง
+        for candidate in fallback_models(state.registry.snapshot, model):
+            try:
+                endpoint = state.router.select(candidate, profile, "openai")
+            except GatewayError:
+                continue
+            log.warning(
+                "no endpoint for %s; falling back to %s (request %s)",
+                model.alias, candidate.alias, request_id,
+            )
+            model = candidate
+            break
+        else:
+            raise
 
     # Rebuilt per attempt rather than once: the upstream model name and the API
     # key are properties of the machine, so a request that fails over has to be
     # re-addressed, not merely re-sent.
     def build(target: Endpoint) -> tuple[dict[str, Any], dict[str, str]]:
+        # อ่านจาก context ไม่ใช่ตัวแปรปิด: fallback ระดับโมเดลเปลี่ยน ctx.model ได้
+        # ระหว่างทาง ถ้ายังยึดตัวเดิมจะส่งชื่อ upstream ผิดไปให้เครื่องใหม่
+        active = context.model
         payload = dict(body)
-        payload["model"] = upstream_model_for(model, target)
+        payload["model"] = upstream_model_for(active, target)
         if body.get("max_tokens") or body.get("max_completion_tokens"):
             payload.pop("max_completion_tokens", None)
-            payload["max_tokens"] = effective_max_tokens
+            payload["max_tokens"] = min(
+                effective_max_tokens, active.spec.limits.max_output_tokens
+            )
         return payload, upstream.upstream_headers(target, dict(request.headers))
 
     client_agent = request.headers.get("user-agent", "")[:128]
@@ -170,6 +206,7 @@ async def run_chat(
         principal=principal,
         model=model,
         endpoint=endpoint,
+        requested_alias=alias,
         profile=profile,
         limits_window=limits.window,
         rate_limited=limits.rate_limited,
@@ -195,6 +232,7 @@ class _RequestContext:
         principal: Principal,
         model: ModelDefinition,
         endpoint: Endpoint,
+        requested_alias: str | None = None,
         profile: RequestProfile,
         limits_window: str,
         rate_limited: bool,
@@ -206,6 +244,10 @@ class _RequestContext:
         self.state = state
         self.principal = principal
         self.model = model
+        # alias ที่สมาชิกขอ — ไม่เปลี่ยนตามการจัดเส้นทางภายใน · ทั้ง response ที่ตอบกลับ
+        # และการบันทึกโควตาต้องยึดตัวนี้ ไม่งั้นบิลของสมาชิกจะขึ้นกับท่อของแอดมิน
+        # และ client ที่ตรวจชื่อโมเดลที่ echo กลับมาจะพัง
+        self.requested_alias = requested_alias or model.alias
         self.endpoint = endpoint
         self.profile = profile
         self.limits_window = limits_window
@@ -218,6 +260,8 @@ class _RequestContext:
         # machine must never be handed the request twice, and it stays healthy
         # for two more strikes after the first failure.
         self.tried: set[str] = set()
+        # alias ที่ไล่จนหมดเครื่องแล้ว — กัน fallback วนกลับมาตัวเดิม
+        self.exhausted: set[str] = set()
 
     @property
     def elapsed_ms(self) -> int:
@@ -236,7 +280,28 @@ class _RequestContext:
                 self.model, self.profile, self.protocol, exclude=self.tried
             )
         except GatewayError:
-            return None
+            pass
+        # เครื่องของ alias นี้หมดแล้ว — ยังไม่ยอมแพ้ถ้ามีโมเดลสำรองที่รับได้
+        # ยังอยู่ก่อนไบต์แรกเสมอ (ผู้เรียกเป็นคนคุม) คนใช้จึงไม่มีทางเห็นคำตอบซ้ำครึ่งอัน
+        for candidate in fallback_models(self.state.registry.snapshot, self.model):
+            if candidate.alias in self.exhausted:
+                continue
+            try:
+                endpoint = self.state.router.select(
+                    candidate, self.profile, self.protocol
+                )
+            except GatewayError:
+                self.exhausted.add(candidate.alias)
+                continue
+            log.warning(
+                "%s exhausted; falling back to %s (request %s)",
+                self.model.alias, candidate.alias, self.request_id,
+            )
+            self.exhausted.add(self.model.alias)
+            self.model = candidate
+            self.tried = set()
+            return endpoint
+        return None
 
     def retarget(self, endpoint: Endpoint) -> None:
         log.info(
@@ -258,7 +323,7 @@ class _RequestContext:
         record = usage_mod.build_record(
             request_id=self.request_id,
             principal=self.principal,
-            model_alias=self.model.alias,
+            model_alias=self.requested_alias,
             protocol=self.protocol,
             profile=self.profile,
             usage=usage,
@@ -296,7 +361,7 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> JSONRespo
     them - which is the whole difference between one machine going down and one
     conversation breaking.
     """
-    state, alias = ctx.state, ctx.model.alias
+    state, alias = ctx.state, ctx.requested_alias
     while True:
         endpoint = ctx.endpoint
         payload, headers = build(endpoint)
@@ -387,7 +452,7 @@ def _augment_usage_payload(data: dict[str, Any], usage: TokenUsage) -> None:
 # ---------------------------------------------------------------------------
 async def _stream_chat(build: BuildRequest, ctx: _RequestContext) -> StreamingResponse:
     async def generator() -> AsyncIterator[bytes]:
-        state, alias = ctx.state, ctx.model.alias
+        state, alias = ctx.state, ctx.requested_alias
         upstream_usage: dict | None = None
         ttft_ms: int | None = None
         status, error_code, http_status = "success", None, 200
@@ -495,8 +560,8 @@ async def _stream_chat(build: BuildRequest, ctx: _RequestContext) -> StreamingRe
             "connection": "keep-alive",
             "x-accel-buffering": "no",  # nginx must not buffer SSE
             "x-request-id": ctx.request_id,
-            "x-litegate-model": ctx.model.alias,
-            "x-edullm-model": ctx.model.alias,
+            "x-litegate-model": ctx.requested_alias,
+            "x-edullm-model": ctx.requested_alias,
         },
     )
 

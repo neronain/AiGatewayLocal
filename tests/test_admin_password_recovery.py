@@ -47,8 +47,9 @@ def _strip_password(client):
 
 
 def test_an_admin_without_a_password_is_given_one(client, chosen_password):
-    from app.main import _bootstrap_admin
     import asyncio
+
+    from app.main import _bootstrap_admin
 
     who = _strip_password(client)
     asyncio.get_event_loop_policy().new_event_loop().run_until_complete(_bootstrap_admin(client.app))

@@ -17,6 +17,10 @@ from app.core.multimodal import RequestProfile
 from app.core.tokens import estimate_prompt_tokens
 from app.registry.schema import Endpoint, Modality, ModelDefinition
 
+# ประมาณจำนวน token เอง ไม่ได้รัน tokenizer ของโมเดล (PRD §13) จึงเผื่อไว้ก่อนปฏิเสธ
+# app/core/rules.py ใช้ค่าเดียวกันตัดสินใจ overflow — แยกกันเมื่อไหร่คือกฎสองชุดที่ขัดกันเอง
+CONTEXT_TOLERANCE = 1.15
+
 _CAPABILITY_HINTS = {
     "vision": "Choose a model whose badge shows 'Image', for example a vision model.",
     "tools": "Choose a model that lists 'Tools' among its capabilities.",
@@ -97,8 +101,8 @@ def validate_context_budget(
     max_output = requested_max_tokens or limits.max_output_tokens
     max_output = min(max_output, limits.max_output_tokens)
 
-    # 15% tolerance: only reject when the prompt is unambiguously too long.
-    if estimated_prompt > limits.context_tokens * 1.15:
+    # Only reject when the prompt is unambiguously too long.
+    if estimated_prompt > limits.context_tokens * CONTEXT_TOLERANCE:
         raise GatewayError(
             ErrorCode.CONTEXT_LENGTH_EXCEEDED,
             f"Estimated prompt length (~{estimated_prompt:,} tokens) exceeds the "

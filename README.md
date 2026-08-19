@@ -485,6 +485,43 @@ Contradictions are caught at load, not at request time: declaring
 endpoint that serves images, is rejected with a specific message and the previous
 good registry is kept.
 
+## Sending a request to a different model
+
+Failover moves a request to another **machine**. Routing rules move it to another
+**model** — the layer above, for the two cases a single alias cannot cover on its
+own:
+
+```yaml
+spec:
+  routing:
+    overflow: coding-long          # prompt ยาวเกิน window ของตัวนี้
+    small_prompt:                  # งานจุกจิกให้ตัวเล็กรับ
+      under_tokens: 2000
+      max_output_tokens: 512       # ข้ามกฎถ้าขอคำตอบยาว
+      target: quick
+    fallback: [coding-backup]      # ไม่เหลือเครื่องที่รับไหว
+```
+
+| กฎ | แก้ปัญหาอะไร |
+|---|---|
+| `overflow` | prompt เกิน window เดิมได้ `400` ทิ้ง ทั้งที่มีเครื่อง context ยาวว่างอยู่ · Claude Code ยิงแบบนี้เป็นปกติ |
+| `small_prompt` | งานจุกจิก (ตั้งชื่อ session, สรุปหัวข้อ) เคยกิน slot เดียวกับงานหลัก |
+| `fallback` | endpoint failover จบเมื่อ**ทุกเครื่องของ alias** ล่ม ตรงนั้นเดิมคือ `503` |
+
+**สมาชิกไม่รู้ว่ามีอะไรเกิดขึ้น** — ยังเรียก `coding` เหมือนเดิม, response echo กลับเป็น
+`coding`, header เป็น `coding`, และ**โควตาหักจาก `coding`** ไม่ใช่จากตัวที่รันจริง สิทธิ์
+กับโควตาถูกตรวจด้วย alias ที่ขอ *ก่อน* กฎพวกนี้ทำงาน — กฎ routing จึงเป็นการตัดสินใจของ
+แอดมินแบบเดียวกับการ repoint alias ไม่ใช่ทางให้ใครข้ามสิทธิ์หรือทำให้บิลเปลี่ยนตามท่อ
+ภายในที่แอดมินวางไว้
+
+ตัดสินจาก**ขนาดคำขอเท่านั้น** ไม่เดาเจตนา เกณฑ์เป็นตัวเลขในไฟล์ที่อ่านและตรวจซ้ำได้
+
+**ตัวกันพลาด** — ปลายทางต้องผ่านด่าน capability เดียวกัน (ส่งภาพไปหาโมเดล text-only
+ไม่ได้ แม้กฎจะสั่ง: คำขอจะอยู่ที่เดิมเพื่อให้ error ตรงกับ alias ที่ผู้ใช้ขอจริง) ·
+`overflow` ที่ปลายทาง window ไม่ใหญ่กว่าเดิมถูกปฏิเสธตั้งแต่ตอนโหลด · วนเป็นวงกลม
+หรือชี้ไป alias ที่ไม่มีอยู่ก็ถูกจับตอนโหลดเช่นกัน — ผิดตรงไหนระบบถอยไปทำงานแบบเดิม
+ไม่ใช่ล่ม
+
 Then certify it — a model is `READY` because it was **measured**, never because
 of its name:
 

@@ -108,6 +108,11 @@ def load_snapshot(config_dir: Path) -> RegistrySnapshot:
     else:
         errors.append(f"models directory not found: {models_dir}")
 
+    # กฎ routing ชี้ข้าม alias จึงตรวจได้ที่นี่ที่เดียว ไม่ใช่ใน ModelSpec ที่เห็นแค่ตัวเอง
+    from app.core.rules import validate_routing
+
+    errors.extend(validate_routing(models))
+
     return RegistrySnapshot(
         gateway=gateway, models=models, errors=errors, source_mtime=newest_mtime
     )

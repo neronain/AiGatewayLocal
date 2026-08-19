@@ -34,6 +34,7 @@ from app.core.capability import (
 from app.core.errors import ErrorCode, GatewayError
 from app.core.multimodal import profile_anthropic_request
 from app.core.routing import RETRYABLE_ERRORS, is_retryable_status
+from app.core.rules import fallback_models, resolve_route
 from app.core.tokens import resolve_usage
 from app.db.session import get_session
 from app.registry.schema import Endpoint
@@ -79,6 +80,19 @@ async def messages(
 
     policy = state.registry.snapshot.vision_policy_for(model)
     profile = profile_anthropic_request(body, policy)
+
+    # เหตุผลของลำดับนี้อยู่ใน app/core/rules.py — Claude Code เป็นลูกค้าหลักของ
+    # surface นี้ และเป็นตัวที่ยิงทั้ง context ยาวมากและงานจุกจิกถี่ ๆ พร้อมกัน
+    decision = resolve_route(
+        state.registry.snapshot, model, profile, "anthropic", body.get("max_tokens")
+    )
+    if decision.rerouted:
+        log.info(
+            "routing %s -> %s (%s, request %s)",
+            alias, decision.model.alias, decision.reason, request_id,
+        )
+        model = decision.model
+
     validate_model_capabilities(model, profile)
     effective_max_tokens = validate_context_budget(model, profile, body.get("max_tokens"))
 
@@ -89,22 +103,40 @@ async def messages(
 
     # Prefer a backend that speaks Anthropic natively; otherwise translate over
     # an OpenAI backend. This is a property of the endpoints, not of the alias.
-    native = any(
-        e.enabled and e.protocols.anthropic for e in model.spec.endpoints
-    )
+    def _select(target):
+        want_native = any(e.enabled and e.protocols.anthropic for e in target.spec.endpoints)
+        try:
+            return state.router.select(target, profile, "anthropic" if want_native else "openai")
+        except GatewayError:
+            if not want_native:
+                raise
+            # native ไม่เหลือ แต่ตัวแปลยังรับได้
+            return state.router.select(target, profile, "openai")
+
     try:
-        endpoint = state.router.select(model, profile, "anthropic" if native else "openai")
+        endpoint = _select(model)
     except GatewayError:
-        if not native:
+        # ทุกเครื่องของ alias นี้ล่ม — ลองโมเดลสำรองก่อนตอบ 503
+        for candidate in fallback_models(state.registry.snapshot, model):
+            try:
+                endpoint = _select(candidate)
+            except GatewayError:
+                continue
+            log.warning(
+                "no endpoint for %s; falling back to %s (request %s)",
+                model.alias, candidate.alias, request_id,
+            )
+            model = candidate
+            break
+        else:
             raise
-        native = False
-        endpoint = state.router.select(model, profile, "openai")
 
     ctx = _RequestContext(
         state=state,
         principal=principal,
         model=model,
         endpoint=endpoint,
+        requested_alias=alias,
         profile=profile,
         limits_window=limits.window,
         rate_limited=limits.rate_limited,
@@ -118,14 +150,17 @@ async def messages(
     # an OpenAI-only one has to be rewritten, not merely re-sent. Deciding it
     # here, per attempt, is also what keeps the two in step.
     def build(target: Endpoint) -> _Attempt:
+        # อ่านจาก ctx: fallback ระดับโมเดลเปลี่ยนตัวที่ใช้จริงได้ระหว่างทาง
+        active = ctx.model
+        out_cap = min(effective_max_tokens, active.spec.limits.max_output_tokens)
         if target.protocols.anthropic:
             payload = dict(body)
-            payload["model"] = upstream_model_for(model, target)
-            payload["max_tokens"] = effective_max_tokens
+            payload["model"] = upstream_model_for(active, target)
+            payload["max_tokens"] = out_cap
             path, translate = MESSAGES_PATH, False
         else:
-            payload = anthropic_to_openai_request(body, upstream_model_for(model, target))
-            payload["max_tokens"] = effective_max_tokens
+            payload = anthropic_to_openai_request(body, upstream_model_for(active, target))
+            payload["max_tokens"] = out_cap
             path, translate = CHAT_PATH, True
         return _Attempt(
             payload=payload,
@@ -151,7 +186,7 @@ BuildAttempt = Callable[[Endpoint], _Attempt]
 
 
 async def _complete_messages(build: BuildAttempt, ctx: _RequestContext) -> JSONResponse:
-    state, alias = ctx.state, ctx.model.alias
+    state, alias = ctx.state, ctx.requested_alias
     while True:
         endpoint = ctx.endpoint
         attempt = build(endpoint)
@@ -236,7 +271,7 @@ async def _complete_messages(build: BuildAttempt, ctx: _RequestContext) -> JSONR
 
 async def _stream_messages(build: BuildAttempt, ctx: _RequestContext) -> StreamingResponse:
     async def generator() -> AsyncIterator[bytes]:
-        state, alias = ctx.state, ctx.model.alias
+        state, alias = ctx.state, ctx.requested_alias
         upstream_usage: dict | None = None
         ttft_ms: int | None = None
         status, error_code, http_status = "success", None, 200
@@ -347,8 +382,8 @@ async def _stream_messages(build: BuildAttempt, ctx: _RequestContext) -> Streami
             "connection": "keep-alive",
             "x-accel-buffering": "no",
             "x-request-id": ctx.request_id,
-            "x-litegate-model": ctx.model.alias,
-            "x-edullm-model": ctx.model.alias,
+            "x-litegate-model": ctx.requested_alias,
+            "x-edullm-model": ctx.requested_alias,
         },
     )
 
