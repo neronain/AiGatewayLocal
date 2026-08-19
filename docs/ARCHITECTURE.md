@@ -43,6 +43,10 @@ POST /v1/chat/completions
    │ parse content blocks  │ text / image / tool detection     → 400
    │                       │ magic-byte MIME, pre-decode size  → 413/415
    ├───────────────────────┤
+   │ routing rules         │ overflow / small-prompt → another │  never rejects
+   │                       │ *model*; falls back to the one    │
+   │                       │ that was asked for                │
+   ├───────────────────────┤
    │ model capability gate │ vision? tools? streaming?         → 400  ◀ no backend call
    ├───────────────────────┤
    │ context budget        │ estimate vs context_tokens        → 400
@@ -61,6 +65,33 @@ POST /v1/chat/completions
 The order is not arbitrary. Cheap, local checks run before expensive ones, and
 every check that can reject does so before a backend connection is opened. A
 capability rejection costs a few hundred microseconds and zero GPU time.
+
+### Two layers of routing
+
+They answer different questions and must not be collapsed into one:
+
+| | question | inputs |
+|---|---|---|
+| **routing rules** (`core/rules.py`) | which *model* should answer a request shaped like this | estimated prompt size, requested output size |
+| **Router** (`core/routing.py`) | which *machine* serves this alias | health, capability, concurrency, priority |
+
+Routing rules run **after** the request has been profiled (they need its size) and
+**before** the capability gate and context budget, so those gates check the model
+that will actually run. They never reject: a rule that cannot be honoured — target
+missing, target too small, target unable to serve the request's modality — degrades
+to the model that was asked for, so a misconfiguration is a log line, not an outage.
+
+**Permission and quota are deliberately not re-evaluated after routing.** Both are
+checked against the alias the member asked for, before the rules run. Re-checking
+against the resolved model would let a routing rule silently widen or narrow what
+someone may use; charging against it would make a member's bill depend on an
+admin's internal plumbing. The response body, the `x-litegate-model` header and the
+usage row all carry the requested alias — routing is an admin decision of the same
+kind as repointing an alias (PRD §6), and the member asked for `coding` and gets
+`coding`.
+
+Cross-alias checks (target exists, no self-reference, no cycle, overflow target is
+actually wider) run once when the registry is loaded, not per request.
 
 ---
 

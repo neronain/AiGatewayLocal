@@ -64,7 +64,8 @@ OpenAI-shaped catalogue, filtered by the caller's role.
     "modalities": { "input": ["text"], "output": ["text"] },
     "context_window": 262144,
     "max_output_tokens": 16384,
-    "badges": ["Text", "Code", "Tools", "Agent"]
+    "badges": ["Text", "Code", "Tools", "Agent"],
+    "protocols": ["openai", "anthropic", "responses"]
   }]
 }
 ```
@@ -211,6 +212,64 @@ cache control) are dropped when translating and never fabricated on the way back
 
 `x-litegate-protocol` tells you which path served the request:
 `anthropic-native` or `anthropic-via-openai`.
+
+### `POST /v1/responses`
+
+OpenAI Responses API — what Codex speaks. Available for any alias whose
+`protocols.responses` is true, **including when the backend only speaks chat
+completions**; the gateway translates both directions.
+
+```bash
+curl -X POST $GW/v1/responses \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{
+    "model": "coding",
+    "instructions": "You are a helpful coding assistant.",
+    "input": [
+      {"role":"user","content":[{"type":"input_text","text":"list the files"}]},
+      {"type":"function_call","call_id":"c1","name":"ls","arguments":"{}"},
+      {"type":"function_call_output","call_id":"c1","output":"a.txt"}
+    ],
+    "tools": [{"type":"function","name":"ls","parameters":{"type":"object"}}],
+    "max_output_tokens": 1024
+  }'
+```
+
+The shapes differ in more than field names:
+
+| chat completions | Responses |
+|---|---|
+| `messages[]` | `input[]` — messages **and** tool traffic, mixed at the same level |
+| system message | `instructions` (top-level string) |
+| `max_tokens` | `max_output_tokens` |
+| `tools[].function.name` | `tools[].name` (flattened) |
+| `choices[].message` | `output[]` — one item per message or tool call |
+| `usage.prompt_tokens` | `usage.input_tokens` |
+
+A turn that used tools comes back as `function_call` / `function_call_output`
+items sitting **beside** the messages, not nested inside them. Reading only
+`{role, content}` would hand the model a conversation where it asked for a tool
+and never learned the answer.
+
+Streaming emits the typed event sequence Codex reads:
+
+```
+response.created → response.output_item.added → response.content_part.added
+                 → response.output_text.delta* → response.output_text.done
+                 → response.content_part.done → response.output_item.done
+                 → response.completed
+```
+
+Every event carries a `sequence_number` that increases by one **across all event
+types** — the client uses it to detect a gap.
+
+`previous_response_id` returns `400`. Codex uses it to have the server keep the
+conversation; this gateway stores no prompts and no responses (PRD §12), so there
+is no head to continue from. Answering with the tail of a conversation whose head
+was silently dropped is worse than saying so.
+
+`x-litegate-protocol` tells you which path served the request:
+`responses-native` or `responses-via-openai`.
 
 ### `POST /v1/messages/count_tokens`
 
