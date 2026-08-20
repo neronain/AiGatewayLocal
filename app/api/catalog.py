@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import Principal, authenticate, permitted_aliases
@@ -92,6 +92,110 @@ async def catalog(
             "restricted": permission.aliases is not None,
             "reason": permission.reason,
         },
+    }
+
+
+@router.get("/me/key")
+async def me_key(
+    principal: Principal = Depends(authenticate),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """ข้อเท็จจริงของ key ที่กำลังใช้เรียกอยู่ตอนนี้
+
+    ไม่เปิดเผยอะไรที่คนถือ key ไม่ได้มีอยู่แล้ว — ตัว key เองเขามี ส่วนขอบเขตของมัน
+    เขาชนเข้าอยู่ทุกวันเวลาถูกปฏิเสธ · การบอกตรง ๆ ว่า "ใบนี้จำกัดไว้แค่นี้ หมดอายุวันนี้"
+    เปลี่ยนการเดาให้เป็นข้อมูล และลดการทักผู้ดูแลเพื่อถามเรื่องที่ระบบตอบเองได้
+
+    **ไม่คืนตัว key และไม่คืน hash** — คืนแค่ prefix ที่ผู้ใช้เอาไว้เทียบว่าใบไหน
+    """
+    from app.db.models import ApiKey
+
+    row = await session.get(ApiKey, principal.api_key_id)
+    if row is None:
+        # เข้ามาด้วย session ของคอนโซล ไม่ใช่ด้วย key
+        return {"via": principal.via, "key": None}
+    return {
+        "via": principal.via,
+        "key": {
+            "prefix": row.key_prefix,
+            "label": row.name or "",
+            "issued_at": row.created_at.isoformat() if row.created_at else None,
+            "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+            "last_used_at": row.last_used_at.isoformat() if row.last_used_at else None,
+            # ข้อจำกัดที่เขียนบนใบนี้เอง · ว่าง = ไม่จำกัดเพิ่มจากที่ workspace/role ให้
+            "limited_to_models": list(principal.key_models),
+            "limited_to_groups": list(principal.key_access_groups),
+        },
+    }
+
+
+@router.get("/me/usage")
+async def me_usage(
+    days: int = Query(14, ge=1, le=90),
+    principal: Principal = Depends(authenticate),
+    state: AppState = Depends(get_state),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """ตัวเองใช้ไปเท่าไรในช่วงที่ผ่านมา — แยกรายวันและรายโมเดล
+
+    โควตาใน /v1/me บอกแค่ "หน้าต่างนี้เหลือเท่าไร" ซึ่งตอบไม่ได้ว่าหมดไปกับอะไร ·
+    สมาชิกที่โดนปฏิเสธเพราะโควตาหมดต้องเห็นว่าตัวเองใช้ไปกับโมเดลไหน วันไหน
+    ไม่ใช่รู้แค่ว่าหมดแล้ว
+
+    เห็นเฉพาะของตัวเอง — กรองด้วย user_id ของ principal เสมอ ไม่มีพารามิเตอร์ให้ระบุคนอื่น
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import func, select
+
+    from app.db.models import UsageLog
+
+    await state.usage.flush()
+    since = datetime.now(UTC) - timedelta(days=days)
+    mine = UsageLog.user_id == principal.user_id
+
+    daily = (
+        await session.execute(
+            select(
+                func.date(UsageLog.ts),
+                func.count(UsageLog.id),
+                func.sum(UsageLog.text_input_tokens + UsageLog.visual_input_tokens),
+                func.sum(UsageLog.output_tokens),
+            )
+            .where(mine, UsageLog.ts >= since)
+            .group_by(func.date(UsageLog.ts))
+            .order_by(func.date(UsageLog.ts))
+        )
+    ).all()
+
+    by_model = (
+        await session.execute(
+            select(
+                UsageLog.model_alias,
+                func.count(UsageLog.id),
+                func.sum(UsageLog.text_input_tokens + UsageLog.visual_input_tokens),
+                func.sum(UsageLog.output_tokens),
+            )
+            .where(mine, UsageLog.ts >= since)
+            .group_by(UsageLog.model_alias)
+        )
+    ).all()
+
+    return {
+        "window_days": days,
+        "daily": [
+            {"date": str(d), "requests": r, "input_tokens": int(i or 0),
+             "output_tokens": int(o or 0)}
+            for d, r, i, o in daily
+        ],
+        "by_model": sorted(
+            [
+                {"model": m, "requests": r, "input_tokens": int(i or 0),
+                 "output_tokens": int(o or 0)}
+                for m, r, i, o in by_model
+            ],
+            key=lambda x: x["requests"], reverse=True,
+        ),
     }
 
 

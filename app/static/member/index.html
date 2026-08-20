@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="th" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LiteGate — ตรวจสอบสิทธิ์ของคุณ</title>
+<!-- ใช้สไตล์ชุดเดียวกับคอนโซล ไม่ให้กลายเป็นสองหน้าตาที่ต้องดูแลแยกกัน -->
+<link rel="stylesheet" href="../style.css?v=1.35.5">
+<link rel="stylesheet" href="member.css?v=1.35.5">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" data-icon="logo" aria-hidden="true"></span>
+    <div><div class="brand-name">LiteGate</div><div class="brand-sub">สิทธิ์ของฉัน</div></div>
+  </div>
+  <div class="grow"></div>
+  <button id="theme" class="icon-btn" title="สลับธีม" aria-label="สลับธีม">◐</button>
+  <button id="signout" class="icon-btn" hidden title="ลืม key ในเครื่องนี้">ออก</button>
+</header>
+
+<main class="wrap">
+
+  <!-- ── กรอก key ─────────────────────────────────────────────────────── -->
+  <section id="gate" class="card gate">
+    <h3>ดูสิทธิ์ของ API key ของคุณ</h3>
+    <p class="hint">
+      วาง key ที่ผู้ดูแลออกให้ แล้วกดตรวจสอบ — จะเห็นว่าคุณเรียกโมเดลอะไรได้
+      แต่ละตัวทำอะไรได้ โควตาเหลือเท่าไร และใช้ไปกับอะไรบ้าง
+    </p>
+    <div class="field">
+      <label for="key">API key</label>
+      <input id="key" type="password" autocomplete="off" spellcheck="false"
+             placeholder="lg_sk_…" aria-describedby="key-note">
+    </div>
+    <label class="remember">
+      <input type="checkbox" id="remember">
+      จำไว้จนกว่าจะปิดแท็บนี้
+    </label>
+    <p class="hint" id="key-note">
+      <strong>อย่าติ๊กถ้าใช้เครื่องส่วนกลาง</strong> — ติ๊กแล้ว key จะอยู่ในหน่วยความจำของแท็บนี้
+      จนกว่าจะปิด (ไม่ได้เก็บถาวรในเครื่อง และไม่ถูกส่งไปที่อื่นนอกจากเกตเวย์นี้)
+    </p>
+    <div class="row">
+      <button id="check" class="primary">ตรวจสอบ</button>
+      <span id="gate-msg" class="hint"></span>
+    </div>
+  </section>
+
+  <!-- ── ผลลัพธ์ ───────────────────────────────────────────────────────── -->
+  <div id="result" hidden>
+    <section class="card" id="whoami"></section>
+    <section class="card" id="keycard"></section>
+    <section class="card" id="quota"></section>
+
+    <h2>โมเดลที่คุณเรียกได้</h2>
+    <div id="models"></div>
+
+    <h2>การใช้งานของคุณ</h2>
+    <section class="card" id="usage"></section>
+  </div>
+</main>
+
+<footer id="lg-credit">
+  <span class="cred-name">LiteGate</span>
+  <span class="cred-dim">created by <a href="https://www.facebook.com/neronain.minidev"
+    target="_blank" rel="noopener">neronain</a></span>
+  <span class="cred-grow"></span>
+  <span class="cred-dim">MIT — attribution required</span>
+</footer>
+
+<script src="member.js?v=1.35.5"></script>
+</body>
+</html>
