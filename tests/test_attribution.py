@@ -121,3 +121,20 @@ def test_a_whole_tab_can_be_folded_at_once():
     assert "function foldAllInTab" in js
     # ต้องทำเฉพาะแท็บที่เห็นอยู่ — ไม่ล้างสถานะที่ผู้ใช้ตั้งใจไว้ในแท็บอื่น
     assert 'section[id^="tab-"]:not([hidden])' in js
+
+
+def test_fold_setup_runs_on_every_page_load_not_only_after_sign_in():
+    """เคยวางไว้ในทางเดิน sign-in อย่างเดียว — คนที่เปิดหน้าด้วย session เดิม
+    (ซึ่งคือเกือบทุกครั้ง) จึงไม่เคยเห็นปุ่มพับเลย
+
+    สาเหตุ: สตริงที่ใช้ยึดตอนแก้ไฟล์มีสองที่ในไฟล์เดียวกัน แล้ว replace ตัวแรกไปโดน
+    ทางเดิน sign-in · เทสต์นี้ผูกกับตำแหน่ง ไม่ใช่แค่ "มีอยู่ในไฟล์"
+    """
+    js = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    boot = js.split("async function boot()", 1)
+    assert len(boot) == 2, "ไม่เจอ boot()"
+    head = boot[1][:600]
+    assert "setupFoldSections();" in head, "ต้องถูกเรียกที่ต้น boot() ไม่ใช่ที่อื่น"
+    assert "fold-all" in head and "unfold-all" in head
+    # ต้องมาก่อนการเช็ค session — โครงหน้าไม่ได้ขึ้นกับว่าล็อกอินหรือยัง
+    assert head.index("setupFoldSections();") < head.index("auth/status")

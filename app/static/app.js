@@ -2413,10 +2413,6 @@ $('signin').onclick = async () => {
 
   flash('signin-status', '', '');
   document.querySelector('#tabs').hidden = false;
-  // ทำก่อนโหลดข้อมูล — ปุ่มพับเป็นเรื่องของโครงหน้า ไม่ได้ขึ้นกับว่าข้อมูลมาครบไหม
-  setupFoldSections();
-  $('fold-all').onclick = () => foldAllInTab(true);
-  $('unfold-all').onclick = () => foldAllInTab(false);
   try {
     await load();
     showTab('dashboard');
@@ -2713,6 +2709,14 @@ $('refresh').onclick = () => {
 
 (async function boot() {
   paintIcons();
+  // หมวดพับได้เป็นเรื่องของโครงหน้าซึ่งมีอยู่ใน HTML ตั้งแต่แรก — ไม่ขึ้นกับ session
+  // และไม่ขึ้นกับว่าเข้ามาทางล็อกอินสดหรือมี session อยู่แล้ว
+  //
+  // เคยวางไว้ในทางเดิน sign-in อย่างเดียว (สตริงที่ใช้ยึดมีสองที่ในไฟล์นี้ แล้วแก้โดน
+  // อันแรก) ผลคือคนที่เปิดหน้าด้วย session เดิม — ซึ่งคือเกือบทุกครั้ง — ไม่เคยเห็นปุ่มเลย
+  setupFoldSections();
+  $('fold-all').onclick = () => foldAllInTab(true);
+  $('unfold-all').onclick = () => foldAllInTab(false);
   let status;
   try {
     status = await api('/auth/status');
