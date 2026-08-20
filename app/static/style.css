@@ -266,6 +266,15 @@ pre {
 .hint { color: var(--fg3); font-size: 0.75rem; line-height: 1.5; margin: 5px 0 0; }
 /* ช่องที่กรอกผิดแบบที่กู้คืนได้ทันที — ไม่ใช่ error ของทั้งฟอร์ม */
 input.bad { border-color: var(--bad); }
+/* ตัวเลือกโมเดลที่ปลายทางเสิร์ฟ — กดได้ ตัวที่ใช้อยู่ทำเครื่องหมายไว้ */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.chip {
+  font: inherit; font-size: 0.75rem; padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--sunken); color: var(--fg2);
+  cursor: pointer; white-space: nowrap;
+}
+.chip:hover { border-color: var(--accent); color: var(--fg); }
+.chip.on { border-color: var(--accent); background: var(--accent-bg); color: var(--fg); font-weight: 600; }
 .hint.err-text { color: var(--bad); }
 .empty { color: var(--fg3); font-size: 0.8125rem; padding: 14px 0; }
 

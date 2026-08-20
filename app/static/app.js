@@ -1223,16 +1223,55 @@ async function detectEndpoint(node) {
         vision ${yes(suggestion.capabilities.vision)}
         ${suggestion.context_tokens ? ` · context ${num(suggestion.context_tokens)}` : ''}
       </div>
-      ${suggestion.served_models.length
-        ? `<div class="hint">serves: ${suggestion.served_models.map(esc).join(', ')}</div>` : ''}
+      ${renderServedModels(suggestion, node)}
       ${suggestion.notes.length
         ? `<div class="hint">${suggestion.notes.map(esc).join('<br>')}</div>` : ''}
     </div>`;
+    wireServedModelPicks(out, node);
   } catch (e) {
     banner_in(out, 'err', e.message);
   } finally {
     q('ep-detect').disabled = false;
   }
+}
+
+/* รายการโมเดลที่ *คีย์ใบนี้* เรียกได้ — มาจาก GET /v1/models ของปลายทางเอง
+ *
+ * เดิมพิมพ์เป็นบรรทัด "serves: a, b, c" แล้วเงียบ ๆ หยิบตัวแรกไปใส่ให้ · คนที่เพิ่ง
+ * เอาคีย์คลาวด์มาจึงไม่รู้ว่าตัวเองมีอะไรให้เลือกบ้าง และไม่รู้ว่าทำไมถึงได้ตัวนั้น
+ * คำถามจริงจากการใช้งาน: "ทำไมถึงเป็น M3 ถ้าอยากได้ M2 ต้องทำยังไง"
+ *
+ * ตอบด้วยการโชว์ทั้งหมดเป็นปุ่มกดได้ และทำเครื่องหมายตัวที่กำลังใช้อยู่
+ */
+function renderServedModels(suggestion, node) {
+  const models = suggestion.served_models || [];
+  if (!models.length) return '';
+  const current = (node.querySelector('.ep-upstream').value.trim()
+    || $('m-upstream').value.trim() || suggestion.upstream_model || '').trim();
+  const chips = models.map((m) => {
+    const on = m === current;
+    return `<button type="button" class="chip pick-model${on ? ' on' : ''}" data-model="${esc(m)}"
+      title="ใช้ ${esc(m)}">${esc(m)}${on ? ' ✓' : ''}</button>`;
+  }).join(' ');
+  return `<div class="hint" style="margin-top:8px">คีย์ใบนี้เรียกได้ ${models.length} ตัว — กดเลือกตัวที่ต้องการ</div>
+    <div class="chips">${chips}</div>`;
+}
+
+function wireServedModelPicks(out, node) {
+  out.querySelectorAll('.pick-model').forEach((button) => {
+    button.onclick = () => {
+      const picked = button.dataset.model;
+      // ชื่อตัวจริงเป็นของโมเดล ส่วนช่อง override ของ backend มีไว้ตอนที่ปลายทาง
+      // เรียกของสิ่งเดียวกันด้วยชื่ออื่น — ตอนเลือกจากรายการนี้จึงเขียนที่ตัวโมเดล
+      $('m-upstream').value = picked;
+      node.querySelector('.ep-upstream').value = '';
+      out.querySelectorAll('.pick-model').forEach((other) => {
+        const on = other.dataset.model === picked;
+        other.classList.toggle('on', on);
+        other.textContent = other.dataset.model + (on ? ' ✓' : '');
+      });
+    };
+  });
 }
 
 function banner_in(node, kind, message) {
