@@ -33,9 +33,10 @@ notice stays. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 <br><br>
 
-<img src="docs/img/member-signin.png" alt="หน้าตรวจสิทธิ์ของสมาชิก" width="820">
+<img src="docs/img/member-dashboard.png" alt="หน้าสมาชิก — โควตา โมเดลที่เรียกได้ และการใช้งานย้อนหลัง" width="820">
 
-<sub>`/console/member/` — สมาชิกวาง API key ของตัวเอง แล้วเห็นว่าใช้โมเดลอะไรได้ โควตาเหลือเท่าไร และใช้ไปกับอะไร</sub>
+<sub>`/console/member/` — สมาชิกวาง API key ของตัวเอง แล้วเห็นว่าใช้โมเดลอะไรได้ แต่ละตัวทำอะไรได้
+โควตาเหลือเท่าไร และใช้ไปกับอะไร · ไม่ต้องมีบัญชี ไม่ต้องรบกวนผู้ดูแล (ตัวเลขในรูปเป็นข้อมูลสาธิต)</sub>
 
 </div>
 
