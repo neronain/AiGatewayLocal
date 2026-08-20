@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.35.3">
+<link rel="stylesheet" href="style.css?v=1.35.4">
 </head>
 <body>
 
@@ -344,7 +344,7 @@
       <div id="key-out"></div>
     </div>
 
-    <div>
+    <div data-fold-section="people">
       <div class="bar" style="margin-bottom:4px">
         <h2 style="margin:0;flex:1"><span class="hi" data-icon="people" data-icon-size="15"
           aria-hidden="true"></span>People</h2>
@@ -394,7 +394,7 @@
       <div class="scroll"><table id="user-table"></table></div>
     </div>
 
-    <div>
+    <div data-fold-section="apikeys">
       <h2><span class="hi" data-icon="keys" data-icon-size="15" aria-hidden="true"></span>API keys</h2>
       <!-- ขึ้นเฉพาะเมื่อมีคีย์ที่เพิกถอนแล้วจริง — ปุ่มลบที่ไม่มีอะไรให้ลบคือปุ่มที่ชวนให้กดผิด -->
       <div class="row"><button id="purge-revoked" class="small" hidden></button></div>
@@ -443,7 +443,7 @@
       <button id="create-workspace">Create workspace</button>
     </div>
 
-    <div>
+    <div data-fold-section="groups">
       <div class="bar" style="margin-bottom:12px">
         <h2 style="margin:0;flex:1"><span class="hi" data-icon="bundle" data-icon-size="15"
           aria-hidden="true"></span>Access groups</h2>
@@ -456,7 +456,7 @@
       <div class="scroll"><table id="access-group-table"></table></div>
     </div>
 
-    <div>
+    <div data-fold-section="wsmodels">
       <h2><span class="hi" data-icon="workspace" data-icon-size="15" aria-hidden="true"></span>Workspaces — allowed models</h2>
       <p class="hint" style="margin:-6px 0 10px">
         ช่องติ๊กด้านบนคือ <strong>วิชานี้เรียกโมเดลอะไรได้</strong> · แถวเส้นประด้านล่างคือ
@@ -736,6 +736,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.35.3"></script>
+<script src="app.js?v=1.35.4"></script>
 </body>
 </html>

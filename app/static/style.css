@@ -941,3 +941,10 @@ table tr:not(.alias-row):not(.ep-row):hover > td {
 /* ── อันดับของ model="auto" ── */
 #auto-panel .auto-win { font-weight: 600; }
 #auto-panel code { font-size: .9em; }
+
+/* ── ปุ่มพับหมวด ── */
+.fold-toggle {
+  margin-right: 8px; min-width: 22px; padding: 0 6px; line-height: 1.4;
+  font-weight: 600; vertical-align: middle;
+}
+[data-fold-section] > :first-child { align-items: center; }

@@ -72,3 +72,22 @@ def test_the_version_has_one_source():
     assert config.VERSION == declared["project"]["version"], (
         "config.VERSION กับ pyproject ต้องตรงกัน ไม่งั้นเลขที่ประกาศออกไปเชื่อไม่ได้"
     )
+
+
+def test_long_sections_can_be_folded():
+    """แท็บ Access & keys มีสี่ส่วนยาว ๆ ต่อกัน — พอผู้ใช้จริงมีคนเป็นสิบและ key เป็นสิบใบ
+    ส่วนที่อยากดูจะอยู่ล่างสุดเสมอ
+    """
+    page = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
+    for key in ("people", "apikeys", "groups", "wsmodels"):
+        assert f'data-fold-section="{key}"' in page, key
+
+    js = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    assert "function setupFoldSections" in js
+    assert "SECTION_FOLD_KEY" in js, "สถานะพับต้องถูกจำไว้ ไม่ใช่กางกลับทุกครั้ง"
+    # เป็นกลไกกลาง หมวดใหม่ต้องได้ฟรีด้วยการใส่ attribute เดียว
+    assert "querySelectorAll('[data-fold-section]')" in js
+    assert "setupFoldSections();" in js, "ต้องถูกเรียกตอน boot"
+
+    css = (ROOT / "app" / "static" / "style.css").read_text(encoding="utf-8")
+    assert ".fold-toggle" in css

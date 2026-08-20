@@ -533,6 +533,65 @@ async function loadAutoPreview() {
 }
 
 
+// ── พับหมวดในหน้า ────────────────────────────────────────────────────────────
+//
+// แท็บ Access & keys มีสี่ส่วนยาว ๆ ต่อกัน (People, API keys, Access groups,
+// Workspaces) · พอผู้ใช้จริงมีคนเป็นสิบและ key เป็นสิบใบ หน้าเดียวยาวหลายจอ แล้วส่วน
+// ที่อยากดูจริงอยู่ล่างสุดเสมอ
+//
+// ทำเป็นกลไกกลางแทนที่จะแก้ทีละหมวด: หมวดไหนอยากพับได้ก็ใส่ data-fold-section="<คีย์>"
+// ที่ div ครอบ แล้วที่เหลือทำงานเอง — หมวดใหม่ในอนาคตจะได้ไม่ต้องเขียนโค้ดซ้ำ
+const SECTION_FOLD_KEY = 'litegate:sections-folded';
+
+function foldedSections() {
+  try { return new Set(JSON.parse(localStorage.getItem(SECTION_FOLD_KEY) || '[]')); }
+  catch { return new Set(); }
+}
+
+function rememberFolded(set) {
+  try { localStorage.setItem(SECTION_FOLD_KEY, JSON.stringify([...set])); }
+  catch { /* โหมดส่วนตัว */ }
+}
+
+function setupFoldSections(root = document) {
+  const folded = foldedSections();
+  for (const section of root.querySelectorAll('[data-fold-section]')) {
+    if (section.dataset.foldReady) continue;
+    section.dataset.foldReady = '1';
+    const key = section.dataset.foldSection;
+
+    // หัวข้อคือลูกคนแรก · ที่เหลือคือเนื้อ — ห่อไว้ก้อนเดียวจะได้ซ่อน/แสดงทีเดียว
+    const header = section.firstElementChild;
+    if (!header) continue;
+    const body = document.createElement('div');
+    body.className = 'fold-body';
+    while (header.nextSibling) body.appendChild(header.nextSibling);
+    section.appendChild(body);
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'fold-toggle';
+    button.title = 'ย่อ/กางหมวดนี้';
+    // ปุ่มไปอยู่ใน h2 เพื่อให้เรียงในบรรทัดเดียวกับชื่อหมวด ไม่ว่าหัวข้อจะเป็น h2 เดี่ยว
+    // หรืออยู่ใน .bar ที่มีปุ่มอื่นอยู่ด้วย
+    const title = header.tagName === 'H2' ? header : header.querySelector('h2') || header;
+    title.insertBefore(button, title.firstChild);
+
+    const apply = () => {
+      const isFolded = folded.has(key);
+      body.hidden = isFolded;
+      button.textContent = isFolded ? '+' : '−';
+      button.setAttribute('aria-expanded', String(!isFolded));
+    };
+    button.onclick = () => {
+      folded.has(key) ? folded.delete(key) : folded.add(key);
+      rememberFolded(folded);
+      apply();
+    };
+    apply();
+  }
+}
+
 function renderHealth(report) {
   const rows = Object.values(report);
   $('health').innerHTML = `
@@ -2325,6 +2384,8 @@ $('signin').onclick = async () => {
 
   flash('signin-status', '', '');
   document.querySelector('#tabs').hidden = false;
+  // ทำก่อนโหลดข้อมูล — ปุ่มพับเป็นเรื่องของโครงหน้า ไม่ได้ขึ้นกับว่าข้อมูลมาครบไหม
+  setupFoldSections();
   try {
     await load();
     showTab('dashboard');
