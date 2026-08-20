@@ -91,3 +91,33 @@ def test_long_sections_can_be_folded():
 
     css = (ROOT / "app" / "static" / "style.css").read_text(encoding="utf-8")
     assert ".fold-toggle" in css
+
+
+def test_every_long_tab_has_foldable_sections():
+    """ไม่ใช่แค่แท็บเดียว — ทุกแท็บที่มีหลายหมวดควรพับได้เหมือนกัน"""
+    page = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
+    for key in ("acct-keys", "dash-models", "reg-models", "asst-console",
+                "quota-policies", "client-tools"):
+        assert f'data-fold-section="{key}"' in page, key
+
+
+def test_a_marker_never_sits_on_a_header_row():
+    """เกาะ .bar จะพับปุ่มแทนเนื้อหา — เจอจริงตอนทำ acct-keys กับ reg-models"""
+    import re
+
+    page = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
+    for line in page.splitlines():
+        if "data-fold-section" not in line:
+            continue
+        assert not re.search(r'data-fold-section="[^"]+"\s+class="(bar|field|row)\b', line), line.strip()
+
+
+def test_a_whole_tab_can_be_folded_at_once():
+    """พับทีละหมวดยังช้าเมื่อแท็บหนึ่งมีสี่ห้าหมวด"""
+    page = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
+    assert 'id="fold-all"' in page and 'id="unfold-all"' in page
+
+    js = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    assert "function foldAllInTab" in js
+    # ต้องทำเฉพาะแท็บที่เห็นอยู่ — ไม่ล้างสถานะที่ผู้ใช้ตั้งใจไว้ในแท็บอื่น
+    assert 'section[id^="tab-"]:not([hidden])' in js

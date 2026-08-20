@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.35.4">
+<link rel="stylesheet" href="style.css?v=1.35.5">
 </head>
 <body>
 
@@ -39,6 +39,10 @@
 
       <button id="refresh" class="icon-btn" title="Refresh" aria-label="Refresh">
         <span data-icon="refresh" aria-hidden="true"></span></button>
+      <button id="fold-all" class="icon-btn fold-all-btn" title="ย่อทุกหมวดในแท็บนี้"
+        aria-label="ย่อทุกหมวดในแท็บนี้">−</button>
+      <button id="unfold-all" class="icon-btn fold-all-btn" title="กางทุกหมวดในแท็บนี้"
+        aria-label="กางทุกหมวดในแท็บนี้">+</button>
       <button id="theme" class="icon-btn" title="Switch theme" aria-label="Switch theme">
         <span data-icon="theme" aria-hidden="true"></span></button>
       <button id="signout" class="icon-btn" hidden title="Sign out" aria-label="Sign out">
@@ -95,17 +99,17 @@
 
   <!-- ================= My account ================= -->
   <section id="tab-account" class="stack" hidden>
-    <div>
+    <div data-fold-section="acct-quota">
       <h2><span class="hi" data-icon="quota" data-icon-size="15" aria-hidden="true"></span>My quota</h2>
       <div class="card"><div id="my-quota"></div></div>
     </div>
 
-    <div>
+    <div data-fold-section="acct-models">
       <h2><span class="hi" data-icon="models" data-icon-size="15" aria-hidden="true"></span>Models I can use</h2>
       <div id="my-models"></div>
     </div>
 
-    <div>
+    <div data-fold-section="acct-keys">
       <div class="bar" style="margin-bottom:12px">
         <h2 style="margin:0;flex:1"><span class="hi" data-icon="keys" data-icon-size="15" aria-hidden="true"></span>My API keys</h2>
         <span class="sub" id="key-count"></span>
@@ -139,7 +143,7 @@
 
   <!-- ================= Dashboard ================= -->
   <section id="tab-dashboard" class="stack">
-    <div>
+    <div data-fold-section="dash-quota">
       <h2><span class="hi" data-icon="quota" data-icon-size="15" aria-hidden="true"></span>My quota</h2>
       <div class="card"><div id="quota"></div></div>
     </div>
@@ -167,7 +171,7 @@
       </div>
     </div>
 
-    <div>
+    <div data-fold-section="dash-models">
       <h2><span class="hi" data-icon="models" data-icon-size="15" aria-hidden="true"></span>Available AI models</h2>
       <div class="panel" id="auto-panel" hidden>
         <div class="panel-hd">
@@ -180,7 +184,7 @@
       </div>
       <div id="catalog"></div>
     </div>
-    <div id="health-wrap" hidden>
+    <div data-fold-section="dash-health" id="health-wrap" hidden>
       <h2><span class="hi" data-icon="health" data-icon-size="15" aria-hidden="true"></span>Backend health</h2>
       <div class="scroll"><table id="health"></table></div>
     </div>
@@ -188,7 +192,7 @@
 
   <!-- ================= Models ================= -->
   <section id="tab-models" class="stack" hidden>
-    <div>
+    <div data-fold-section="reg-models">
       <div class="bar" style="margin-bottom:12px">
         <h2 style="margin:0;flex:1"><span class="hi" data-icon="models" data-icon-size="15" aria-hidden="true"></span>Registered models</h2>
         <button id="models-expand-all" class="ghost">กางทั้งหมด</button>
@@ -469,7 +473,7 @@
 
   <!-- ================= Assistant ================= -->
   <section id="tab-assistant" class="stack" hidden>
-    <div class="card">
+    <div data-fold-section="asst-console" class="card">
       <h2><span class="hi" data-icon="assistant" data-icon-size="15" aria-hidden="true"></span>Console assistant</h2>
       <p class="hint">
         The model that answers in the chat panel. It is an ordinary caller: it uses
@@ -486,7 +490,7 @@
       <p id="as-current" class="hint" style="margin-top:10px"></p>
     </div>
 
-    <div class="card">
+    <div data-fold-section="asst-deploy" class="card">
       <h2><span class="hi" data-icon="deploy" data-icon-size="15" aria-hidden="true"></span>Deploy tool</h2>
       <p class="hint">
         Optional. Connect the LMDS that deployed these backends and verification
@@ -509,7 +513,7 @@
       <p id="lm-state" class="hint" style="margin-top:10px"></p>
     </div>
 
-    <div class="card">
+    <div data-fold-section="asst-suit" class="card">
       <h2><span class="hi" data-icon="suitability" data-icon-size="15" aria-hidden="true"></span>Suitability</h2>
       <p class="hint">
         Judged from the registry and the test suite, not from model names. The
@@ -616,12 +620,12 @@
       <button id="create-quota" class="primary">Add policy</button>
     </div>
 
-    <div>
+    <div data-fold-section="quota-policies">
       <h2><span class="hi" data-icon="quota" data-icon-size="15" aria-hidden="true"></span>Active policies</h2>
       <div class="scroll"><table id="quota-table"></table></div>
     </div>
 
-    <div>
+    <div data-fold-section="quota-top">
       <h2><span class="hi" data-icon="trending" data-icon-size="15" aria-hidden="true"></span>Heaviest users (7 days)</h2>
       <div class="scroll"><table id="top-users"></table></div>
     </div>
@@ -629,7 +633,7 @@
 
   <!-- ================= Client tools ================= -->
   <section id="tab-tools" class="stack" hidden>
-    <div>
+    <div data-fold-section="client-tools">
       <h2><span class="hi" data-icon="download" data-icon-size="15" aria-hidden="true"></span>Client tools</h2>
       <p class="hint" style="margin:2px 0 0">
         โหลดเครื่องมือที่ชี้มาที่ gateway นี้ได้จากที่นี่ ออฟไลน์ — ทุกไฟล์ผ่านการตรวจลายเซ็น/checksum
@@ -736,6 +740,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.35.4"></script>
+<script src="app.js?v=1.35.5"></script>
 </body>
 </html>

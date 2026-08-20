@@ -553,6 +553,35 @@ function rememberFolded(set) {
   catch { /* โหมดส่วนตัว */ }
 }
 
+// ย่อ/กางทุกหมวดในแท็บที่เปิดอยู่ทีเดียว
+//
+// พับทีละหมวดยังช้าเมื่อแท็บหนึ่งมีสี่ห้าหมวด · ปุ่มนี้ทำงานเฉพาะแท็บที่เห็นอยู่
+// ไม่ไปยุ่งกับแท็บอื่น เพราะสถานะที่ผู้ใช้ตั้งใจไว้ในแท็บอื่นไม่ควรถูกลบด้วยการกดปุ่มนี้
+function foldAllInTab(folded) {
+  const tab = document.querySelector('section[id^="tab-"]:not([hidden])');
+  if (!tab) return;
+  const chosen = foldedSections();
+  for (const section of tab.querySelectorAll('[data-fold-section]')) {
+    folded ? chosen.add(section.dataset.foldSection)
+           : chosen.delete(section.dataset.foldSection);
+  }
+  rememberFolded(chosen);
+  applyFoldState(tab);
+}
+
+function applyFoldState(root = document) {
+  const chosen = foldedSections();
+  for (const section of root.querySelectorAll('[data-fold-section]')) {
+    const body = section.querySelector(':scope > .fold-body');
+    const button = section.querySelector(':scope > * .fold-toggle, :scope > .fold-toggle');
+    if (!body || !button) continue;
+    const isFolded = chosen.has(section.dataset.foldSection);
+    body.hidden = isFolded;
+    button.textContent = isFolded ? '+' : '−';
+    button.setAttribute('aria-expanded', String(!isFolded));
+  }
+}
+
 function setupFoldSections(root = document) {
   const folded = foldedSections();
   for (const section of root.querySelectorAll('[data-fold-section]')) {
@@ -2386,6 +2415,8 @@ $('signin').onclick = async () => {
   document.querySelector('#tabs').hidden = false;
   // ทำก่อนโหลดข้อมูล — ปุ่มพับเป็นเรื่องของโครงหน้า ไม่ได้ขึ้นกับว่าข้อมูลมาครบไหม
   setupFoldSections();
+  $('fold-all').onclick = () => foldAllInTab(true);
+  $('unfold-all').onclick = () => foldAllInTab(false);
   try {
     await load();
     showTab('dashboard');

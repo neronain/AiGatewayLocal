@@ -948,3 +948,6 @@ table tr:not(.alias-row):not(.ep-row):hover > td {
   font-weight: 600; vertical-align: middle;
 }
 [data-fold-section] > :first-child { align-items: center; }
+
+/* ปุ่มย่อ/กางทั้งแท็บ — เป็นตัวอักษร ไม่ใช่ไอคอน SVG จึงต้องคุมขนาดเอง */
+.fold-all-btn { font-size: 15px; font-weight: 600; line-height: 1; }
