@@ -166,13 +166,44 @@ asks the backend for a final usage chunk so accounting stays accurate; if you di
 not set `stream_options.include_usage`, that chunk is stripped before it reaches
 you, so the stream matches exactly what you asked for.
 
+**`model: "auto"`** — let the gateway choose
+
+Send `"model": "auto"` and LiteGate picks the fastest model that can serve the
+request, **from the models that key may already use**. It is not a way around
+permissions: the gateway does the choosing, but the shortlist is exactly what the
+member could have named themselves.
+
+The choice is made from the shape of the request — does it carry images, does it
+ask for tools, how long is the prompt — never from guessing intent, the same rule
+[`app/core/rules.py`](../app/core/rules.py) follows.
+
+Ranking is by **speed measured from real traffic** through this gateway (output
+tok/s and TTFT, exponentially weighted). Models with too few samples sort last but
+stay eligible — a gateway that was installed this morning has no statistics at all
+and must still answer.
+
+`x-litegate-served-by` names what actually ran, and the response `model` field is
+a real alias, never the word `auto`.
+
+Staff can see the current ranking and the reason behind it at
+`GET /admin/auto/preview`, or in the console above the model catalogue.
+
+```bash
+curl -X POST $GW/v1/chat/completions \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"auto","messages":[{"role":"user","content":"สวัสดี"}]}'
+```
+
 **Response headers**
 
 | Header | Meaning |
 |---|---|
 | `x-request-id` | Correlates with logs and usage rows |
-| `x-litegate-model` | The alias that served the request |
-| `x-litegate-endpoint` | Which backend was chosen |
+| `x-litegate-model` | The alias the caller asked for — never changes with internal routing |
+| `x-litegate-served-by` | The alias that **actually ran**. Differs from the above when a routing rule reroutes (`coding` → `coding-long` for an oversized prompt) or when `model: "auto"` picked for you |
+| `x-litegate-endpoint` | Which backend machine answered |
+| `x-litegate-failed-over` | Backends tried and skipped before this one |
+| `x-litegate-by` | Author attribution (present on every response) |
 
 ---
 
@@ -398,6 +429,60 @@ same body as `GET`.
 Refuses (`400`) an alias that cannot serve the role, naming the failing check —
 no chat capability, a context window too small for the state block, or a chat
 test the suite could not pass. `404` for an unknown alias.
+
+---
+
+### `GET /admin/auto/preview`
+
+Which model `model: "auto"` would pick right now, and why. Uses the same ranker as
+the request path — no second implementation to drift.
+
+Query: `prompt_tokens` (default 1000), `vision`, `tools`, `protocol`.
+
+```json
+{
+  "chosen": "coding",
+  "reason": "เร็วที่สุดที่วัดได้ (94 tok/s)",
+  "ranked": [
+    {"rank": 1, "alias": "coding", "output_tps": 94.2, "ttft_ms": 210,
+     "context_tokens": 131072, "samples": 41}
+  ],
+  "min_samples": 3
+}
+```
+
+`output_tps` / `ttft_ms` are `null` until a model has been seen `min_samples`
+times. Those models sort last but remain eligible.
+
+---
+
+### `GET /admin/usage/savings`
+
+What this traffic would have cost on a commercial API. Schools that bought the
+hardware need to answer "was it worth it" — the token counts were already being
+recorded, so this needs no new collection.
+
+Query: `days` (default 30), `baseline`, `workspace_id`.
+
+```json
+{
+  "window_days": 30,
+  "baseline": {"id": "gpt-4o", "label": "OpenAI GPT-4o"},
+  "prices_updated": "2026-08-20",
+  "requests": 12840,
+  "would_have_cost_usd": 412.83,
+  "by_model": [{"model": "coding", "would_have_cost_usd": 301.2, "...": "..."}],
+  "caveat": "ประมาณการจากราคา list — ไม่ได้คิดส่วนลดตามปริมาณ..."
+}
+```
+
+**This is a comparison figure, not an invoice.** It uses published list prices and
+does not model volume discounts, prompt caching, or batch APIs — real spend would
+be lower. The price table is **static in the source** ([`app/core/pricing.py`](../app/core/pricing.py))
+so the report works on sites with no outbound internet; `prices_updated` says how
+old it is.
+
+`GET /admin/usage/savings/baselines` lists the available baselines for a dropdown.
 
 ---
 
