@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -73,13 +75,35 @@ async def close_client() -> None:
         _client = None
 
 
+# ส่วนท้ายของ base URL ที่แปลว่า "ตัว prefix ของ API อยู่ในนี้แล้ว"
+_API_PREFIXES = re.compile(r"/(v\d+[a-z]*|openai)$")
+
+
 def upstream_url(endpoint: Endpoint, path: str) -> str:
-    """Map a gateway path to the backend path for this server type."""
+    """Map a gateway path to the backend path for this server type.
+
+    เซิร์ฟเวอร์ในบ้านเขียน base URL เป็นแค่ host:port แล้วเส้นทางจริงคือ `/v1/...`
+    แต่คลาวด์ทุกเจ้าเขียนไว้ในเอกสารพร้อม prefix มาแล้ว — `https://api.minimax.io/v1`,
+    `https://api.groq.com/openai/v1`, `https://…/v1beta/openai` — ถ้าเราต่อ `/v1` ทับ
+    ลงไปอีกจะได้ `/v1/v1/chat/completions` ซึ่ง 404 ทุกเจ้า
+
+    จึงตัด `/v1` หัวทางออก **เฉพาะเมื่อ base ลงท้ายด้วย prefix ของ API อยู่แล้ว** —
+    ไม่ใช่เมื่อ base มี path อะไรก็ได้ เพราะเกตเวย์ที่อยู่หลัง reverse proxy จะมี path
+    นำหน้าแบบ `https://proxy/edullm` ซึ่งไม่ใช่ prefix ของ API และต้องได้ `/v1` ตามเดิม
+    """
     base = endpoint.normalized_base_url
     if endpoint.server_type == ServerType.OLLAMA:
         # Ollama exposes the OpenAI-compatible surface under /v1.
         if not path.startswith("/v1"):
             path = "/v1" + path
+    return join_upstream(base, path)
+
+
+def join_upstream(base: str, path: str) -> str:
+    """ต่อ base URL กับ path ของ API โดยไม่ให้ `/v1` ซ้ำ — ดูเหตุผลใน upstream_url"""
+    base = base.rstrip("/")
+    if path.startswith("/v1/") and _API_PREFIXES.search(urlsplit(base).path):
+        path = path[3:]
     return base + path
 
 

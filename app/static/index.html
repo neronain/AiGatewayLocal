@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.35.6">
+<link rel="stylesheet" href="style.css?v=1.35.8">
 </head>
 <body>
 
@@ -213,7 +213,8 @@
       <div class="row" style="margin-top:14px">
         <div class="field">
           <label for="m-alias">Alias — what members type</label>
-          <input id="m-alias" placeholder="coding" autocomplete="off">
+          <input id="m-alias" placeholder="minimax-m2" autocomplete="off">
+          <p class="hint" id="m-alias-hint">พิมพ์เล็ก ตัวเลข และ . _ - เท่านั้น — ชื่อนี้คือสิ่งที่ลูกค้าพิมพ์ในโปรแกรมของเขา</p>
         </div>
         <div class="field">
           <label for="m-name">Display name</label>
@@ -704,7 +705,8 @@
       </div>
       <div class="field">
         <label>API key env var (optional)</label>
-        <input class="ep-keyenv" placeholder="DGX03_API_KEY" autocomplete="off">
+        <input class="ep-keyenv" placeholder="MINIMAX_API_KEY" autocomplete="off">
+        <p class="hint ep-keyenv-hint">ชื่อตัวแปร ไม่ใช่ตัวคีย์ — ตัวคีย์ตั้งไว้ในสภาพแวดล้อมของเครื่องที่รันเกตเวย์</p>
       </div>
       <div class="field">
         <label>Priority (higher wins)</label>
@@ -749,6 +751,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.35.6"></script>
+<script src="app.js?v=1.35.8"></script>
 </body>
 </html>

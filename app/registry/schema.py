@@ -13,7 +13,9 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+import re
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Modality(StrEnum):
@@ -215,6 +217,24 @@ class Endpoint(BaseModel):
     @property
     def normalized_base_url(self) -> str:
         return self.base_url.rstrip("/")
+
+    @field_validator("api_key_env")
+    @classmethod
+    def _must_be_a_name_not_a_secret(cls, value: str) -> str:
+        """ช่องนี้รับ *ชื่อ* ตัวแปรสภาพแวดล้อม ไม่ใช่ตัวคีย์
+
+        คนวางคีย์จริงลงไปตรง ๆ เพราะช่องมันดูเหมือนช่องใส่คีย์ · ถ้าปล่อยผ่าน คีย์จะถูก
+        เขียนลงไฟล์ registry ที่อยู่ใน git แล้วไม่มีใครรู้ตัว และคำขอก็จะยังไม่มีคีย์อยู่ดี
+        เพราะเราเอาค่านี้ไปเปิดหา os.environ — ผลคือ 401 ที่หาสาเหตุไม่เจอ
+        """
+        value = value.strip()
+        if value and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+            raise ValueError(
+                "ต้องเป็นชื่อตัวแปรสภาพแวดล้อม เช่น MINIMAX_API_KEY ไม่ใช่ตัวคีย์เอง — "
+                "ตัวคีย์ตั้งไว้ในสภาพแวดล้อมของเครื่องที่รันเกตเวย์ "
+                "(expects an env var NAME such as MINIMAX_API_KEY, not the key itself)"
+            )
+        return value
 
 
 class ModelMetadata(BaseModel):

@@ -1151,6 +1151,22 @@ function addEndpointRow(data = {}) {
 
   q('ep-detect').onclick = () => detectEndpoint(node);
 
+  // ช่องนี้หน้าตาเหมือนช่องใส่คีย์ คนจึงวางคีย์จริงลงไป · ถ้าปล่อยไปถึง save เซิร์ฟเวอร์
+  // จะปฏิเสธอยู่แล้ว แต่กว่าจะรู้ก็ผ่านไปหลายขั้น — บอกตรงนี้ตอนที่ยังแก้ง่าย
+  const keyenv = q('ep-keyenv');
+  const keyenvHint = q('ep-keyenv-hint');
+  const checkKeyEnv = () => {
+    const value = keyenv.value.trim();
+    const bad = value && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+    keyenv.classList.toggle('bad', !!bad);
+    keyenvHint.classList.toggle('err-text', !!bad);
+    keyenvHint.textContent = bad
+      ? 'นี่คือตัวคีย์ ไม่ใช่ชื่อตัวแปร — ใส่ชื่อ เช่น MINIMAX_API_KEY แล้วเอาตัวคีย์ไปตั้งเป็น env var บนเครื่องที่รันเกตเวย์'
+      : 'ชื่อตัวแปร ไม่ใช่ตัวคีย์ — ตัวคีย์ตั้งไว้ในสภาพแวดล้อมของเครื่องที่รันเกตเวย์';
+  };
+  keyenv.addEventListener('input', checkKeyEnv);
+  checkKeyEnv();
+
   $('endpoints').appendChild(node);
   return node;
 }
@@ -2767,8 +2783,70 @@ $('refresh').onclick = () => {
     .then(() => { if (active && active.dataset.tab !== 'dashboard') showTab(active.dataset.tab); })
     .catch((e) => showError(e.message));
 };
+/* ติก Vision บนโมเดล แต่ไม่มี backend ไหนติก "serves images" = save ไม่ผ่าน
+ * ข้อความที่เซิร์ฟเวอร์ตอบกลับถูกต้องแต่มาช้าไปหนึ่งจังหวะ และไม่ได้บอกว่าต้องไปติกที่ไหน
+ * — เตือนตรงจุดที่ติก แล้วชี้ช่องที่ขาด */
+function setupVisionCheck() {
+  const vision = $('c-vision');
+  if (!vision) return;
+  const check = () => {
+    const rows = [...document.querySelectorAll('#endpoints > *')];
+    const servesImages = rows.some((r) => {
+      const enabled = r.querySelector('.ep-enabled');
+      const image = r.querySelector('.ep-image');
+      return image && image.checked && (!enabled || enabled.checked);
+    });
+    const missing = vision.checked && rows.length > 0 && !servesImages;
+    let note = $('c-vision-note');
+    if (!note) {
+      note = document.createElement('p');
+      note.id = 'c-vision-note';
+      note.className = 'hint err-text';
+      vision.closest('.checks').insertAdjacentElement('afterend', note);
+    }
+    note.hidden = !missing;
+    note.textContent = missing
+      ? 'ติก Vision ไว้ แต่ยังไม่มี backend ไหนติก "serves images" — ไปติกช่องนั้นในกล่อง Backends ไม่งั้นบันทึกไม่ผ่าน'
+      : '';
+  };
+  vision.addEventListener('change', check);
+  // แถว backend เพิ่ม/ลบ/ติกทีหลังได้ จึงฟังที่ตัวครอบแทนที่จะผูกทีละแถว
+  const box = $('endpoints');
+  if (box) {
+    box.addEventListener('change', check);
+    new MutationObserver(check).observe(box, { childList: true });
+  }
+  check();
+}
+
+/* alias ต้องเป็นพิมพ์เล็กตามสคีมา · คนพิมพ์ "MinimaxCYN" แล้วไปโดนปฏิเสธตอนกด save
+ * พร้อมข้อความ regex ซึ่งอ่านไม่ออกว่าต้องแก้อะไร — บอกและเสนอตัวที่ใช้ได้ตรงนี้เลย */
+function setupAliasCheck() {
+  const input = $('m-alias');
+  const hint = $('m-alias-hint');
+  if (!input || !hint) return;
+  const clean = (v) => v.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^[^a-z0-9]+/, '').replace(/-+$/, '');
+  const check = () => {
+    const value = input.value.trim();
+    const ok = !value || /^[a-z0-9][a-z0-9._-]{1,62}$/.test(value);
+    input.classList.toggle('bad', !ok);
+    hint.classList.toggle('err-text', !ok);
+    const suggestion = clean(value);
+    hint.textContent = ok
+      ? 'พิมพ์เล็ก ตัวเลข และ . _ - เท่านั้น — ชื่อนี้คือสิ่งที่ลูกค้าพิมพ์ในโปรแกรมของเขา'
+      : (suggestion.length > 1
+          ? `ใช้ชื่อนี้ไม่ได้ — ลอง "${suggestion}"`
+          : 'ใช้ชื่อนี้ไม่ได้ — ต้องขึ้นต้นด้วยพิมพ์เล็กหรือตัวเลข ยาวอย่างน้อย 2 ตัว');
+  };
+  input.addEventListener('input', check);
+  check();
+}
+
 
 (async function boot() {
+  setupAliasCheck();
+  setupVisionCheck();
   paintIcons();
   // หมวดพับได้เป็นเรื่องของโครงหน้าซึ่งมีอยู่ใน HTML ตั้งแต่แรก — ไม่ขึ้นกับ session
   // และไม่ขึ้นกับว่าเข้ามาทางล็อกอินสดหรือมี session อยู่แล้ว

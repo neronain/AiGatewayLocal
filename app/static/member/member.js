@@ -82,7 +82,7 @@ function renderWho(me) {
       <div>
         <div class="who-name">${esc(me.display_name || me.external_id)}</div>
         <div class="hint">${esc(me.external_id)} · บทบาท ${esc(me.role)}${
-          me.workspace_id ? ' · วิชา ' + esc(me.workspace_id) : ''}</div>
+          workspaceLabel(me)}</div>
       </div>
     </div>`;
 }
@@ -140,9 +140,33 @@ function renderAccessNote(catalog) {
   const box = $('access-note');
   if (!box) return;
   box.innerHTML = catalog.access?.restricted
-    ? `<p class="hint">เห็นเท่านี้เพราะถูกจำกัดโดย <strong>${esc(catalog.access.reason)}</strong> ·
+    ? `<p class="hint">เห็นเท่านี้เพราะถูกจำกัดโดย <strong>${esc(accessReason(catalog.access))}</strong> ·
        ต้องใช้ตัวอื่นให้ติดต่อผู้ดูแลของคุณ</p>`
     : '';
+}
+
+/* ชื่อวิชาแบบที่คนอ่านออก — code ถ้ามี ไม่งั้นชื่อเต็ม · id ดิบเป็นทางเลือกสุดท้าย
+ * เพราะเลขฐานสิบหก 32 ตัวไม่ได้บอกอะไรกับเจ้าของ key เลย */
+function workspaceLabel(me) {
+  const w = me.workspace;
+  if (!w) return me.workspace_id ? ' · วิชา ' + esc(me.workspace_id) : '';
+  // คั่นด้วย em dash ไม่ใช่ · เพราะชื่อวิชาเองก็มี · ได้ แล้วจะอ่านไม่ออกว่าอะไรเป็นอะไร
+  const name = [w.code, w.name].filter(Boolean).join(' — ');
+  return ' · วิชา ' + esc(w.term ? `${name} (${w.term})` : name);
+}
+
+/* แปลเหตุผลที่สิทธิ์ถูกจำกัดเป็นไทย — เซิร์ฟเวอร์ส่งประโยคอังกฤษมาด้วยเพราะ audit log
+ * และคอนโซลผู้ดูแลอ่านมันตรง ๆ แต่หน้านี้เป็นไทยทั้งหน้า */
+const ACCESS_REASONS = {
+  workspace: 'วิชาที่ออก key ใบนี้ให้',
+  membership: 'วิชาที่คุณอยู่',
+  key: 'รายการโมเดลที่เขียนไว้บน key ใบนี้',
+  'workspace+key': 'วิชาที่ออก key ใบนี้ให้ และรายการที่เขียนไว้บนใบนี้',
+  'membership+key': 'วิชาที่คุณอยู่ และรายการที่เขียนไว้บนใบนี้',
+};
+
+function accessReason(access) {
+  return ACCESS_REASONS[access.reason_code] || access.reason || 'สิทธิ์ที่ผู้ดูแลตั้งไว้';
 }
 
 /* โมเดลที่ใช้ได้ + ใช้ไปเท่าไร รวมเป็นตารางเดียว

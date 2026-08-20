@@ -234,6 +234,10 @@ class Permission:
 
     aliases: set[str] | None
     reason: str = ""
+    # รหัสของเหตุผลข้างบน สำหรับหน้าเว็บที่ไม่ได้เป็นภาษาอังกฤษ · ประโยคใน `reason`
+    # เป็นภาษาอังกฤษเพราะ audit log และคอนโซลผู้ดูแลอ่านมันตรง ๆ — หน้า member เป็น
+    # ภาษาไทย เอาประโยคอังกฤษไปแปะกลางประโยคไทยจึงอ่านไม่รู้เรื่อง
+    reason_code: str = ""
 
     def allows(self, alias: str) -> bool:
         return self.aliases is None or alias in self.aliases
@@ -264,10 +268,12 @@ async def permitted_aliases(
     """
     scope: set[str] | None = None
     reason = ""
+    code = ""
 
     if principal.workspace_id is not None:
         scope = await _workspace_models(session, [principal.workspace_id])
         reason = "the workspace this key was issued for"
+        code = "workspace"
     elif not principal.is_admin and (gateway is None or gateway.membership_grants_models):
         # Managers are scoped like members: someone who looks after CS101 should
         # not be handing out ART200's models. Admins run the gateway itself and
@@ -276,6 +282,7 @@ async def permitted_aliases(
         scope = await _models_via_membership(session, principal.user_id)
         if scope is not None:
             reason = "the workspaces you belong to"
+            code = "membership"
 
     # The limits written on the key apply to everyone, admins included. The
     # workspace rules above are about who you are; this one is about what the
@@ -292,8 +299,9 @@ async def permitted_aliases(
         reason = (
             f"{reason}, and the list on this key" if reason else "the model list on this key"
         )
+        code = f"{code}+key" if code else "key"
 
-    return Permission(aliases=scope, reason=reason)
+    return Permission(aliases=scope, reason=reason, reason_code=code)
 
 
 async def _group_models(session: AsyncSession, group_ids) -> set[str]:

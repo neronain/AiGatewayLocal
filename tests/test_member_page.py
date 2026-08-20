@@ -85,3 +85,15 @@ def test_only_models_the_member_can_call_are_listed():
     # ห้ามกลับไปเติมแถวของโมเดลที่ไม่มีสิทธิ์
     assert "เรียกไม่ได้แล้ว" not in js
     assert "reachable" not in js
+
+
+def test_restriction_reason_reaches_the_page_as_a_code():
+    """หน้า member เป็นไทยทั้งหน้า — ประโยคอังกฤษของ audit log ไปแปะกลางประโยคไทยไม่ได้"""
+    from app.core.auth import Permission
+
+    assert Permission(aliases=None).reason_code == ""
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[1] / "app/static/member/member.js").read_text()
+    for code in ("workspace", "membership", "key", "workspace+key", "membership+key"):
+        assert f"'{code}'" in js or f"{code}:" in js, code

@@ -24,6 +24,7 @@ from typing import Any
 import httpx
 
 from app.core.passwords import SESSION_COOKIE
+from app.upstream.client import join_upstream
 
 TEST_VERSION = "1.1"
 
@@ -852,7 +853,7 @@ async def probe_backend(
     async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
         # 1. What is served?
         try:
-            response = await client.get(f"{base_url}/v1/models")
+            response = await client.get(join_upstream(base_url, "/v1/models"))
             response.raise_for_status()
             data = response.json().get("data") or []
             result.reachable = True
@@ -876,7 +877,7 @@ async def probe_backend(
         # llama.cpp reports the real window on /props, not on /v1/models.
         if result.context_tokens is None:
             try:
-                response = await client.get(f"{base_url}/props")
+                response = await client.get(join_upstream(base_url, "/props"))
                 n_ctx = (response.json().get("default_generation_settings") or {}).get("n_ctx")
                 if isinstance(n_ctx, int):
                     result.context_tokens = n_ctx
@@ -884,7 +885,7 @@ async def probe_backend(
                 result.notes.append("context window unknown; set it manually")
 
         model = result.upstream_model
-        chat_url = f"{base_url}/v1/chat/completions"
+        chat_url = join_upstream(base_url, "/v1/chat/completions")
 
         async def try_chat(payload: dict[str, Any]) -> httpx.Response | None:
             try:
@@ -1031,7 +1032,7 @@ async def probe_backend(
         anthropic = False
         try:
             response = await client.post(
-                f"{base_url}/v1/messages",
+                join_upstream(base_url, "/v1/messages"),
                 json={
                     "model": model,
                     "max_tokens": 16,

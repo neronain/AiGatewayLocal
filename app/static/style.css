@@ -264,6 +264,9 @@ pre {
   padding: 13px; overflow-x: auto; font: 0.7812rem/1.5 var(--mono); margin: 0;
 }
 .hint { color: var(--fg3); font-size: 0.75rem; line-height: 1.5; margin: 5px 0 0; }
+/* ช่องที่กรอกผิดแบบที่กู้คืนได้ทันที — ไม่ใช่ error ของทั้งฟอร์ม */
+input.bad { border-color: var(--bad); }
+.hint.err-text { color: var(--bad); }
 .empty { color: var(--fg3); font-size: 0.8125rem; padding: 14px 0; }
 
 /* ── surfaces ───────────────────────────────────────────────────────── */

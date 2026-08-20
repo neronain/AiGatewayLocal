@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import Principal, authenticate, permitted_aliases
 from app.core.capability import compatibility_badges
+from app.db.models import Workspace
 from app.db.session import get_session
 from app.registry.schema import ModelDefinition, Purpose
 from app.state import AppState, get_state
@@ -91,6 +92,8 @@ async def catalog(
         "access": {
             "restricted": permission.aliases is not None,
             "reason": permission.reason,
+            # รหัสไว้ให้หน้าเว็บแปลเอง — ดู Permission.reason_code
+            "reason_code": permission.reason_code,
         },
     }
 
@@ -210,11 +213,19 @@ async def me(
         session, principal.user_id, principal.workspace_id, ""
     )
     usage = await state.quota.usage_snapshot(principal.user_id, limits)
+    # ชื่อวิชา ไม่ใช่ id — id เป็นเลขฐานสิบหก 32 ตัวที่ไม่ได้บอกอะไรกับคนที่อ่านหน้านี้
+    # และเขาไม่มีทางเอาไปเทียบกับอะไรได้เลย
+    workspace = None
+    if principal.workspace_id:
+        row = await session.get(Workspace, principal.workspace_id)
+        if row is not None:
+            workspace = {"id": row.id, "code": row.code, "name": row.name, "term": row.term}
     return {
         "user_id": principal.user_id,
         "external_id": principal.external_id,
         "display_name": principal.display_name,
         "role": principal.role,
         "workspace_id": principal.workspace_id,
+        "workspace": workspace,
         "quota": usage,
     }

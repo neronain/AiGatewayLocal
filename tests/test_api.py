@@ -559,6 +559,30 @@ def test_me_reports_quota(client, member_key):
     assert "max_requests" in payload["quota"]["limits"]
 
 
+def test_me_names_the_workspace_instead_of_only_its_id(client, member_key):
+    """เจ้าของ key อ่าน id ฐานสิบหก 32 ตัวไม่ออก และเอาไปเทียบกับอะไรไม่ได้"""
+    workspace = client.post(
+        "/admin/workspaces",
+        json={"code": "CS101", "name": "Intro to Programming", "term": "1/2569"},
+        headers=auth(client.admin_key),
+    ).json()
+    user = client.post(
+        "/admin/users",
+        json={"external_id": "6499999999", "display_name": "Malee", "role": "member"},
+        headers=auth(client.admin_key),
+    ).json()
+    key = client.post(
+        "/admin/api-keys",
+        json={"user_id": user["id"], "name": "k", "workspace_id": workspace["id"]},
+        headers=auth(client.admin_key),
+    ).json()
+
+    payload = client.get("/v1/me", headers=auth(key["api_key"])).json()
+    assert payload["workspace_id"] == workspace["id"]
+    assert payload["workspace"]["code"] == "CS101"
+    assert payload["workspace"]["name"] == "Intro to Programming"
+
+
 # ---------------------------------------------------------------------------
 # Ops
 # ---------------------------------------------------------------------------

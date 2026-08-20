@@ -133,8 +133,11 @@ def test_fold_setup_runs_on_every_page_load_not_only_after_sign_in():
     js = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
     boot = js.split("async function boot()", 1)
     assert len(boot) == 2, "ไม่เจอ boot()"
-    head = boot[1][:600]
-    assert "setupFoldSections();" in head, "ต้องถูกเรียกที่ต้น boot() ไม่ใช่ที่อื่น"
-    assert "fold-all" in head and "unfold-all" in head
+    body = boot[1]
+    assert "setupFoldSections();" in body, "ต้องถูกเรียกใน boot() ไม่ใช่ที่อื่น"
+    assert "fold-all" in body and "unfold-all" in body
     # ต้องมาก่อนการเช็ค session — โครงหน้าไม่ได้ขึ้นกับว่าล็อกอินหรือยัง
-    assert head.index("setupFoldSections();") < head.index("auth/status")
+    #
+    # เทียบตำแหน่งกันตรง ๆ แทนการดูแค่ช่วงต้น N ตัวอักษร: หน้าต่างขนาดตายตัวจะพังทุกครั้ง
+    # ที่มีการเพิ่มบรรทัดไว้ต้น boot() ซึ่งไม่ได้แปลว่าลำดับผิด
+    assert body.index("setupFoldSections();") < body.index("auth/status")
