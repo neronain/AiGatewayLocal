@@ -36,6 +36,9 @@ class RegistrySnapshot:
     models: dict[str, ModelDefinition]
     errors: list[str] = field(default_factory=list)
     source_mtime: float = 0.0
+    # ลายนิ้วมือของ *ชุดไฟล์* ไม่ใช่แค่เวลาแก้ล่าสุด — ลบไฟล์ที่ใหม่ที่สุดทิ้งทำให้
+    # mtime สูงสุดลดลง การเทียบแบบ ">" จึงมองไม่เห็นการลบเลย
+    fingerprint: str = ""
 
     def get(self, alias: str) -> ModelDefinition | None:
         model = self.models.get(alias)
@@ -114,8 +117,25 @@ def load_snapshot(config_dir: Path) -> RegistrySnapshot:
     errors.extend(validate_routing(models))
 
     return RegistrySnapshot(
-        gateway=gateway, models=models, errors=errors, source_mtime=newest_mtime
+        gateway=gateway, models=models, errors=errors, source_mtime=newest_mtime,
+        fingerprint=fingerprint(config_dir),
     )
+
+
+def fingerprint(config_dir: Path) -> str:
+    """สถานะของไฟล์ทะเบียนแบบราคาถูก — stat อย่างเดียว ไม่ parse YAML
+
+    ใช้ตอบคำถามเดียว: "ของบนดิสก์ยังเป็นชุดเดิมกับที่โหลดไว้ไหม" ซึ่งต้องจับได้ทั้ง
+    แก้ไฟล์ เพิ่มไฟล์ และ *ลบ* ไฟล์
+    """
+    parts: list[str] = []
+    for path in (config_dir / "gateway.yaml", *sorted((config_dir / "models").glob("*.y*ml"))):
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        parts.append(f"{path.name}:{st.st_mtime_ns}:{st.st_size}")
+    return "|".join(parts)
 
 
 class RegistryStore:
@@ -129,6 +149,18 @@ class RegistryStore:
 
     @property
     def snapshot(self) -> RegistrySnapshot:
+        return self._snapshot
+
+    def refresh_if_stale(self) -> RegistrySnapshot:
+        """โหลดใหม่เมื่อไฟล์บนดิสก์ไม่ตรงกับที่ถืออยู่ — ราคาแค่ stat ไม่กี่ครั้ง
+
+        เกตเวย์รันหลาย worker และแต่ละตัวถือ snapshot ของตัวเอง · การแก้ทะเบียนผ่าน
+        คอนโซลลงไปที่ worker เดียว ตัวอื่นจึงยังตอบด้วยของเก่าไปอีกจนกว่ารอบ reload
+        จะมาถึง — คอนโซลที่ยิงซ้ำแล้วโดน worker คนละตัวจะเห็นผลไม่ตรงกัน และคำสั่งเขียน
+        ที่ยืนอยู่บนของเก่าเคย *เขียนไฟล์ที่เพิ่งถูกลบกลับคืนมา*
+        """
+        if fingerprint(self._config_dir) != self._snapshot.fingerprint:
+            return self.reload()
         return self._snapshot
 
     def reload(self) -> RegistrySnapshot:
@@ -168,8 +200,7 @@ class RegistryStore:
         while True:
             await asyncio.sleep(self._reload_seconds)
             try:
-                current = load_snapshot(self._config_dir)
-                if current.source_mtime > self._snapshot.source_mtime:
+                if fingerprint(self._config_dir) != self._snapshot.fingerprint:
                     log.info("registry change detected, reloading")
                     self.reload()
             except Exception:  # never let the watcher die

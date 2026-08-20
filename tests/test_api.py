@@ -617,3 +617,23 @@ def test_compatibility_results_drive_ready_status(client):
     )
     payload = client.get("/admin/models/coding/compatibility", headers=headers).json()
     assert payload["status"] == "DEGRADED"
+
+
+def test_disabling_a_model_whose_file_is_gone_does_not_recreate_it(writable_config, client):
+    """กด Delete แล้วกด Disable ตามติด เคยทำให้โมเดลที่ลบไปแล้วกลับมาอยู่บนดิสก์
+
+    เกตเวย์รันหลาย worker · Disable ไปโดน worker ที่ยังถือของเก่า มันเลยเขียนไฟล์ใหม่
+    จากหน่วยความจำทับที่เพิ่งลบไป
+    """
+    path = writable_config / "models" / "coding.yaml"
+    assert path.exists()
+
+    assert client.delete("/admin/models/coding", headers=auth(client.admin_key)).status_code == 200
+    assert not path.exists()
+
+    response = client.patch(
+        "/admin/models/coding/enabled", json={"enabled": False}, headers=auth(client.admin_key)
+    )
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "MODEL_NOT_FOUND"
+    assert not path.exists(), "ไฟล์ที่ลบไปแล้วต้องไม่ถูกเขียนกลับมา"

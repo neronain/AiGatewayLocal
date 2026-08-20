@@ -67,7 +67,21 @@ from app.registry.writer import (
 from app.state import AppState, get_state
 
 log = logging.getLogger(__name__)
-router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+def fresh_registry(state: AppState = Depends(get_state)) -> None:
+    """ให้ทุกคำขอฝั่งผู้ดูแลเห็นทะเบียนตามที่อยู่บนดิสก์จริง ณ ตอนนั้น
+
+    เกตเวย์รันหลาย worker · การลบโมเดลลงไปที่ worker เดียว ตัวที่เหลือยังคืนโมเดลนั้น
+    อยู่จนกว่ารอบ reload จะมา คอนโซลจึงเห็นแถวเด้งกลับมาเหมือนกดแล้วไม่ติด และคำสั่ง
+    ปิด/แก้ที่ตามมาเคยเขียนไฟล์ที่เพิ่งลบไปแล้วกลับคืนมาด้วย
+
+    ราคาคือ stat ไม่กี่ครั้งต่อคำขอ · ใส่เฉพาะ /admin ไม่แตะเส้นทางที่รับคำขอจริง
+    """
+    state.registry.refresh_if_stale()
+
+
+router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(fresh_registry)])
 
 # Parser names travel into a command on another machine. The pattern is as
 # narrow as it can be while still covering every real name.
@@ -2262,6 +2276,10 @@ async def set_model_enabled(
     # ปิดสวิตช์ไม่ควรทำให้คอมเมนต์ในไฟล์หาย — แก้เฉพาะบรรทัดนั้น ถ้าหาไม่เจอ
     # ค่อยถอยไปเขียนใหม่ทั้งไฟล์แบบเดิม
     path = model_path(state.settings.config_dir, alias)
+    if not path.exists():
+        # ไฟล์หายไประหว่างทาง — เขียนใหม่จากของในหน่วยความจำเท่ากับปลุกโมเดลที่เพิ่งถูก
+        # ลบให้กลับมา ซึ่งเคยเกิดจริงตอนคอนโซลกด Delete แล้วกด Disable ตามทันที
+        raise GatewayError(ErrorCode.MODEL_NOT_FOUND, f"No registry file for '{alias}'.")
     if not set_enabled_in_file(path, wanted, endpoint_name):
         path = write_model(state.settings.config_dir, updated)
     snapshot = state.registry.reload()
