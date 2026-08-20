@@ -2817,6 +2817,58 @@ async def usage_summary(
     }
 
 
+@router.get("/auto/preview")
+async def auto_preview(
+    prompt_tokens: int = Query(1000, ge=0, le=2_000_000),
+    vision: bool = Query(False, description="คำขอมีภาพไหม"),
+    tools: bool = Query(False, description="คำขอขอ tool ไหม"),
+    protocol: str = Query("openai"),
+    actor: Principal = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """`model="auto"` จะเลือกตัวไหน และเพราะอะไร
+
+    ใช้ตัวจัดอันดับตัวเดียวกับทางเดินคำขอจริง ไม่ได้เขียนสูตรซ้ำ — คำอธิบายกับของจริง
+    จึงเพี้ยนจากกันไม่ได้ · ตัวเลขที่โชว์คือสิ่งที่ตัวจัดอันดับใช้ตัดสินจริง ๆ
+    """
+    from app.core import auto as auto_mod
+    from app.core.auth import permitted_aliases
+    from app.core.multimodal import ImageRef, RequestProfile
+
+    snapshot = state.registry.snapshot
+    permission = await permitted_aliases(session, actor, snapshot.gateway)
+    allowed = [
+        m for m in snapshot.visible_to(actor.role)
+        if m.spec.enabled and permission.allows(m.alias)
+    ]
+    # ประกอบ profile แบบเดียวกับที่คำขอจริงถูกอ่านออกมา — ตัวจัดอันดับจะได้เห็นของ
+    # หน้าตาเหมือนกันเป๊ะ ไม่ใช่รูปแบบพิเศษที่ใช้เฉพาะหน้าพรีวิว
+    profile = RequestProfile(
+        modalities={"text", "image"} if vision else {"text"},
+        images=[ImageRef(source="preview", mime="image/png", size_bytes=0,
+                         url="", width=1024, height=1024)] if vision else [],
+        requires_tools=tools,
+        text_chars=prompt_tokens * 4,
+    )
+    rows = auto_mod.explain(
+        allowed, profile=profile, protocol=protocol,
+        prompt_tokens=prompt_tokens, perf=state.perf,
+    )
+    choice = auto_mod.choose(
+        allowed, profile=profile, protocol=protocol,
+        prompt_tokens=prompt_tokens, perf=state.perf,
+    )
+    return {
+        "asked": {"prompt_tokens": prompt_tokens, "vision": vision,
+                  "tools": tools, "protocol": protocol},
+        "chosen": choice.model.alias if choice else None,
+        "reason": choice.reason if choice else "ไม่มีโมเดลที่คุณใช้ได้ตัวไหนรับคำขอรูปนี้ได้",
+        "ranked": rows,
+        "min_samples": auto_mod.__dict__.get("MIN_SAMPLES") or 3,
+    }
+
+
 @router.get("/usage/savings")
 async def usage_savings(
     days: int = Query(30, ge=1, le=365),

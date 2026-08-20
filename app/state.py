@@ -14,6 +14,7 @@ from app.core.quota import (
     RedisCounterStore,
     ResilientCounterStore,
 )
+from app.core.perf import PerfStore
 from app.core.routing import Router
 from app.core.usage import UsageRecorder
 from app.db.session import get_sessionmaker
@@ -30,6 +31,8 @@ class AppState:
         )
         self.router = Router(self.registry)
         self.usage = UsageRecorder()
+        # ความเร็วที่วัดได้จากทราฟฟิกจริง — ใช้จัดอันดับให้ model="auto"
+        self.perf = PerfStore()
         self.redis = None
         self.counter_store: CounterStore = DatabaseCounterStore(get_sessionmaker())
         self.quota = QuotaService(

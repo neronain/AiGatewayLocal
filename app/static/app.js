@@ -503,6 +503,36 @@ function renderSavings(d) {
 }
 
 
+
+// ── model="auto" — อันดับตอนนี้ ────────────────────────────────────────────────
+//
+// ฟีเจอร์ที่ไม่โผล่ในหน้าเว็บเท่ากับไม่มีอยู่จริงสำหรับคนที่ใช้ผ่านคอนโซลล้วน ๆ ·
+// และ "เกตเวย์เลือกให้" จะเชื่อถือได้ก็ต่อเมื่ออธิบายได้ว่าเลือกจากอะไร
+async function loadAutoPreview() {
+  const body = $('auto-body');
+  if (!body) return;
+  const d = await api('/admin/auto/preview?prompt_tokens=1000');
+  const rows = (d.ranked || []).map((r) => `
+    <tr${r.rank === 1 ? ' class="auto-win"' : ''}>
+      <td>${r.rank}</td><td>${esc(r.alias)}</td>
+      <td class="num">${r.output_tps != null ? r.output_tps.toFixed(1) : '—'}</td>
+      <td class="num">${r.ttft_ms != null ? r.ttft_ms + ' ms' : '—'}</td>
+      <td class="num">${(r.context_tokens || 0).toLocaleString()}</td>
+      <td class="num">${r.samples || 0}</td></tr>`).join('');
+  body.innerHTML = rows ? `
+    <div class="hint" style="margin-bottom:8px">ตอนนี้จะเลือก
+      <strong>${esc(d.chosen || '—')}</strong> — ${esc(d.reason || '')}</div>
+    <table class="tbl"><thead><tr><th>#</th><th>โมเดล</th>
+      <th class="num">tok/s</th><th class="num">TTFT</th>
+      <th class="num">context</th><th class="num">ตัวอย่าง</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+    <p class="hint" style="margin:8px 0 0">ตัวเลขมาจากทราฟฟิกจริงที่ผ่านเกตเวย์ ·
+      ต้องเห็นอย่างน้อย ${d.min_samples} คำขอก่อนถึงจะนับ ตัวที่ยังไม่ถึงจะอยู่ท้ายแถว
+      แต่ยังถูกเลือกได้ถ้าไม่มีตัวอื่น</p>`
+    : `<div class="empty">${esc(d.reason || 'ยังไม่มีโมเดลที่รับคำขอตัวอย่างนี้ได้')}</div>`;
+}
+
+
 function renderHealth(report) {
   const rows = Object.values(report);
   $('health').innerHTML = `
@@ -2543,6 +2573,12 @@ async function load() {
     ]);
     renderUsage(summary, daily);
     loadSavings().catch(() => { /* รายงานเสริม ล้มแล้วไม่ควรทำให้หน้าแดชบอร์ดพัง */ });
+    const autoPanel = $('auto-panel');
+    if (autoPanel) {
+      autoPanel.hidden = false;
+      $('auto-refresh').onclick = () => loadAutoPreview().catch((e) => showError(e.message));
+      loadAutoPreview().catch(() => { /* เสริมเหมือนกัน */ });
+    }
   }
 }
 

@@ -937,3 +937,7 @@ table tr:not(.alias-row):not(.ep-row):hover > td {
 .savings-head { margin-bottom: 12px; }
 .savings-big { font-size: 2rem; font-weight: 650; line-height: 1.1; }
 #savings-panel select.mini { font-size: 12px; padding: 4px 8px; }
+
+/* ── อันดับของ model="auto" ── */
+#auto-panel .auto-win { font-weight: 600; }
+#auto-panel code { font-size: .9em; }

@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.35.2">
+<link rel="stylesheet" href="style.css?v=1.35.3">
 </head>
 <body>
 
@@ -169,6 +169,15 @@
 
     <div>
       <h2><span class="hi" data-icon="models" data-icon-size="15" aria-hidden="true"></span>Available AI models</h2>
+      <div class="panel" id="auto-panel" hidden>
+        <div class="panel-hd">
+          <div><h3><code>model: "auto"</code></h3>
+            <div class="sub">ให้เกตเวย์เลือกโมเดลที่เร็วที่สุดที่รับคำขอนั้นได้
+              จากตัวที่คีย์นั้นใช้ได้อยู่แล้ว</div></div>
+          <button id="auto-refresh" class="ghost small">ดูอันดับตอนนี้</button>
+        </div>
+        <div class="panel-bd"><div id="auto-body"></div></div>
+      </div>
       <div id="catalog"></div>
     </div>
     <div id="health-wrap" hidden>
@@ -727,6 +736,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.35.2"></script>
+<script src="app.js?v=1.35.3"></script>
 </body>
 </html>

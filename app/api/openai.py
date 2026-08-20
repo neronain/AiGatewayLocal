@@ -27,6 +27,7 @@ from app.core.auth import (
     authenticate,
     permitted_aliases,
 )
+from app.core import auto as auto_mod
 from app.core.capability import (
     compatibility_badges,
     upstream_model_for,
@@ -39,7 +40,7 @@ from app.core.multimodal import RequestProfile, profile_openai_request
 from app.core.quota import Consumption
 from app.core.routing import RETRYABLE_ERRORS, is_retryable_status
 from app.core.rules import fallback_models, resolve_route
-from app.core.tokens import TokenUsage, resolve_usage
+from app.core.tokens import TokenUsage, estimate_prompt_tokens, resolve_usage
 from app.db.session import get_session
 from app.registry.schema import Endpoint, ModelDefinition
 from app.state import AppState, get_state
@@ -137,6 +138,40 @@ async def run_chat(
         raise GatewayError(
             ErrorCode.INVALID_REQUEST, "'model' is required.", param="model"
         )
+
+    # model="auto" — ให้เกตเวย์เลือกเองจากรูปร่างของคำขอ
+    #
+    # ต้องมาก่อน _resolve_model เพราะ "auto" ไม่ใช่ alias ที่มีอยู่จริงใน registry ·
+    # ตัวเลือกจำกัดอยู่แค่โมเดลที่สมาชิกคนนั้นใช้ได้อยู่แล้ว — auto ไม่ใช่ทางลัด
+    # ข้ามสิทธิ์ที่แอดมินตั้งไว้
+    auto_choice = None
+    if alias == auto_mod.ALIAS:
+        snapshot = state.registry.snapshot
+        permission = await permitted_aliases(session, principal, snapshot.gateway)
+        allowed = [
+            m for m in snapshot.visible_to(principal.role)
+            if m.spec.enabled and permission.allows(m.alias)
+        ]
+        # profile ต้องรู้ policy ของโมเดล แต่ยังไม่รู้ว่าโมเดลไหน — ใช้ policy ระดับเกตเวย์
+        # ไปก่อนเพื่อดูรูปร่างคำขอ แล้วค่อย profile ใหม่ด้วย policy ตัวจริงหลังเลือกได้
+        draft = profile_openai_request(body, snapshot.gateway.vision_policy)
+        auto_choice = auto_mod.choose(
+            allowed,
+            profile=draft,
+            protocol="openai",
+            prompt_tokens=estimate_prompt_tokens(draft),
+            perf=state.perf,
+        )
+        if auto_choice is None:
+            raise GatewayError(
+                ErrorCode.MODEL_NOT_FOUND,
+                "ไม่มีโมเดลที่คุณใช้ได้ตัวไหนรับคำขอรูปนี้ได้ "
+                "(ลองระบุชื่อโมเดลตรง ๆ แทน auto)",
+                param="model",
+                details={"available_models": sorted(m.alias for m in allowed)},
+            )
+        alias = auto_choice.model.alias
+        log.info("auto -> %s (%s, request %s)", alias, auto_choice.reason, request_id)
 
     model = _resolve_model(state, alias, principal)
     await assert_model_permitted(
@@ -343,6 +378,15 @@ class _RequestContext:
             client_agent=self.client_agent,
         )
         await self.state.usage.submit(record)
+        # ตัวเลขชุดเดียวกับที่บันทึกลง UsageLog — ใช้ต่อทันทีสำหรับจัดอันดับ auto
+        # บันทึกด้วย alias ที่ *รันจริง* ไม่ใช่ที่สมาชิกขอ ไม่งั้นความเร็วของ coding-long
+        # จะไปโผล่ในสถิติของ coding
+        self.state.perf.record(
+            self.model.alias,
+            latency_ms=self.elapsed_ms,
+            ttft_ms=ttft_ms,
+            output_tokens=usage.output_tokens,
+        )
         await self.state.quota.record(
             self.principal.user_id,
             self.limits_window,
