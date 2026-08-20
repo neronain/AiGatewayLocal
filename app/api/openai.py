@@ -425,6 +425,11 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> JSONRespo
         headers={
             "x-request-id": ctx.request_id,
             "x-litegate-model": alias,
+            # ตัวที่ *รันจริง* — ต่างจาก x-litegate-model เมื่อกฎ routing เปลี่ยนเส้นทาง
+            # (coding -> coding-long เพราะคำขอยาวเกิน) · สัญญากับสมาชิกยังเหมือนเดิม
+            # คือขอ alias ไหนได้ alias นั้น แต่เวลาไล่ปัญหาต้องรู้ว่าใครตอบ ไม่งั้นตัวเลข
+            # เร็ว/ช้าที่วัดได้จะถูกโยงไปผิดโมเดล
+            "x-litegate-served-by": ctx.model.alias,
             # Legacy alias, one release only: scripts and dashboards still
             # read x-edullm-model.
             "x-edullm-model": alias,
@@ -567,6 +572,11 @@ async def _stream_chat(build: BuildRequest, ctx: _RequestContext) -> StreamingRe
             "x-accel-buffering": "no",  # nginx must not buffer SSE
             "x-request-id": ctx.request_id,
             "x-litegate-model": ctx.requested_alias,
+            # ตัวที่ *รันจริง* — ต่างจาก x-litegate-model เมื่อกฎ routing เปลี่ยนเส้นทาง
+            # (coding -> coding-long เพราะคำขอยาวเกิน) · สัญญากับสมาชิกยังเหมือนเดิม
+            # คือขอ alias ไหนได้ alias นั้น แต่เวลาไล่ปัญหาต้องรู้ว่าใครตอบ ไม่งั้นตัวเลข
+            # เร็ว/ช้าที่วัดได้จะถูกโยงไปผิดโมเดล
+            "x-litegate-served-by": ctx.model.alias,
             "x-edullm-model": ctx.requested_alias,
         },
     )

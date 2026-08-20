@@ -452,6 +452,57 @@ function renderCatalog(data) {
   }
 }
 
+
+// ── "ถ้าไม่ได้รันเอง จะจ่ายเท่าไร" ─────────────────────────────────────────────
+//
+// โรงเรียนที่ลงทุนซื้อเครื่องมารันเองต้องตอบผู้บริหารให้ได้ว่าคุ้มไหม · เรานับ token
+// ครบอยู่แล้ว ขาดแค่ตารางราคา — ตัวเลขนี้จึงได้มาโดยไม่ต้องเก็บอะไรเพิ่ม
+let savingsBaselines = null;
+
+async function loadSavings(baseline) {
+  const body = $('savings-body');
+  if (!body) return;
+  if (!savingsBaselines) {
+    const meta = await api('/admin/usage/savings/baselines');
+    savingsBaselines = meta.data || [];
+    const select = $('savings-baseline');
+    select.innerHTML = savingsBaselines
+      .map((b) => `<option value="${esc(b.id)}">${esc(b.label)}</option>`).join('');
+    select.value = baseline || meta.default;
+    select.onchange = () => loadSavings(select.value);
+  }
+  const chosen = baseline || $('savings-baseline').value;
+  const d = await api(`/admin/usage/savings?days=14&baseline=${encodeURIComponent(chosen)}`);
+  renderSavings(d);
+}
+
+function renderSavings(d) {
+  // ทราฟฟิกน้อย ๆ ปัดเป็น $0.00 จะอ่านเหมือนรายงานพัง — บอกว่า "น้อยกว่าหนึ่งเซนต์" ตรง ๆ
+  const money = (n) => {
+    const value = Number(n || 0);
+    if (value > 0 && value < 0.01) return '<$0.01';
+    return '$' + value.toLocaleString(undefined,
+      { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+  const rows = (d.by_model || []).slice(0, 8).map((r) => `
+    <tr><td>${esc(r.model)}</td>
+        <td class="num">${(r.requests || 0).toLocaleString()}</td>
+        <td class="num">${((r.input_tokens || 0) + (r.output_tokens || 0)).toLocaleString()}</td>
+        <td class="num">${money(r.would_have_cost_usd)}</td></tr>`).join('');
+  $('savings-body').innerHTML = `
+    <div class="savings-head">
+      <div class="savings-big">${money(d.would_have_cost_usd)}</div>
+      <div class="hint">ใน ${d.window_days} วัน · ${(d.requests || 0).toLocaleString()} คำขอ ·
+        เทียบกับ ${esc((d.baseline || {}).label || '')}</div>
+    </div>
+    ${rows ? `<table class="tbl"><thead><tr><th>โมเดล</th><th class="num">คำขอ</th>
+        <th class="num">token</th><th class="num">ถ้าจ่าย</th></tr></thead>
+      <tbody>${rows}</tbody></table>` : '<div class="empty">ยังไม่มีทราฟฟิกในช่วงนี้</div>'}
+    <p class="hint" style="margin:10px 0 0">${esc(d.caveat || '')} ·
+      ราคา ณ ${esc(d.prices_updated || '')}</p>`;
+}
+
+
 function renderHealth(report) {
   const rows = Object.values(report);
   $('health').innerHTML = `
@@ -2491,6 +2542,7 @@ async function load() {
       api('/admin/usage/daily?days=14'),
     ]);
     renderUsage(summary, daily);
+    loadSavings().catch(() => { /* รายงานเสริม ล้มแล้วไม่ควรทำให้หน้าแดชบอร์ดพัง */ });
   }
 }
 

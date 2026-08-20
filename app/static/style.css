@@ -932,3 +932,8 @@ table tr:not(.alias-row):not(.ep-row):hover > td {
 }
 .model-section-box[open] > summary::before { transform: rotate(90deg); }
 .model-section-box > summary:hover { opacity: .85; }
+
+/* ── รายงาน "ถ้าไม่ได้รันเอง" ── */
+.savings-head { margin-bottom: 12px; }
+.savings-big { font-size: 2rem; font-weight: 650; line-height: 1.1; }
+#savings-panel select.mini { font-size: 12px; padding: 4px 8px; }

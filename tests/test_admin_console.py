@@ -592,3 +592,37 @@ def test_managed_by_is_optional_in_the_registry(client):
     assert client.post(
         "/admin/models/preview", json=definition(), headers=auth(client.admin_key)
     ).status_code == 200
+
+
+@respx.mock
+def test_the_header_names_who_actually_answered(client, member_key):
+    """ขอ alias ไหนได้ alias นั้น — แต่ต้องรู้ด้วยว่าเบื้องหลังใครตอบ
+
+    กฎ routing เปลี่ยนเส้นทางได้ (coding -> coding-long เมื่อคำขอยาวเกิน) โดยเจตนา
+    ไม่เปลี่ยนชื่อที่ echo กลับไป · ก่อนหน้านี้จึงไม่มีทางรู้เลยว่าโมเดลไหนตอบจริง
+    ซึ่งทำให้ตัวเลขเร็ว/ช้าที่วัดได้ถูกโยงไปผิดตัว
+    """
+    respx.post("http://dgx03:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "c1",
+                "choices": [
+                    {"index": 0, "message": {"role": "assistant", "content": "hi"},
+                     "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+            },
+        )
+    )
+    response = client.post(
+        "/v1/chat/completions",
+        headers=auth(member_key),
+        json={"model": "coding", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.status_code == 200, response.text
+    # ไม่ได้ reroute → สองตัวนี้ตรงกัน · reroute เมื่อไรถึงจะต่าง
+    assert response.headers["x-litegate-model"] == "coding"
+    assert response.headers["x-litegate-served-by"] == "coding"
+    # ลายเซ็นติดมากับทุก response ผ่าน middleware
+    assert response.headers["x-litegate-by"] == "neronain"

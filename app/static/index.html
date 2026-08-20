@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.35.1">
+<link rel="stylesheet" href="style.css?v=1.35.2">
 </head>
 <body>
 
@@ -156,6 +156,14 @@
         <div class="panel-hd"><div><h3>Usage by model</h3>
           <div class="sub">share of requests</div></div></div>
         <div class="panel-bd"><div id="usage-bars"></div></div>
+      </div>
+      <div class="panel" id="savings-panel">
+        <div class="panel-hd">
+          <div><h3>ถ้าไม่ได้รันเอง</h3>
+            <div class="sub">ทราฟฟิกช่วงนี้ถ้าวิ่งผ่าน API เชิงพาณิชย์จะจ่ายเท่าไร</div></div>
+          <select id="savings-baseline" class="mini"></select>
+        </div>
+        <div class="panel-bd"><div id="savings-body"></div></div>
       </div>
     </div>
 
@@ -719,6 +727,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.35.1"></script>
+<script src="app.js?v=1.35.2"></script>
 </body>
 </html>

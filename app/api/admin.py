@@ -2817,6 +2817,98 @@ async def usage_summary(
     }
 
 
+@router.get("/usage/savings")
+async def usage_savings(
+    days: int = Query(30, ge=1, le=365),
+    baseline: str = Query("", description="รหัส baseline จาก /usage/savings/baselines"),
+    workspace_id: str | None = None,
+    actor: Principal = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """ทราฟฟิกชุดนี้ถ้าวิ่งผ่าน API เชิงพาณิชย์จะจ่ายเท่าไร
+
+    โรงเรียนที่ลงทุนซื้อเครื่องมารันเองต้องตอบผู้บริหารให้ได้ว่าคุ้มไหม · เรานับ token
+    ครบอยู่แล้ว ขาดแค่ตารางราคา — ตัวเลขนี้จึงได้มาโดยไม่ต้องเก็บอะไรเพิ่ม
+
+    เป็น **ประมาณการเพื่อเปรียบเทียบ ไม่ใช่ใบแจ้งหนี้**: ราคาที่ใช้เป็นราคา list ณ วันที่
+    ระบุใน `prices_updated` และไม่ได้คิดส่วนลดตามปริมาณ, prompt caching, หรือ batch API
+    ซึ่งผู้ให้บริการมีให้ · ตัวเลขจริงจะต่ำกว่านี้ได้ ตรงนี้บอกไว้ตรง ๆ ดีกว่าปล่อยให้เข้าใจ
+    ว่าเป็นตัวเลขที่เถียงไม่ได้
+    """
+    from app.core import pricing
+
+    await state.usage.flush()
+    since = datetime.now(UTC) - timedelta(days=days)
+    chosen = baseline if baseline in pricing.BASELINES else pricing.DEFAULT_BASELINE
+
+    stmt = (
+        select(
+            UsageLog.model_alias,
+            func.count(UsageLog.id),
+            func.sum(UsageLog.text_input_tokens),
+            func.sum(UsageLog.visual_input_tokens),
+            func.sum(UsageLog.output_tokens),
+        )
+        .where(UsageLog.ts >= since, UsageLog.status == "success")
+        .group_by(UsageLog.model_alias)
+    )
+    if workspace_id:
+        await _assert_owns(session, actor, workspace_id)
+        stmt = stmt.where(UsageLog.workspace_id == workspace_id)
+    visible = await _visible_users(session, actor)
+    if visible is not None:
+        stmt = stmt.where(UsageLog.user_id.in_(visible))
+    rows = (await session.execute(stmt)).all()
+
+    by_model = []
+    total_in = total_out = total_requests = 0
+    for alias, requests, text_in, visual_in, out in rows:
+        # token ภาพคิดเป็น input เหมือนกัน — ผู้ให้บริการก็เก็บเงินแบบนั้น
+        model_in = int(text_in or 0) + int(visual_in or 0)
+        model_out = int(out or 0)
+        total_in += model_in
+        total_out += model_out
+        total_requests += requests
+        by_model.append({
+            "model": alias,
+            "requests": requests,
+            "input_tokens": model_in,
+            "output_tokens": model_out,
+            "would_have_cost_usd": round(pricing.estimate(chosen, model_in, model_out), 6),
+        })
+    by_model.sort(key=lambda r: r["would_have_cost_usd"], reverse=True)
+
+    price = pricing.BASELINES[chosen]
+    return {
+        "window_days": days,
+        "baseline": {"id": chosen, "label": price.label},
+        "prices_updated": pricing.PRICES_UPDATED,
+        "requests": total_requests,
+        "input_tokens": total_in,
+        "output_tokens": total_out,
+        # ปัด 2 ตำแหน่งทำให้ทราฟฟิกเล็ก ๆ กลายเป็น 0.00 ซึ่งอ่านแล้วเหมือนรายงานพัง
+        # เก็บความละเอียดไว้ แล้วให้หน้าเว็บเป็นคนตัดสินใจว่าจะแสดงยังไง
+        "would_have_cost_usd": round(pricing.estimate(chosen, total_in, total_out), 6),
+        "by_model": by_model,
+        "caveat": (
+            "ประมาณการจากราคา list — ไม่ได้คิดส่วนลดตามปริมาณ, prompt caching "
+            "หรือ batch API ที่ผู้ให้บริการมีให้ · ตัวเลขจริงอาจต่ำกว่านี้"
+        ),
+    }
+
+
+@router.get("/usage/savings/baselines")
+async def savings_baselines(
+    actor: Principal = Depends(require_manager),
+) -> dict[str, Any]:
+    """รายการ baseline ให้หน้าเว็บทำ dropdown — ไม่ hardcode ซ้ำฝั่ง client"""
+    from app.core import pricing
+
+    return {"data": pricing.catalogue(), "default": pricing.DEFAULT_BASELINE,
+            "prices_updated": pricing.PRICES_UPDATED}
+
+
 @router.get("/usage/daily")
 async def usage_daily(
     days: int = Query(14, ge=1, le=90),
