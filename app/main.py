@@ -228,7 +228,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
         title="LiteGate",
-        version="1.3.0",
+        version=config.VERSION,
         description=(
             "Capability-aware, multimodal AI gateway for education. "
             "OpenAI-compatible and Anthropic-compatible."
@@ -334,7 +334,7 @@ def create_app() -> FastAPI:
     async def root():
         return {
             "service": "LiteGate",
-            "version": "1.3.0",
+            "version": config.VERSION,
             "docs": "/docs",
             "console": "/console",
             "health": "/healthz",

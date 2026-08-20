@@ -58,3 +58,17 @@ def test_catalog_sections_can_be_folded():
     assert "remembered === null ? index === 0" in js
     css = (ROOT / "app" / "static" / "style.css").read_text(encoding="utf-8")
     assert ".model-section-box" in css
+
+
+def test_the_version_has_one_source():
+    """เดิมฝังเลขเวอร์ชันตายสองที่ใน main.py แล้วลืมอัปตอน bump — `/` ประกาศเลขเก่าค้าง"""
+    import tomllib
+
+    main = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
+    assert '"1.' not in main.split("def create_app")[1][:2000], "อย่าฝังเลขเวอร์ชันใน main.py"
+    assert "config.VERSION" in main
+
+    declared = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert config.VERSION == declared["project"]["version"], (
+        "config.VERSION กับ pyproject ต้องตรงกัน ไม่งั้นเลขที่ประกาศออกไปเชื่อไม่ได้"
+    )

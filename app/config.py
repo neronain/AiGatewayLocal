@@ -22,6 +22,10 @@ AUTHOR_URL = "https://www.facebook.com/neronain.minidev"
 PRODUCT = "LiteGate"
 LICENSE_NOTE = "MIT — attribution required"
 
+# แหล่งเดียวของเลขเวอร์ชัน · เดิมฝังตายสองที่ใน main.py แล้วลืมอัปทั้งคู่
+# ตอน bump — `/` จึงประกาศ 1.3.0 อยู่หลายรอบทั้งที่ pyproject ขึ้น 1.4.0 แล้ว
+VERSION = "1.4.0"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
