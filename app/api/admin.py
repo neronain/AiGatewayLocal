@@ -64,6 +64,7 @@ from app.registry.writer import (
     validate_definition,
     write_model,
 )
+from app.core.secrets import SecretStoreError
 from app.state import AppState, get_state
 
 log = logging.getLogger(__name__)
@@ -2397,6 +2398,74 @@ async def delete_model_definition(
     await audit(session, request, actor, "model.delete", "model", alias)
     await session.commit()
     return {"alias": alias, "deleted": True}
+
+
+class SecretIn(BaseModel):
+    value: str
+
+
+@router.get("/secrets")
+async def list_secret_status(
+    actor: Principal = Depends(require_admin),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """คีย์ไหนตั้งไว้แล้วบ้าง — ชื่อกับสถานะเท่านั้น ไม่มีค่าจริง
+
+    รายชื่อมาจากสิ่งที่ทะเบียนอ้างถึงจริง ไม่ใช่ทุกอย่างที่เคยเก็บไว้ ผู้ดูแลจะได้เห็นตรง
+    กับที่ตัวเองตั้งค่าไว้ในหน้าโมเดล
+    """
+    names = [
+        endpoint.api_key_env
+        for model in state.registry.snapshot.models.values()
+        for endpoint in model.spec.endpoints
+        if endpoint.api_key_env
+    ]
+    # รวมชื่อที่เก็บไว้แล้วแต่ยังไม่มีโมเดลไหนอ้างถึงด้วย — ตอนกำลัง *เพิ่ม* โมเดลใหม่
+    # ยังไม่มีอะไรในทะเบียนที่ชี้มาที่คีย์นี้ ถ้าไม่รวมเข้าไป คนที่เพิ่งกดบันทึกคีย์จะเห็น
+    # หน้าเว็บบอกว่า "ยังไม่มีคีย์" ทั้งที่เพิ่งใส่ไปเมื่อครู่
+    names.extend(state.secrets.stored_names())
+    return {"secrets": state.secrets.status(names)}
+
+
+@router.put("/secrets/{name}")
+async def set_secret(
+    name: str,
+    payload: SecretIn,
+    request: Request,
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """เก็บคีย์ของผู้ให้บริการปลายทาง
+
+    ไม่มีทางอ่านกลับออกมาทาง API — ตั้งทับได้อย่างเดียว · audit log บันทึกแค่ว่าใคร
+    ตั้งคีย์ชื่อไหนเมื่อไร ไม่มีค่าอยู่ในนั้น
+    """
+    try:
+        state.secrets.set(name, payload.value)
+    except SecretStoreError as exc:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
+    await audit(session, request, actor, "secret.set", "secret", name)
+    await session.commit()
+    status = state.secrets.status([name])[0]
+    return {"name": name, "set": True, "source": status["source"]}
+
+
+@router.delete("/secrets/{name}")
+async def delete_secret(
+    name: str,
+    request: Request,
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    removed = state.secrets.delete(name)
+    if not removed:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, f"No stored key named '{name}'.")
+    await audit(session, request, actor, "secret.delete", "secret", name)
+    await session.commit()
+    # ค่าที่ตั้งไว้ในสภาพแวดล้อมของ process ลบจากที่นี่ไม่ได้ และไม่ควรทำเงียบ ๆ
+    return {"name": name, "deleted": True, "still_set_from_env": state.secrets.is_set(name)}
 
 
 class ProbeIn(BaseModel):

@@ -125,7 +125,8 @@ def catalogue() -> list[dict]:
             "health_path": p.health_path, "auth": p.auth,
             "speaks_openai": p.speaks_openai, "speaks_anthropic": p.speaks_anthropic,
             "note": p.note, "docs": p.docs,
-            "suggested_env": f"{p.id.upper()}_API_KEY",
+            # ชื่อต้องใช้เป็นตัวแปรสภาพแวดล้อมได้ · id อย่าง "minimax-cn" มีขีดกลาง
+            "suggested_env": f"{p.id.upper().replace('-', '_')}_API_KEY",
         }
         for p in CLOUD.values()
     ]

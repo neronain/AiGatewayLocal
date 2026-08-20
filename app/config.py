@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     # (git, vetted); mirrored binaries land in tools_dir (writable, git-ignored).
     # auto_sync stays OFF by design: we become the trust anchor once a school
     # runs what we hand them, so promotion is a conscious human step, never a pull.
+    # คีย์ของผู้ให้บริการปลายทางที่ผู้ดูแลตั้งจากหน้าเว็บ · แยกจาก config_dir โดยตั้งใจ
+    # เพราะ config อยู่ใน git และถูก render ออกหน้าเว็บทั้งไฟล์ · ดู app/core/secrets.py
+    secrets_file: Path = Path("./data/secrets.json")
     tools_dir: Path = Path("./data/tools")
     tools_registry_file: Path = Path("./config/tools.yaml")
     tools_auto_sync: bool = False

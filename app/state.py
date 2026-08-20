@@ -18,6 +18,7 @@ from app.core.perf import PerfStore
 from app.core.routing import Router
 from app.core.usage import UsageRecorder
 from app.db.session import get_sessionmaker
+from app.core.secrets import SecretStore
 from app.registry.store import RegistryStore
 
 log = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ class AppState:
         self.registry = RegistryStore(
             settings.config_dir, settings.registry_reload_seconds
         )
+        self.secrets = SecretStore(settings.secrets_file)
         self.router = Router(self.registry)
         self.usage = UsageRecorder()
         # ความเร็วที่วัดได้จากทราฟฟิกจริง — ใช้จัดอันดับให้ model="auto"

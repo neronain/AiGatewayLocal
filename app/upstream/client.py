@@ -19,6 +19,7 @@ import httpx
 from app.core import providers
 from app.config import get_settings
 from app.core.errors import ErrorCode, GatewayError
+from app.core.secrets import SecretStore
 from app.registry.schema import Endpoint, ServerType
 
 log = logging.getLogger(__name__)
@@ -79,6 +80,22 @@ async def close_client() -> None:
 _API_PREFIXES = re.compile(r"/(v\d+[a-z]*|openai)$")
 
 
+_secret_store: SecretStore | None = None
+
+
+def _secrets() -> SecretStore:
+    """ที่เก็บคีย์ของผู้ให้บริการ · ตัวเดียวต่อ process เหมือน client pool ข้างบน
+
+    เดิมอ่านจาก os.environ ตรง ๆ ซึ่งแปลว่าคีย์ตั้งได้ทางเดียวคือแก้ไฟล์บนเซิร์ฟเวอร์
+    แล้ว restart · ผู้ดูแลที่ใช้แต่หน้าเว็บจึงเพิ่มผู้ให้บริการออนไลน์ไม่ได้เลย
+    os.environ ยังชนะเสมอ ดู SecretStore.resolve
+    """
+    global _secret_store
+    if _secret_store is None:
+        _secret_store = SecretStore(get_settings().secrets_file)
+    return _secret_store
+
+
 def upstream_url(endpoint: Endpoint, path: str) -> str:
     """Map a gateway path to the backend path for this server type.
 
@@ -114,7 +131,7 @@ def upstream_headers(endpoint: Endpoint, incoming: dict[str, str]) -> dict[str, 
     }
     headers["content-type"] = "application/json"
     if endpoint.api_key_env:
-        key = os.environ.get(endpoint.api_key_env, "")
+        key = _secrets().resolve(endpoint.api_key_env)
         if key:
             # ผู้ให้บริการส่วนใหญ่รับ Authorization: Bearer · Anthropic ไม่รับ ใช้ x-api-key
             # และบังคับ anthropic-version · ส่งผิดแบบได้ 401 ที่อ่านแล้วนึกว่าคีย์ผิด
@@ -127,7 +144,8 @@ def upstream_headers(endpoint: Endpoint, incoming: dict[str, str]) -> dict[str, 
                 headers["authorization"] = f"Bearer {key}"
         else:
             log.warning(
-                "endpoint %s declares api_key_env=%s but it is unset",
+                "endpoint %s declares api_key_env=%s but no value is set "
+                "(neither in the environment nor in the console's key store)",
                 endpoint.name,
                 endpoint.api_key_env,
             )

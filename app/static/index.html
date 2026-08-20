@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.35.9">
+<link rel="stylesheet" href="style.css?v=1.35.10">
 </head>
 <body>
 
@@ -704,9 +704,18 @@
         <input class="ep-upstream" placeholder="same as the model's" autocomplete="off">
       </div>
       <div class="field">
-        <label>API key env var (optional)</label>
+        <label>ชื่อช่องเก็บคีย์</label>
         <input class="ep-keyenv" placeholder="MINIMAX_API_KEY" autocomplete="off">
-        <p class="hint ep-keyenv-hint">ชื่อตัวแปร ไม่ใช่ตัวคีย์ — ตัวคีย์ตั้งไว้ในสภาพแวดล้อมของเครื่องที่รันเกตเวย์</p>
+        <p class="hint ep-keyenv-hint">ชื่อช่อง ไม่ใช่ตัวคีย์ — ตัวคีย์กรอกในช่องถัดไป</p>
+      </div>
+      <div class="field ep-secret-field">
+        <label>API key <span class="ep-secret-state hint"></span></label>
+        <div class="row tight">
+          <input class="ep-secret" type="password" autocomplete="new-password"
+                 placeholder="วางคีย์ที่ได้จากผู้ให้บริการ">
+          <button type="button" class="ghost small ep-secret-save">บันทึกคีย์</button>
+        </div>
+        <p class="hint ep-secret-hint">เก็บแยกจากไฟล์ตั้งค่า อ่านกลับออกมาไม่ได้ · ตั้งชื่อช่องด้านซ้ายก่อน</p>
       </div>
       <div class="field">
         <label>Priority (higher wins)</label>
@@ -751,6 +760,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.35.9"></script>
+<script src="app.js?v=1.35.10"></script>
 </body>
 </html>

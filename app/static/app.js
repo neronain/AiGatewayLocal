@@ -627,6 +627,18 @@ function setupFoldSections(root = document) {
 // เติมให้เอง แต่ยังแก้ทับได้ทุกช่อง — บางบัญชีอยู่คนละภูมิภาคและใช้ endpoint คนละตัว
 let cloudProviders = null;
 
+let secretStatus = {};
+
+/* คีย์ไหนตั้งไว้แล้วบ้าง — ชื่อกับสถานะเท่านั้น ค่าจริงไม่เคยออกจากเซิร์ฟเวอร์
+ * ใช้ตอบคำถามเดียวที่ผู้ตั้งค่าอยากรู้: "กรอกไปแล้วหรือยัง" */
+async function loadSecrets() {
+  try {
+    const { secrets } = await api('/admin/secrets');
+    secretStatus = Object.fromEntries((secrets || []).map((s) => [s.name, s]));
+  } catch { secretStatus = {}; }
+  return secretStatus;
+}
+
 async function loadProviders() {
   if (cloudProviders) return cloudProviders;
   try {
@@ -1155,16 +1167,67 @@ function addEndpointRow(data = {}) {
   // จะปฏิเสธอยู่แล้ว แต่กว่าจะรู้ก็ผ่านไปหลายขั้น — บอกตรงนี้ตอนที่ยังแก้ง่าย
   const keyenv = q('ep-keyenv');
   const keyenvHint = q('ep-keyenv-hint');
+  const secret = q('ep-secret');
+  const secretState = q('ep-secret-state');
+  const secretHint = q('ep-secret-hint');
+
+  // ถ้าเผลอวางคีย์ลงช่องชื่อ ให้ย้ายไปช่องที่ถูกให้เลย ดีกว่าบอกว่าผิดแล้วปล่อยค้าง
+  const looksLikeAKey = (v) => v && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(v);
   const checkKeyEnv = () => {
     const value = keyenv.value.trim();
-    const bad = value && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+    const bad = looksLikeAKey(value);
     keyenv.classList.toggle('bad', !!bad);
     keyenvHint.classList.toggle('err-text', !!bad);
     keyenvHint.textContent = bad
-      ? 'นี่คือตัวคีย์ ไม่ใช่ชื่อตัวแปร — ใส่ชื่อ เช่น MINIMAX_API_KEY แล้วเอาตัวคีย์ไปตั้งเป็น env var บนเครื่องที่รันเกตเวย์'
-      : 'ชื่อตัวแปร ไม่ใช่ตัวคีย์ — ตัวคีย์ตั้งไว้ในสภาพแวดล้อมของเครื่องที่รันเกตเวย์';
+      ? 'นี่คือตัวคีย์ — ย้ายไปช่อง API key ทางขวา แล้วช่องนี้ใส่ชื่อ เช่น MINIMAX_API_KEY'
+      : 'ชื่อช่อง ไม่ใช่ตัวคีย์ — ตัวคีย์กรอกในช่องถัดไป';
+    if (bad && !secret.value) { secret.value = value; }
+    refreshSecretState();
   };
   keyenv.addEventListener('input', checkKeyEnv);
+
+  // ชื่อช่องเก็บคีย์ตั้งเองไม่ต้องคิด เมื่อเลือกผู้ให้บริการแล้ว
+  q('ep-server').addEventListener('change', () => {
+    if (keyenv.value.trim()) return;
+    const suggested = (cloudProviders || [])
+      .find((x) => x.id === q('ep-server').value)?.suggested_env;
+    if (suggested) { keyenv.value = suggested; checkKeyEnv(); }
+  });
+
+  function refreshSecretState() {
+    const name = keyenv.value.trim();
+    const known = secretStatus[name];
+    secretState.classList.toggle('ok-text', !!known?.set);
+    secretState.textContent = !name
+      ? ''
+      : known?.set
+        ? (known.source === 'env' ? `· ${name} ตั้งไว้แล้วในสภาพแวดล้อมของเครื่อง` : `· ${name} ตั้งไว้แล้ว`)
+        : `· ${name} ยังไม่มีคีย์`;
+    secretHint.textContent = known?.source === 'env'
+      ? 'ค่านี้มาจากสภาพแวดล้อมของ process ซึ่งชนะเสมอ — บันทึกที่นี่จะยังไม่มีผลจนกว่าจะเอาออกจากที่นั่น'
+      : 'เก็บแยกจากไฟล์ตั้งค่า อ่านกลับออกมาไม่ได้ · ตั้งชื่อช่องด้านซ้ายก่อน';
+  }
+
+  q('ep-secret-save').onclick = async () => {
+    const name = keyenv.value.trim();
+    const value = secret.value.trim();
+    if (looksLikeAKey(name) || !name) {
+      keyenv.classList.add('bad');
+      keyenvHint.classList.add('err-text');
+      keyenvHint.textContent = 'ตั้งชื่อช่องก่อน เช่น MINIMAX_API_KEY หรือ GEMINI_API_KEY';
+      return;
+    }
+    if (!value) { secret.focus(); return; }
+    try {
+      await api(`/admin/secrets/${encodeURIComponent(name)}`,
+                { method: 'PUT', body: JSON.stringify({ value }) });
+      // ค่าจริงไม่ต้องค้างอยู่ในหน้าเว็บอีก — เซิร์ฟเวอร์เก็บแล้ว และอ่านกลับไม่ได้อยู่แล้ว
+      secret.value = '';
+      await loadSecrets();
+      refreshSecretState();
+    } catch (e) { showError(e.message); }
+  };
+
   checkKeyEnv();
 
   $('endpoints').appendChild(node);
@@ -2894,6 +2957,7 @@ function setupAliasCheck() {
   // อันแรก) ผลคือคนที่เปิดหน้าด้วย session เดิม — ซึ่งคือเกือบทุกครั้ง — ไม่เคยเห็นปุ่มเลย
   setupFoldSections();
   loadProviders().then(() => fillProviderOptions());
+  loadSecrets();
   $('fold-all').onclick = () => foldAllInTab(true);
   $('unfold-all').onclick = () => foldAllInTab(false);
   let status;

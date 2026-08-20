@@ -276,6 +276,9 @@ input.bad { border-color: var(--bad); }
 .chip:hover { border-color: var(--accent); color: var(--fg); }
 .chip.on { border-color: var(--accent); background: var(--accent-bg); color: var(--fg); font-weight: 600; }
 .hint.err-text { color: var(--bad); }
+.hint.ok-text { color: var(--ok); }
+.row.tight { display: flex; gap: 8px; align-items: center; }
+.row.tight input { flex: 1 1 auto; min-width: 0; }
 .empty { color: var(--fg3); font-size: 0.8125rem; padding: 14px 0; }
 
 /* ── surfaces ───────────────────────────────────────────────────────── */
