@@ -83,15 +83,27 @@ assumes a particular sector.
 ```bash
 git clone https://github.com/neronain/AiGatewayLocal.git
 cd AiGatewayLocal
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-
-# Terminal 1 — a stand-in model server, no GPU needed
-.venv/bin/python scripts/mock_backend.py --port 8000
-
-# Terminal 2 — point an alias at it, then run the gateway
-sed -i '' 's#http://dgx03:8000#http://127.0.0.1:8000#' config/models/coding.yaml
-.venv/bin/uvicorn app.main:app --port 8080
+./install.sh --demo
 ```
+
+That is the whole thing. It checks Python, builds the venv, generates the
+secrets, points the sample aliases at a local stand-in backend, starts both
+processes, sends one real request through `/v1/chat/completions` to prove the
+path works, and prints the console URL with the credentials to sign in.
+
+<details>
+<summary>Prefer to run the pieces yourself</summary>
+
+```bash
+./install.sh --no-start      # venv, .env, config — nothing started
+
+.venv/bin/python scripts/mock_backend.py --port 8000    # terminal 1
+.venv/bin/uvicorn app.main:app --port 8080              # terminal 2
+```
+
+`--port` moves the gateway, `LITEGATE_MOCK_PORT` moves the stand-in backend.
+
+</details>
 
 The log prints a bootstrap admin key once.
 
@@ -112,10 +124,23 @@ secure context, editor extensions, anything that treats `http://` as a
 misconfiguration. So TLS is part of installing, not something to retrofit:
 
 ```bash
-sudo scripts/install_tls.sh                         # private CA, names detected
-sudo scripts/install_tls.sh gateway.example.ac.th   # add a name
-sudo scripts/install_tls.sh --cert full.pem --key key.pem   # a certificate you already have
+sudo scripts/install_tls.sh
 ```
+
+Run it with no arguments. It finds this machine's hostname and LAN addresses,
+adds `localhost` and `127.0.0.1`, shows you the list and asks whether anything
+should be added — **press Enter and you are done**. A domain is not required; a
+LAN address is a perfectly good name to put on a certificate.
+
+```bash
+sudo scripts/install_tls.sh gateway.example.ac.th          # a name you own, in addition
+sudo scripts/install_tls.sh --cert /path/to/fullchain.pem --key /path/to/privkey.pem
+```
+
+Those two paths are examples — replace them with your own files. The script
+checks both exist, are readable, parse as PEM, and belong together *before* it
+touches nginx, because a mismatched pair otherwise surfaces as an nginx error
+several steps later.
 
 What it leaves running:
 

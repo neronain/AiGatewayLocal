@@ -54,19 +54,74 @@ done
 [[ -n "$OWN_CERT" && -z "$OWN_KEY" ]] && die "--cert also needs --key"
 [[ -z "$OWN_CERT" && -n "$OWN_KEY" ]] && die "--key also needs --cert"
 
+# ตรวจไฟล์ตั้งแต่ตอนนี้ ก่อนจะไปลง nginx หรือแตะอะไรในระบบ
+#
+# เจอจริง: คนก๊อปตัวอย่างจาก README ทั้งบรรทัด — `--cert full.pem --key key.pem` —
+# ซึ่งเป็นชื่อสมมติ แล้วได้ `install: cannot stat 'full.pem'` โผล่มากลางการติดตั้ง
+# ตอนที่ apt ลง nginx ไปแล้ว · ข้อความนั้นไม่ได้บอกว่าเขาต้องเอาไฟล์จริงมาจากไหน
+for pair in "cert:$OWN_CERT" "key:$OWN_KEY"; do
+    label="${pair%%:*}" file="${pair#*:}"
+    [[ -z "$file" ]] && continue
+    [[ -e "$file" ]] || die "--${label} ชี้ไปที่ '$file' ซึ่งไม่มีไฟล์นั้นอยู่
+    ถ้ายังไม่มีใบรับรองของตัวเอง ให้รันโดยไม่ต้องใส่ --cert/--key
+    สคริปต์จะออกใบให้เองจาก CA ส่วนตัว ซึ่งพอสำหรับวงแลน"
+    [[ -r "$file" ]] || die "--${label}: อ่าน '$file' ไม่ได้ (ลองใส่ path เต็ม)"
+    [[ -s "$file" ]] || die "--${label}: '$file' เป็นไฟล์ว่าง"
+done
+if [[ -n "$OWN_CERT" ]]; then
+    openssl x509 -in "$OWN_CERT" -noout >/dev/null 2>&1 \
+        || die "--cert: '$OWN_CERT' ไม่ใช่ใบรับรอง PEM ที่อ่านได้"
+    openssl pkey -in "$OWN_KEY" -noout >/dev/null 2>&1 \
+        || die "--key: '$OWN_KEY' ไม่ใช่ private key PEM ที่อ่านได้"
+    # คู่ที่ไม่แมตช์กันทำให้ nginx ไม่ยอมสตาร์ต และข้อความของ nginx อ่านยากกว่านี้มาก
+    cert_mod="$(openssl x509 -in "$OWN_CERT" -noout -modulus 2>/dev/null | openssl md5)"
+    key_mod="$(openssl pkey -in "$OWN_KEY" -noout -pubout 2>/dev/null | openssl md5)"
+    cert_pub="$(openssl x509 -in "$OWN_CERT" -noout -pubkey 2>/dev/null | openssl md5)"
+    [[ "$cert_pub" == "$key_mod" ]] \
+        || die "--cert กับ --key ไม่ใช่คู่กัน (public key ไม่ตรง) — nginx จะไม่ยอมสตาร์ต"
+fi
+
 # ── names ──────────────────────────────────────────────────────────────────
 # A certificate covering the hostname does not cover the IP, and operators
 # reach a LAN box by whichever they happened to write down. Cover both, or the
 # first person to use the other one gets a warning page and assumes it broke.
-if [[ ${#NAMES[@]} -eq 0 ]]; then
-    NAMES+=("$(hostname)")
+detect_names() {
+    local found=() fqdn ip
+    found+=("$(hostname)")
     fqdn="$(hostname -f 2>/dev/null || true)"
-    [[ -n "$fqdn" && "$fqdn" != "$(hostname)" ]] && NAMES+=("$fqdn")
+    [[ -n "$fqdn" && "$fqdn" != "$(hostname)" ]] && found+=("$fqdn")
     while read -r ip; do
-        [[ -n "$ip" ]] && NAMES+=("$ip")
+        [[ -n "$ip" ]] && found+=("$ip")
     done < <(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9.]+$' || true)
+    # เครื่องในวงแลนถูกเรียกด้วย localhost อยู่เสมอ ทั้งจากสคริปต์บนเครื่องเองและตอนทดสอบ
+    # ใบที่ไม่ครอบสองชื่อนี้ทำให้ curl บนเครื่องตัวเองยังขึ้นเตือน ซึ่งอ่านเหมือนติดตั้งพลาด
+    found+=("localhost" "127.0.0.1")
+    printf '%s\n' "${found[@]}" | awk 'NF && !seen[$0]++'
+}
+
+if [[ ${#NAMES[@]} -eq 0 ]]; then
+    mapfile -t NAMES < <(detect_names)
+
+    # ถามก่อนออกใบ เมื่อรันจากมือคนจริง ๆ
+    #
+    # คู่มือเขียนตัวอย่างเป็น gateway.example.ac.th ซึ่งทำให้คนที่ลงในวงแลนไม่มีโดเมน
+    # ไม่รู้ว่าต้องใส่อะไร · ที่จริงไม่ต้องใส่อะไรเลยก็ได้ — ชื่อเครื่องกับ IP ที่ตรวจเจอ
+    # ใช้ได้ทันที · การถามตรงนี้เปลี่ยน "เดาว่าต้องมีโดเมน" เป็น "กด Enter ผ่าน"
+    if [[ -z "${TLS_ASSUME_YES:-}" && -t 0 ]]; then
+        echo
+        log "ใบรับรองนี้จะครอบคลุมชื่อ/ที่อยู่ที่ตรวจเจอบนเครื่องนี้:"
+        for n in "${NAMES[@]}"; do echo "     · $n"; done
+        echo
+        echo "   ถ้าใช้ในวงแลนภายใน กด Enter ผ่านได้เลย — ไม่ต้องมีโดเมน"
+        echo "   ถ้ามีชื่อที่จะเรียกเพิ่ม (โดเมน, IP อื่น, ชื่อที่ตั้งใน hosts) พิมพ์ต่อท้ายได้"
+        echo
+        printf '   ชื่อเพิ่มเติม (คั่นด้วยช่องว่าง, Enter = ไม่เพิ่ม): '
+        read -r extra || extra=""
+        for n in $extra; do NAMES+=("$n"); done
+        mapfile -t NAMES < <(printf '%s\n' "${NAMES[@]}" | awk 'NF && !seen[$0]++')
+    fi
 fi
-[[ ${#NAMES[@]} -gt 0 ]] || die "could not work out any name for this host; pass one"
+[[ ${#NAMES[@]} -gt 0 ]] || die "หาชื่อของเครื่องนี้ไม่ได้ — ใส่มาเองสักชื่อ เช่น: sudo $0 10.0.0.5"
 log "Certificate will cover: ${NAMES[*]}"
 
 command -v nginx >/dev/null 2>&1 || {
@@ -75,6 +130,38 @@ command -v nginx >/dev/null 2>&1 || {
 }
 
 # ── certificate ────────────────────────────────────────────────────────────
+# ใบที่ยังไม่หมดอายุแต่ไม่ครอบชื่อที่เรากำลังจะประกาศ = หน้าเตือนของเบราว์เซอร์
+#
+# เจอจริง: สคริปต์เติม localhost/127.0.0.1 ให้อัตโนมัติทีหลัง ใบที่ออกไว้ก่อนหน้านั้น
+# จึงไม่ครอบ แต่โค้ดเดิมดูแค่ "หมดอายุหรือยัง" แล้วพิมพ์ว่าเก็บใบเดิมไว้ ตามด้วย URL
+# ที่ใบนั้นไม่ครอบ · ผู้ติดตั้งเห็นข้อความว่าสำเร็จ แล้วเปิดเบราว์เซอร์เจอคำเตือน
+cert_covers_all() {
+    local cert="$1"; shift
+    local san name entry wanted
+    san="$(openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null || true)"
+    [[ -n "$san" ]] || return 1
+
+    # เทียบทีละรายการแบบเต็มชื่อ ไม่ใช่ substring — `DNS:host` ไปตรงกับ
+    # `DNS:host.example.local` ได้ถ้าเทียบแบบ substring แล้วจะสรุปว่าครอบทั้งที่ไม่ครอบ
+    local -a entries=()
+    while IFS= read -r entry; do
+        entry="${entry#"${entry%%[![:space:]]*}"}"   # ตัดช่องว่างหน้า
+        entry="${entry%"${entry##*[![:space:]]}"}"   # ตัดช่องว่างหลัง
+        [[ -n "$entry" ]] && entries+=("$entry")
+    done < <(printf '%s\n' "$san" | tr ',' '\n' | grep -E '^\s*(DNS|IP Address):')
+
+    for name in "$@"; do
+        if [[ "$name" =~ ^[0-9.]+$ ]]; then wanted="IP Address:${name}"; else wanted="DNS:${name}"; fi
+        local hit=1
+        for entry in "${entries[@]}"; do
+            [[ "$entry" == "$wanted" ]] && { hit=0; break; }
+        done
+        [[ $hit -eq 0 ]] || return 1
+    done
+    return 0
+}
+
+
 if [[ -n "$OWN_CERT" ]]; then
     log "Using the certificate you supplied"
     install -m 644 "$OWN_CERT" "$CERT_PATH"
@@ -83,12 +170,15 @@ if [[ -n "$OWN_CERT" ]]; then
     # first-visit warning that HSTS makes unbypassable cannot happen.
     [[ -z "$HSTS" ]] && HSTS="yes"
 elif [[ -z "$FORCE" && -s "$CERT_PATH" && -s "$KEY_PATH" ]] && \
-     openssl x509 -in "$CERT_PATH" -checkend 604800 -noout >/dev/null 2>&1; then
+     openssl x509 -in "$CERT_PATH" -checkend 604800 -noout >/dev/null 2>&1 && \
+     cert_covers_all "$CERT_PATH" "${NAMES[@]}"; then
     # ยังไม่หมดอายุ = ไม่ต้องออกใหม่ · แต่ "ยังไม่หมดอายุ" ไม่ได้แปลว่า "ยังใช้ได้"
     # เพิ่มชื่อใหม่ (โฮสต์ที่จะเรียกเพิ่ม, IP ที่เปลี่ยน) แล้วใบเดิมจะไม่ครอบคลุม
-    # และก่อนมี --force ทางเดียวคือไปลบไฟล์เองซึ่งไม่มีใครเดาถูก
-    log "Keeping the existing certificate (valid for more than a week) - use --force to reissue"
+    log "Keeping the existing certificate (valid, and covers every name above)"
 else
+    if [[ -z "$FORCE" && -s "$CERT_PATH" ]] && ! cert_covers_all "$CERT_PATH" "${NAMES[@]}"; then
+        log "ใบเดิมยังไม่หมดอายุ แต่ไม่ครอบทุกชื่อข้างบน — ออกใบใหม่ให้"
+    fi
     log "Issuing a certificate from a private CA"
     "$REPO_DIR/scripts/make_tls_cert.sh" --out "$CA_OUT" "${NAMES[@]}" >/dev/null
     install -m 644 "$CA_OUT/${SITE_NAME}.crt" "$CERT_PATH"
@@ -142,8 +232,17 @@ echo
 if [[ -n "$OWN_CERT" ]]; then
     echo "  Certificate: the one you supplied."
 elif [[ -s "$CA_OUT/ca.crt" ]]; then
-    echo "  Install ${CA_OUT}/ca.crt on the machines that will call this gateway,"
-    echo "  and TLS verifies properly - no --insecure, no warning page."
+    echo "  ใบนี้ออกจาก CA ส่วนตัวของเครื่องนี้ (พอสำหรับวงแลนภายใน ไม่ต้องมีโดเมนจริง)"
+    echo "  เครื่องที่จะเรียกเกตเวย์ต้องติดตั้ง CA ก่อน ไม่งั้นจะขึ้นหน้าเตือน:"
+    echo
+    echo "    ไฟล์ที่ต้องเอาไปคือ  ${CA_OUT}/ca.crt"
+    echo
+    echo "    Ubuntu/Debian : sudo cp ca.crt /usr/local/share/ca-certificates/litegate.crt && sudo update-ca-certificates"
+    echo "    macOS         : sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ca.crt"
+    echo "    Windows       : certutil -addstore -f Root ca.crt   (Run as administrator)"
+    echo "    Firefox       : Settings → Privacy & Security → Certificates → View Certificates → Authorities → Import"
+    echo
+    echo "  ยังไม่อยากติดตั้ง CA ก็ใช้พอร์ตธรรมดา http://${primary}:${APP_PORT} ได้ตามเดิม"
 fi
 if [[ "$HSTS" == "yes" ]]; then
     echo

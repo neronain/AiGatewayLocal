@@ -98,6 +98,11 @@ def load_snapshot(config_dir: Path) -> RegistrySnapshot:
     models_dir = config_dir / "models"
     if models_dir.is_dir():
         for path in sorted(models_dir.glob("*.y*ml")):
+            # ไฟล์ที่ขึ้นต้นด้วยจุดไม่เคยเป็น config ที่ตั้งใจ · macOS แถม `._ชื่อไฟล์`
+            # มาให้เองเวลาแตกไฟล์จาก zip/tar หรือก๊อปผ่าน USB แล้วมันไม่ใช่ UTF-8
+            # ด้วยซ้ำ — ปล่อยไว้ = ผู้ติดตั้งเจอ error สามบรรทัดที่ไม่ได้เกิดจากอะไรที่เขาทำ
+            if path.name.startswith("."):
+                continue
             newest_mtime = max(newest_mtime, path.stat().st_mtime)
             try:
                 definition = ModelDefinition.model_validate(_load_yaml(path))
@@ -129,7 +134,9 @@ def fingerprint(config_dir: Path) -> str:
     แก้ไฟล์ เพิ่มไฟล์ และ *ลบ* ไฟล์
     """
     parts: list[str] = []
-    for path in (config_dir / "gateway.yaml", *sorted((config_dir / "models").glob("*.y*ml"))):
+    candidates = [p for p in sorted((config_dir / "models").glob("*.y*ml"))
+                  if not p.name.startswith(".")]
+    for path in (config_dir / "gateway.yaml", *candidates):
         try:
             st = path.stat()
         except OSError:

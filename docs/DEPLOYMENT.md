@@ -1,5 +1,10 @@
 # Deployment Guide
 
+**Just evaluating it?** Do not read this yet — `./install.sh --demo` from the
+repository root brings the whole thing up on one machine in a couple of minutes,
+with a stand-in backend so no GPU is needed. This guide is for the install that
+has to survive a reboot.
+
 Three supported paths. Pick one:
 
 | Path | Use when | Time |
@@ -744,7 +749,20 @@ SANs. Call it directly if you want the files without touching nginx.
 
 List **every** name the gateway will be reached by. A certificate for the
 hostname does not cover the IP, and clients differ in which they send —
-`install_tls.sh` defaults to the hostname plus every non-loopback address.
+`install_tls.sh` defaults to the hostname, every non-loopback address, plus
+`localhost` and `127.0.0.1`.
+
+**On a LAN with no domain**, run it with no arguments. It shows the names it
+found and asks whether to add any; pressing Enter accepts them. A certificate
+over `192.168.1.10` is a real certificate — a domain buys public trust, which is
+exactly what a LAN install does not need. What it does need is the CA installed
+on the machines that will call the gateway, and the script prints the command
+for Ubuntu, macOS, Windows and Firefox when it finishes.
+
+Re-running after the addresses change reissues automatically: the script now
+compares the names against the certificate's SANs, not just its expiry date. A
+certificate that is still valid but no longer covers the address in use produces
+a browser warning, which reads to everyone involved as a broken install.
 
 ### One gateway, two addresses, one cookie jar
 
