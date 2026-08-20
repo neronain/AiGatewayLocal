@@ -30,6 +30,7 @@ async def healthz(state: AppState = Depends(get_state)) -> dict[str, Any]:
         "models_loaded": len(state.registry.snapshot.models),
         # ลายเซ็นอยู่ใน endpoint ที่ทุก deployment เรียกใช้ — monitoring, load balancer,
         # และคนที่ curl ดูว่าเกตเวย์ตัวไหนตอบอยู่ · MIT บังคับให้คงประกาศลิขสิทธิ์ไว้
+        "version": config.VERSION,
         "product": config.PRODUCT,
         "built_by": config.AUTHOR,
         "author_url": config.AUTHOR_URL,

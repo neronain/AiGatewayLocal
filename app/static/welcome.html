@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LiteGate · AI Gateway</title>
+<meta name="description" content="เกตเวย์สำหรับโมเดลภาษาที่รันบนเครื่องของคุณเอง">
+<!-- หน้าเดียวจบ ไม่ดึงอะไรจากเน็ตเลย — ไซต์ปลายทางหลายแห่งอยู่หลัง proxy หรือไม่มี
+     ทางออกอินเทอร์เน็ต · โลโก้เป็น SVG inline ฟอนต์ใช้ของระบบ -->
+<style>
+:root{
+  --bg:#f6f7f9; --card:#fff; --line:#e2e5ea; --fg:#16191d; --fg2:#576070; --fg3:#858d9b;
+  --accent:#1f5fbf; --accent-bg:#e9f0fc; --ok:#17703f; --ok-bg:#e6f4ec;
+  --c1:#06b6d4; --c2:#3b82f6; --c3:#8b5cf6;
+  --g:linear-gradient(135deg,var(--c2),var(--c3));
+  --g-soft:linear-gradient(135deg,rgba(59,130,246,.10),rgba(139,92,246,.10));
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans Thai",sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --shadow:0 1px 2px rgba(16,24,40,.04),0 1px 3px rgba(16,24,40,.06);
+  --shadow-lg:0 10px 30px rgba(16,24,40,.10);
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#0e1116; --card:#161a21; --line:#262c36; --fg:#e8eaee; --fg2:#9aa4b2; --fg3:#6b7480;
+    --accent:#7fb0f5; --accent-bg:#0f1f33; --ok:#56d38a; --ok-bg:#10291c;
+    --g-soft:linear-gradient(135deg,rgba(59,130,246,.16),rgba(139,92,246,.16));
+    --shadow:0 1px 2px rgba(0,0,0,.4); --shadow-lg:0 10px 34px rgba(0,0,0,.5);
+  }
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--fg); font-family:var(--sans);
+  line-height:1.55; -webkit-font-smoothing:antialiased;
+}
+a{color:inherit}
+.wrap{max-width:1000px;margin:0 auto;padding:0 22px}
+
+/* ── ส่วนหัว ── */
+.hero{position:relative;overflow:hidden;padding:72px 0 56px;text-align:center}
+.hero::before{
+  content:"";position:absolute;inset:-40% 0 auto;height:520px;background:var(--g-soft);
+  filter:blur(60px);pointer-events:none;
+}
+.hero>*{position:relative}
+.mark{
+  width:76px;height:76px;margin:0 auto 20px;border-radius:20px;background:var(--g);
+  display:grid;place-items:center;color:#fff;box-shadow:var(--shadow-lg);
+}
+h1{margin:0;font-size:clamp(2rem,5vw,2.9rem);letter-spacing:-.03em;font-weight:700}
+.tag{margin:10px auto 0;max-width:620px;color:var(--fg2);font-size:1.06rem}
+.status{
+  display:inline-flex;align-items:center;gap:8px;margin-top:22px;padding:7px 15px;
+  border:1px solid var(--line);background:var(--card);border-radius:999px;
+  font-size:.8rem;color:var(--fg2);box-shadow:var(--shadow);
+}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none}
+.dot.off{background:var(--fg3)}
+
+/* ── ทางเข้า ── */
+.doors{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:18px;padding:8px 0 12px}
+.door{
+  display:block;text-decoration:none;background:var(--card);border:1px solid var(--line);
+  border-radius:16px;padding:24px;box-shadow:var(--shadow);
+  transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease;
+}
+.door:hover{transform:translateY(-3px);box-shadow:var(--shadow-lg);border-color:var(--accent)}
+.door:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.door-ic{
+  width:44px;height:44px;border-radius:12px;display:grid;place-items:center;
+  background:var(--accent-bg);color:var(--accent);margin-bottom:14px;
+}
+.door h2{margin:0 0 6px;font-size:1.16rem;letter-spacing:-.01em}
+.door p{margin:0;color:var(--fg2);font-size:.93rem}
+.door .go{display:inline-flex;align-items:center;gap:6px;margin-top:14px;color:var(--accent);font-weight:600;font-size:.9rem}
+
+/* ── สิ่งที่ระบบนี้ทำ ── */
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;padding:34px 0 8px}
+.fact h3{margin:0 0 4px;font-size:.95rem}
+.fact p{margin:0;color:var(--fg2);font-size:.88rem}
+.fact .fic{color:var(--accent);margin-bottom:8px;display:block}
+
+/* ── สำหรับนักพัฒนา ── */
+.dev{
+  margin:34px 0 10px;background:var(--card);border:1px solid var(--line);
+  border-radius:16px;padding:22px;box-shadow:var(--shadow);
+}
+.dev h3{margin:0 0 4px;font-size:1rem}
+.dev p{margin:0 0 12px;color:var(--fg2);font-size:.9rem}
+pre{
+  margin:0;padding:14px 16px;background:var(--bg);border:1px solid var(--line);
+  border-radius:10px;overflow-x:auto;font-family:var(--mono);font-size:.78rem;line-height:1.7;
+}
+.copy{
+  margin-top:10px;padding:7px 13px;border:1px solid var(--line);background:var(--card);
+  color:var(--fg);border-radius:8px;font:inherit;font-size:.83rem;cursor:pointer;
+}
+.copy:hover{border-color:var(--accent);color:var(--accent)}
+
+footer{
+  margin-top:46px;padding:20px 0 30px;border-top:1px solid var(--line);
+  display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:.8rem;color:var(--fg3);
+}
+footer a{color:inherit}
+footer .grow{flex:1}
+footer strong{color:var(--fg2);font-weight:600}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header class="hero">
+    <div class="mark" aria-hidden="true">
+      <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 7h4M4 12h4M4 17h4M16 7h4M16 12h4M16 17h4"/>
+        <rect x="9" y="4" width="6" height="16" rx="2"/><path d="M12 9v6"/>
+      </svg>
+    </div>
+    <h1>LiteGate</h1>
+    <p class="tag">
+      เกตเวย์สำหรับโมเดลภาษาที่รันบนเครื่องของคุณเอง —
+      พูดภาษาเดียวกับ OpenAI และ Anthropic แจกสิทธิ์เป็นรายคน และนับโควตาให้ครบ
+    </p>
+    <div class="status" id="status">
+      <span class="dot off" id="dot"></span><span id="status-text">กำลังตรวจสถานะ…</span>
+    </div>
+  </header>
+
+  <main>
+    <div class="doors">
+      <a class="door" href="/console/">
+        <span class="door-ic" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/>
+            <rect x="14" y="10" width="7" height="11" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/>
+          </svg>
+        </span>
+        <h2>คอนโซลผู้ดูแล</h2>
+        <p>เพิ่มโมเดล ออก API key จัดวิชาและกลุ่มสิทธิ์ ตั้งโควตา ดูการใช้งานและสุขภาพเครื่อง</p>
+        <span class="go">เข้าสู่คอนโซล →</span>
+      </a>
+
+      <a class="door" href="/console/member/">
+        <span class="door-ic" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="8" r="3.5"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/>
+          </svg>
+        </span>
+        <h2>สิทธิ์ของฉัน</h2>
+        <p>มี API key อยู่แล้ว? วางคีย์เพื่อดูว่าคุณเรียกโมเดลอะไรได้ โควตาเหลือเท่าไร และใช้ไปกับอะไรบ้าง</p>
+        <span class="go">ตรวจสอบสิทธิ์ →</span>
+      </a>
+    </div>
+
+    <section class="facts">
+      <div class="fact">
+        <span class="fic" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.7" stroke-linecap="round"><path d="M15.5 18L21 12l-5.5-6M8.5 6L3 12l5.5 6"/></svg>
+        </span>
+        <h3>ต่อได้เลยไม่ต้องแก้โค้ด</h3>
+        <p>รับทั้ง OpenAI และ Anthropic API — Claude Code, Codex และ SDK ทั่วไปชี้มาที่นี่ได้ทันที</p>
+      </div>
+      <div class="fact">
+        <span class="fic" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        </span>
+        <h3>โควตารายคน ไม่ใช่รายคีย์</h3>
+        <p>ออกคีย์ได้หลายใบต่อคน แต่โควตานับรวมที่ตัวคน — ทำคีย์หายแล้วออกใหม่ได้โดยไม่กระทบยอด</p>
+      </div>
+      <div class="fact">
+        <span class="fic" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.7" stroke-linecap="round"><rect x="4" y="10" width="16" height="10" rx="2"/>
+          <path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+        </span>
+        <h3>ข้อมูลอยู่กับคุณ</h3>
+        <p>โมเดลรันบนเครื่องของคุณเอง เนื้อหาที่ถามไม่ถูกบันทึกลงบันทึกการใช้งาน</p>
+      </div>
+      <div class="fact">
+        <span class="fic" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.7" stroke-linecap="round"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/>
+          <path d="M9 12l2 2 4-4"/></svg>
+        </span>
+        <h3>ล้มเครื่องเดียวไม่ล้มทั้งงาน</h3>
+        <p>ชื่อโมเดลหนึ่งชี้ได้หลายเครื่อง เครื่องที่ป่วยถูกข้ามให้เองโดยผู้ใช้ไม่รู้สึก</p>
+      </div>
+    </section>
+
+    <section class="dev">
+      <h3>สำหรับนักพัฒนา</h3>
+      <p>ใช้ SDK ของ OpenAI ได้เลย เปลี่ยนแค่ base URL กับคีย์</p>
+      <pre id="snippet">curl <span id="base">…</span>/v1/chat/completions \
+  -H "Authorization: Bearer &lt;API key ของคุณ&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"auto","messages":[{"role":"user","content":"สวัสดี"}]}'</pre>
+      <button class="copy" id="copy">คัดลอกคำสั่ง</button>
+      <span id="copied" style="font-size:.83rem;color:var(--ok);margin-left:8px"></span>
+    </section>
+  </main>
+
+  <footer>
+    <strong>LiteGate</strong>
+    <span>created by <a href="https://www.facebook.com/neronain.minidev" target="_blank"
+      rel="noopener">neronain</a></span>
+    <span class="grow"></span>
+    <span id="ver"></span>
+    <a href="/docs">API docs</a>
+    <a href="/healthz">Health</a>
+    <span>MIT — attribution required</span>
+  </footer>
+</div>
+
+<script>
+// สถานะจริงจากเกตเวย์ — หน้าแรกที่บอกไม่ได้ว่าระบบยังอยู่ไหม ก็เป็นแค่โปสเตอร์
+(async function () {
+  const base = location.origin;
+  document.getElementById('base').textContent = base;
+  try {
+    const r = await fetch('/healthz', { cache: 'no-store' });
+    const d = await r.json();
+    document.getElementById('dot').className = 'dot';
+    document.getElementById('status-text').textContent =
+      `พร้อมใช้งาน · ${d.models_loaded} โมเดล`;
+    document.getElementById('ver').textContent = 'v' + (d.version || '');
+  } catch {
+    document.getElementById('status-text').textContent = 'ติดต่อเกตเวย์ไม่ได้';
+  }
+})();
+
+document.getElementById('copy').onclick = async () => {
+  const text = document.getElementById('snippet').innerText;
+  try {
+    await navigator.clipboard.writeText(text);
+    document.getElementById('copied').textContent = 'คัดลอกแล้ว';
+    setTimeout(() => { document.getElementById('copied').textContent = ''; }, 1800);
+  } catch {
+    document.getElementById('copied').textContent = 'คัดลอกไม่ได้ — เลือกข้อความเอง';
+  }
+};
+</script>
+</body>
+</html>

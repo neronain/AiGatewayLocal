@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import Counter, Gauge, Histogram
 from sqlalchemy import or_, select, update
@@ -331,7 +331,17 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/", include_in_schema=False)
-    async def root():
+    async def root(request: Request):
+        """หน้าต้อนรับสำหรับคน · JSON เดิมสำหรับเครื่อง
+
+        เดิมคืน JSON ให้ทุกคน — คนที่เปิดที่อยู่ของเกตเวย์ในเบราว์เซอร์เป็นครั้งแรกจึงเจอ
+        ก้อน JSON ที่ไม่บอกว่าจะไปต่อทางไหน · แต่ script และ monitoring ที่ยิงมาที่ `/`
+        อยู่แล้วต้องไม่พัง จึงแยกด้วย Accept: ขอ HTML มา = ได้หน้า อย่างอื่น = ได้ JSON เดิม
+        """
+        wants_html = "text/html" in request.headers.get("accept", "")
+        page = settings.config_dir.parent / "app" / "static" / "welcome.html"
+        if wants_html and page.is_file():
+            return FileResponse(page, media_type="text/html; charset=utf-8")
         return {
             "service": "LiteGate",
             "version": config.VERSION,
