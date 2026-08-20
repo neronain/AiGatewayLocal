@@ -151,27 +151,27 @@ function renderAccessNote(catalog) {
  * ถามอยู่สองอย่างเท่านั้น — "ฉันใช้อะไรได้" กับ "ฉันใช้ไปเท่าไร" — ซึ่งเป็นคำถามของ
  * โมเดลตัวเดียวกัน การแยกกันทำให้ต้องเลื่อนขึ้นลงเทียบเอง
  *
- * โมเดลที่เคยใช้แต่ตอนนี้เรียกไม่ได้แล้วยังโชว์อยู่ท้ายตาราง — ตัวเลขที่หายไปเฉย ๆ
- * อ่านเหมือนระบบนับผิด */
+ * ตารางนี้แสดงเฉพาะโมเดลที่สิทธิ์ปัจจุบันเรียกได้ · โมเดลที่เคยใช้แต่ถูกถอนสิทธิ์ไปแล้ว
+ * ไม่ต้องขึ้น เพราะผู้ใช้เข้ามาดูว่า "ตอนนี้" ใช้อะไรได้ ไม่ใช่ประวัติสิทธิ์ */
 function renderUsage(usage, catalog) {
   const allowed = (catalog.sections || []).flatMap((s) => s.models);
   const byAlias = new Map(allowed.map((m) => [m.id, m]));
   const used = new Map((usage.by_model || []).map((r) => [r.model, r]));
 
-  const rows = [];
-  for (const model of [...byAlias.values()].sort((a, b) =>
-      (used.get(b.id)?.requests || 0) - (used.get(a.id)?.requests || 0))) {
-    rows.push({ model, use: used.get(model.id), reachable: true });
-  }
-  for (const [alias, use] of used) {
-    if (!byAlias.has(alias)) rows.push({ model: { id: alias, name: alias, badges: [] }, use, reachable: false });
-  }
+  // เฉพาะโมเดลที่ *เรียกได้ตอนนี้* · โมเดลที่เคยใช้แต่ถูกถอนสิทธิ์ไปแล้วไม่ขึ้นในตาราง
+  // — หน้านี้ตอบว่า "ตอนนี้ฉันใช้อะไรได้" การโชว์ของที่กดแล้วโดนปฏิเสธคือชวนให้ลอง
+  //
+  // ผลข้างเคียงที่ยอมรับ: ยอดรายวันด้านล่างเป็นยอดจริงทั้งหมด จึงอาจมากกว่าผลรวม
+  // ของแถวในตารางถ้าเคยใช้โมเดลที่ตอนนี้ไม่มีสิทธิ์แล้ว
+  const rows = [...byAlias.values()]
+    .sort((a, b) => (used.get(b.id)?.requests || 0) - (used.get(a.id)?.requests || 0))
+    .map((model) => ({ model, use: used.get(model.id) }));
 
-  const body = rows.map(({ model, use, reachable }) => `
-    <tr${reachable ? '' : ' class="gone"'}>
+  const body = rows.map(({ model, use }) => `
+    <tr>
       <td>
         <div class="mname">${esc(model.name || model.id)}</div>
-        <div class="hint mono">${esc(model.id)}${reachable ? '' : ' · เรียกไม่ได้แล้ว'}</div>
+        <div class="hint mono">${esc(model.id)}</div>
       </td>
       <td class="caps">${(model.badges || []).map(capIcon).join('')}</td>
       <td class="num">${use ? fmt(use.requests) : '—'}</td>

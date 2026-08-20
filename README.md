@@ -9,17 +9,33 @@ Members get an alias and a key; you keep the machines, the limits and the audit 
 
 [![CI](https://github.com/neronain/AiGatewayLocal/actions/workflows/ci.yml/badge.svg)](https://github.com/neronain/AiGatewayLocal/actions/workflows/ci.yml)
 [![version](https://img.shields.io/badge/version-1.4.0-1f5fbf)](pyproject.toml)
-[![tests](https://img.shields.io/badge/tests-397-17703f)](tests/)
+[![tests](https://img.shields.io/badge/tests-537-17703f)](tests/)
 [![python](https://img.shields.io/badge/python-3.11%2B-3776ab)](pyproject.toml)
 [![APIs](https://img.shields.io/badge/API-OpenAI%20%C2%B7%20Anthropic-8b5cf6)](docs/API.md)
 [![license](https://img.shields.io/badge/license-MIT-17703f)](LICENSE)
 
-**[Deploy](docs/DEPLOYMENT.md)** · **[API](docs/API.md)** · **[Architecture](docs/ARCHITECTURE.md)** · **[Runbook](docs/RUNBOOK.md)** · **[LMDS — the deploy side](https://github.com/neronain/AutoDeployDGXProject)**
+**[Deploy](docs/DEPLOYMENT.md)** · **[API](docs/API.md)** · **[Ports & network](docs/NETWORK.md)** · **[Architecture](docs/ARCHITECTURE.md)** · **[Runbook](docs/RUNBOOK.md)** · **[LMDS — the deploy side](https://github.com/neronain/AutoDeployDGXProject)**
 
 Created and maintained by **neronain** — [facebook.com/neronain.minidev](https://www.facebook.com/neronain.minidev)
 
 MIT licensed — you may fork and build on this commercially, but the copyright
 notice stays. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+</div>
+
+## What it looks like
+
+<div align="center">
+
+<img src="docs/img/welcome.png" alt="หน้าต้อนรับของเกตเวย์ — ทางเข้าคอนโซลผู้ดูแลและหน้าตรวจสิทธิ์ของสมาชิก" width="820">
+
+<sub>หน้าแรกที่ `/` — บอกสถานะจริงของระบบ และมีทางเข้าสองทางชัดเจน</sub>
+
+<br><br>
+
+<img src="docs/img/member-signin.png" alt="หน้าตรวจสิทธิ์ของสมาชิก" width="820">
+
+<sub>`/console/member/` — สมาชิกวาง API key ของตัวเอง แล้วเห็นว่าใช้โมเดลอะไรได้ โควตาเหลือเท่าไร และใช้ไปกับอะไร</sub>
 
 </div>
 
@@ -735,6 +751,7 @@ Together: LMDS deploys a model with a controller; once proved in service, that c
 |---|---|
 | **[DEPLOYMENT.md](docs/DEPLOYMENT.md)** | Docker / systemd / staging, Postgres + Redis, TLS, backup and restore, monitoring, troubleshooting |
 | **[API.md](docs/API.md)** | Full endpoint reference with examples |
+| **[NETWORK.md](docs/NETWORK.md)** | Every port and protocol the gateway speaks, who talks to whom, and what changes behind a reverse proxy or a forwarded port |
 | **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Pipeline, modules, design decisions and their costs |
 | **[RUNBOOK.md](docs/RUNBOOK.md)** | What to do when an alert fires — one section per alert |
 | **[CLAUDE-TUNNEL.md](docs/CLAUDE-TUNNEL.md)** | Claude Developer Mode through a Cloudflare tunnel — aliases, a scoped key, cloudflared, and every error the route produces |

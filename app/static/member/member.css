@@ -36,7 +36,6 @@
   display: inline-grid; place-items: center; width: 26px; height: 26px; margin-right: 2px;
   border-radius: 7px; background: var(--accent-bg); color: var(--accent); vertical-align: middle;
 }
-tr.gone { opacity: .55; }
 .uh { margin: 18px 0 8px; font-size: .9rem; }
 
 .udays { display: grid; gap: 6px; margin: 10px 0 16px; }

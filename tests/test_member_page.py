@@ -74,3 +74,14 @@ def test_the_page_checks_the_key_shape_before_sending_it():
 
     js = (Path(__file__).resolve().parents[1] / "app/static/member/member.js").read_text()
     assert "looksLikeKey" in js
+
+
+def test_only_models_the_member_can_call_are_listed():
+    """หน้านี้ตอบว่า "ตอนนี้ฉันใช้อะไรได้" — โชว์ของที่กดแล้วโดนปฏิเสธคือชวนให้ลอง"""
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[1] / "app/static/member/member.js").read_text()
+    assert "byAlias.values()" in js
+    # ห้ามกลับไปเติมแถวของโมเดลที่ไม่มีสิทธิ์
+    assert "เรียกไม่ได้แล้ว" not in js
+    assert "reachable" not in js
