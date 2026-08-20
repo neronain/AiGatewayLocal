@@ -17,6 +17,7 @@ from prometheus_client import Counter, Gauge, Histogram
 from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 
+from app import config
 from app.api import admin, anthropic, assistant, auth, catalog, health, openai, responses, tools
 from app.config import get_settings
 from app.core.auth import generate_api_key
@@ -264,6 +265,10 @@ def create_app() -> FastAPI:
         REQUESTS.labels(path, request.method, str(response.status_code), model).inc()
         LATENCY.labels(path, model).observe(duration)
         response.headers["x-request-id"] = request_id
+        # ลายเซ็นติดไปกับ *ทุก* response — ที่เดียวจบ ไม่ต้องไล่แก้ทุก endpoint
+        # และถอดออกทีเดียวไม่ได้โดยที่ไม่มีใครสังเกต เพราะ client ที่ log header
+        # ไว้จะเห็นมันหายไป · MIT ให้ fork ได้ แต่บังคับให้คงประกาศลิขสิทธิ์
+        response.headers["x-litegate-by"] = config.AUTHOR
         return response
 
     @app.exception_handler(GatewayError)

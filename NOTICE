@@ -1,0 +1,18 @@
+LiteGate (AiGatewayLocal)
+Copyright (c) 2026 neronain — https://www.facebook.com/neronain.minidev
+
+Licensed under the MIT License. See LICENSE.
+
+  The MIT License requires that the copyright notice above and the LICENSE
+  text be included in all copies or substantial portions of the Software.
+  This applies to forks, rebrands, and derivative works: you may build on
+  this code commercially, but the attribution stays.
+
+  If you are shipping a product derived from LiteGate, keep:
+    - LICENSE and this NOTICE file
+    - the attribution shown by the console footer and /healthz
+    - the `x-litegate-by` response header
+
+Companion project
+  LMDS · Local Model Deploy Studio — https://github.com/neronain/AutoDeployDGXProject
+  (LMDS is proprietary and is NOT covered by this MIT license.)

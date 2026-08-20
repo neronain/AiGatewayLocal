@@ -910,3 +910,25 @@ table tr:not(.alias-row):not(.ep-row):hover > td {
 .stat-dot.on .d { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-bg); }
 .stat-dot.off { color: var(--fg3); }
 .stat-dot.off .d { background: var(--fg3); }
+
+/* ── ลายเซ็นผู้สร้าง — MIT ให้ fork ได้ แต่บังคับให้คงประกาศลิขสิทธิ์ไว้ ── */
+#lg-credit {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  max-width: 1180px; margin: 28px auto 22px; padding: 14px 18px 0;
+  border-top: 1px solid var(--line); font-size: 12px;
+}
+#lg-credit .cred-name { font-weight: 600; }
+#lg-credit .cred-dim { opacity: .65; }
+#lg-credit .cred-grow { flex: 1; }
+#lg-credit a { color: inherit; }
+
+/* ── หมวดในแค็ตตาล็อกยุบได้ — โมเดลตัวเดียวโผล่หลายหมวด หน้าจึงยาวเกินจำเป็น ── */
+.model-section-box { margin: 0 0 6px; }
+.model-section-box > summary { cursor: pointer; list-style: none; user-select: none; }
+.model-section-box > summary::-webkit-details-marker { display: none; }
+.model-section-box > summary::before {
+  content: "\25B8"; display: inline-block; width: 1em; opacity: .55;
+  transition: transform .12s ease;
+}
+.model-section-box[open] > summary::before { transform: rotate(90deg); }
+.model-section-box > summary:hover { opacity: .85; }

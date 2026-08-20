@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import text
 
+from app import config
 from app.core.auth import Principal, require_admin
 from app.db.session import get_engine
 from app.state import AppState, get_state
@@ -27,6 +28,12 @@ async def healthz(state: AppState = Depends(get_state)) -> dict[str, Any]:
         "status": "ok",
         "uptime_seconds": round(time.time() - state.started_at, 1),
         "models_loaded": len(state.registry.snapshot.models),
+        # ลายเซ็นอยู่ใน endpoint ที่ทุก deployment เรียกใช้ — monitoring, load balancer,
+        # และคนที่ curl ดูว่าเกตเวย์ตัวไหนตอบอยู่ · MIT บังคับให้คงประกาศลิขสิทธิ์ไว้
+        "product": config.PRODUCT,
+        "built_by": config.AUTHOR,
+        "author_url": config.AUTHOR_URL,
+        "license": config.LICENSE_NOTE,
     }
 
 

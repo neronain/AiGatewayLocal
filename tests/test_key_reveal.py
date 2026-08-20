@@ -233,8 +233,15 @@ def test_the_console_only_draws_the_button_for_an_admin():
 
 
 def test_a_key_that_cannot_be_revealed_says_so():
-    """ไม่มีปุ่มโดยไม่บอกอะไร = ผู้ดูแลหาฟีเจอร์ไม่เจอแล้วคิดว่าไม่มี (เกิดจริง)"""
+    """ไม่มีปุ่มโดยไม่บอกอะไร = ผู้ดูแลหาฟีเจอร์ไม่เจอแล้วคิดว่าไม่มี (เกิดจริง)
+
+    เดิม assert ตรงตัวว่ามีคำว่า "ดูไม่ได้" · พอข้อความถูกเกลาเป็น "ดู key ไม่ได้ —
+    เก็บแค่ hash" (ชัดกว่าเดิม) เทสต์ก็แดงทั้งที่ฟีเจอร์ยังอยู่ครบ · ผูกกับ *เจตนา*
+    แทน: ต้องมีคำอธิบายแทนที่ปุ่ม และต้องบอกเหตุผลว่าทำไมถึงดูไม่ได้
+    """
     from pathlib import Path
 
     page = (Path(__file__).resolve().parents[1] / "app/static/app.js").read_text()
-    assert "ดูไม่ได้" in page
+    branch = page.split("k.revealable", 1)[1][:400]
+    assert "menu-note" in branch, "ต้องมีข้อความแทนที่ปุ่ม ไม่ใช่ปล่อยว่าง"
+    assert "ไม่ได้" in branch and "hash" in branch, "ต้องบอกเหตุผลว่าทำไมดูไม่ได้"

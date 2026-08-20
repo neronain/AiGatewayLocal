@@ -8,6 +8,21 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+
+# ── ลายเซ็นผู้สร้าง ────────────────────────────────────────────────────────────
+#
+# รวมไว้ที่เดียวเพราะข้อความที่ก๊อปกระจายหลายไฟล์จะแก้ไม่ทั่ว แล้วบางจุดหายไปเงียบ ๆ
+#
+# เคสจริง 2026-08-20: มีคนเอา repo ไปพัฒนาต่อโดยไม่ให้เครดิต · LiteGate เป็น MIT ซึ่ง
+# *อนุญาตให้ fork ได้* แต่ **บังคับให้คงประกาศลิขสิทธิ์ไว้** — การถอดออกคือผิดสัญญาอนุญาต
+# ไม่ใช่แค่เรื่องมารยาท · ลายเซ็นจึงต้องอยู่ในที่ที่ผู้ใช้ปลายทางเห็น (footer, header ของ
+# ทุก response, /healthz) ไม่ใช่แค่ใน README ที่ลบทิ้งได้ในบรรทัดเดียว
+AUTHOR = "neronain"
+AUTHOR_URL = "https://www.facebook.com/neronain.minidev"
+PRODUCT = "LiteGate"
+LICENSE_NOTE = "MIT — attribution required"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="GW_",

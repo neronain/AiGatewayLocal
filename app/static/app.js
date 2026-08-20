@@ -410,13 +410,46 @@ document.addEventListener('click', (event) => {
   }
 });
 
+// หมวดในแค็ตตาล็อกยุบได้ และจำไว้ว่าผู้ใช้เปิดอันไหนค้างไว้
+//
+// โมเดลตัวเดียวโผล่ได้หลายหมวด (claude-sonnet อยู่ทั้ง General, Vision, Reasoning)
+// พอ registry โตขึ้น หน้านี้จึงยาวหลายจอโดยที่เนื้อหาซ้ำกันเป็นส่วนใหญ่ · ตั้งต้นกาง
+// หมวดแรกหมวดเดียว ที่เหลือยุบ — คนที่มาหา alias ไปวางใน client เห็นครบตั้งแต่จอแรก
+const CATALOG_FOLD_KEY = 'litegate:catalog-open';
+
+function openSections() {
+  try { return new Set(JSON.parse(localStorage.getItem(CATALOG_FOLD_KEY) || 'null') ?? []); }
+  catch { return new Set(); }
+}
+
+function rememberSections(set) {
+  try { localStorage.setItem(CATALOG_FOLD_KEY, JSON.stringify([...set])); }
+  catch { /* โหมดส่วนตัว */ }
+}
+
 function renderCatalog(data) {
-  const sections = data.sections.map((s) => `
-    <h3 class="model-section">${esc(s.title)}
-      <span class="hint">${s.models.length} โมเดล</span></h3>
-    ${modelList(s.models, 'ไม่มีโมเดลในหมวดนี้')}`).join('');
+  const remembered = localStorage.getItem(CATALOG_FOLD_KEY);
+  const open = openSections();
+  const sections = data.sections.map((s, index) => {
+    // ยังไม่เคยเลือกเอง = กางหมวดแรก · เลือกแล้วเคารพสิ่งที่เลือกไว้ รวมถึง "ยุบหมด"
+    const isOpen = remembered === null ? index === 0 : open.has(s.title);
+    return `
+    <details class="model-section-box" data-section="${esc(s.title)}"${isOpen ? ' open' : ''}>
+      <summary class="model-section">${esc(s.title)}
+        <span class="hint">${s.models.length} โมเดล</span></summary>
+      ${modelList(s.models, 'ไม่มีโมเดลในหมวดนี้')}
+    </details>`;
+  }).join('');
   $('catalog').innerHTML = accessNote(data.access)
     + (sections || '<div class="empty">ยังไม่มีโมเดลที่เปิดให้คุณใช้ · ติดต่อผู้ดูแลของคุณ</div>');
+
+  for (const box of $('catalog').querySelectorAll('[data-section]')) {
+    box.addEventListener('toggle', () => {
+      const chosen = openSections();
+      box.open ? chosen.add(box.dataset.section) : chosen.delete(box.dataset.section);
+      rememberSections(chosen);
+    });
+  }
 }
 
 function renderHealth(report) {
