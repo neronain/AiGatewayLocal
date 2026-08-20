@@ -29,12 +29,15 @@
 .meter > span.warn { background: var(--warn, orange); }
 .meter > span.bad { background: var(--bad, crimson); }
 
-.mrow {
-  display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center;
-  padding: 10px 0; border-top: 1px solid var(--line);
-}
-.mrow:first-child { border-top: 0; }
+/* ── ตารางรวม: โมเดลที่ใช้ได้ + ใช้ไปเท่าไร ── */
 .mname { font-weight: 600; }
+.caps { white-space: nowrap; }
+.cap {
+  display: inline-grid; place-items: center; width: 26px; height: 26px; margin-right: 2px;
+  border-radius: 7px; background: var(--accent-bg); color: var(--accent); vertical-align: middle;
+}
+tr.gone { opacity: .55; }
+.uh { margin: 18px 0 8px; font-size: .9rem; }
 
 .udays { display: grid; gap: 6px; margin: 10px 0 16px; }
 .uday { display: grid; grid-template-columns: 92px 1fr 100px 80px; gap: 10px; align-items: center; }

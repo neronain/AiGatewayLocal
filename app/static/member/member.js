@@ -52,6 +52,27 @@ function when(iso, fallback = '—') {
   return Number.isNaN(d.getTime()) ? fallback : d.toLocaleString();
 }
 
+/* ไอคอนความสามารถ — วาดเอง ไม่ได้โหลด app.js มาทั้งก้อนเพื่อไอคอนไม่กี่ตัว
+ * ผู้ใช้ที่เข้ามาดูว่า "ใช้อะไรได้บ้าง" อ่านสัญลักษณ์เร็วกว่าอ่านคำ */
+const CAP_ICONS = {
+  Text:      ['ข้อความ',   '<path d="M4 7h16M4 12h10M4 17h13"/>'],
+  Image:     ['อ่านภาพได้', '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="M4 16l4.5-4.5L15 18"/>'],
+  Audio:     ['เสียง',     '<path d="M11 5L6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>'],
+  Code:      ['เขียนโค้ด',  '<path d="M15.5 18L21 12l-5.5-6M8.5 6L3 12l5.5 6"/>'],
+  Tools:     ['เรียกเครื่องมือ', '<path d="M14.7 6.3a4 4 0 0 1-5 5L5 16v3h3l4.7-4.7a4 4 0 0 1 5-5l-2.5 2.5 1.8 1.8L19.5 11a4 4 0 0 1-4.8-4.7z"/>'],
+  Reasoning: ['คิดก่อนตอบ', '<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9V16h7v-2.1A6 6 0 0 0 12 3z"/>'],
+  Agent:     ['ทำงานเป็นเอเจนต์', '<rect x="5" y="8" width="14" height="12" rx="2"/><path d="M12 8V4M9 14h.01M15 14h.01"/>'],
+};
+
+function capIcon(badge) {
+  const found = CAP_ICONS[badge];
+  if (!found) return '';
+  const [title, path] = found;
+  return `<span class="cap" title="${esc(title)}" aria-label="${esc(title)}">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${path}</svg></span>`;
+}
+
 /* ── ส่วนแสดงผล ─────────────────────────────────────────────────────────── */
 
 function renderWho(me) {
@@ -115,61 +136,68 @@ function renderQuota(me) {
     </div>`;
 }
 
-function badges(model) {
-  const caps = model.capabilities || {};
-  const on = Object.entries(caps).filter(([, v]) => v === true).map(([k]) => k);
-  const modes = (model.modalities?.input || []);
-  return [...new Set([...modes, ...on])]
-    .map((b) => `<span class="npill">${esc(b)}</span>`).join('');
-}
-
-function renderModels(catalog) {
-  const note = catalog.access?.restricted
+function renderAccessNote(catalog) {
+  const box = $('access-note');
+  if (!box) return;
+  box.innerHTML = catalog.access?.restricted
     ? `<p class="hint">เห็นเท่านี้เพราะถูกจำกัดโดย <strong>${esc(catalog.access.reason)}</strong> ·
-       ต้องใช้ตัวอื่นให้ติดต่อผู้ดูแลของคุณ</p>` : '';
-  const sections = (catalog.sections || []).map((s) => `
-    <details class="model-section-box" open>
-      <summary class="model-section">${esc(s.title)}
-        <span class="hint">${s.models.length} โมเดล</span></summary>
-      <div class="model-list">
-        ${s.models.map((m) => `
-          <div class="mrow">
-            <div>
-              <div class="mname">${esc(m.display_name || m.alias)}</div>
-              <div class="hint mono">${esc(m.alias)}</div>
-              ${m.description ? `<div class="hint">${esc(m.description)}</div>` : ''}
-            </div>
-            <div class="npills">${badges(m)}</div>
-            <div class="hint num">${m.context_window ? fmt(m.context_window) + ' tok' : ''}</div>
-          </div>`).join('')}
-      </div>
-    </details>`).join('');
-  $('models').innerHTML = note + (sections
-    || '<div class="card"><div class="empty">ยังไม่มีโมเดลที่เปิดให้คุณใช้ · ติดต่อผู้ดูแลของคุณ</div></div>');
+       ต้องใช้ตัวอื่นให้ติดต่อผู้ดูแลของคุณ</p>`
+    : '';
 }
 
-function renderUsage(usage) {
+/* โมเดลที่ใช้ได้ + ใช้ไปเท่าไร รวมเป็นตารางเดียว
+ *
+ * เดิมแยกเป็นสองส่วน: แค็ตตาล็อกยาว ๆ ข้างบน แล้วตัวเลขการใช้งานข้างล่าง · ผู้ใช้ที่เข้ามา
+ * ถามอยู่สองอย่างเท่านั้น — "ฉันใช้อะไรได้" กับ "ฉันใช้ไปเท่าไร" — ซึ่งเป็นคำถามของ
+ * โมเดลตัวเดียวกัน การแยกกันทำให้ต้องเลื่อนขึ้นลงเทียบเอง
+ *
+ * โมเดลที่เคยใช้แต่ตอนนี้เรียกไม่ได้แล้วยังโชว์อยู่ท้ายตาราง — ตัวเลขที่หายไปเฉย ๆ
+ * อ่านเหมือนระบบนับผิด */
+function renderUsage(usage, catalog) {
+  const allowed = (catalog.sections || []).flatMap((s) => s.models);
+  const byAlias = new Map(allowed.map((m) => [m.id, m]));
+  const used = new Map((usage.by_model || []).map((r) => [r.model, r]));
+
+  const rows = [];
+  for (const model of [...byAlias.values()].sort((a, b) =>
+      (used.get(b.id)?.requests || 0) - (used.get(a.id)?.requests || 0))) {
+    rows.push({ model, use: used.get(model.id), reachable: true });
+  }
+  for (const [alias, use] of used) {
+    if (!byAlias.has(alias)) rows.push({ model: { id: alias, name: alias, badges: [] }, use, reachable: false });
+  }
+
+  const body = rows.map(({ model, use, reachable }) => `
+    <tr${reachable ? '' : ' class="gone"'}>
+      <td>
+        <div class="mname">${esc(model.name || model.id)}</div>
+        <div class="hint mono">${esc(model.id)}${reachable ? '' : ' · เรียกไม่ได้แล้ว'}</div>
+      </td>
+      <td class="caps">${(model.badges || []).map(capIcon).join('')}</td>
+      <td class="num">${use ? fmt(use.requests) : '—'}</td>
+      <td class="num">${use ? fmt(use.input_tokens) : '—'}</td>
+      <td class="num">${use ? fmt(use.output_tokens) : '—'}</td>
+    </tr>`).join('');
+
   const daily = usage.daily || [];
   const peak = Math.max(1, ...daily.map((d) => d.input_tokens + d.output_tokens));
-  const rows = daily.slice(-14).map((d) => {
+  const spark = daily.slice(-14).map((d) => {
     const total = d.input_tokens + d.output_tokens;
     return `<div class="uday">
       <span class="hint">${esc(d.date)}</span>
       <div class="meter"><span class="ok" style="width:${Math.round(total / peak * 100)}%"></span></div>
       <span class="num">${fmt(total)} tok</span>
-      <span class="hint num">${fmt(d.requests)} ครั้ง</span>
     </div>`;
   }).join('');
-  const models = (usage.by_model || []).map((m) => `
-    <tr><td>${esc(m.model)}</td><td class="num">${fmt(m.requests)}</td>
-        <td class="num">${fmt(m.input_tokens)}</td><td class="num">${fmt(m.output_tokens)}</td></tr>`).join('');
-  $('usage').innerHTML = daily.length
-    ? `<p class="hint">${usage.window_days} วันที่ผ่านมา</p>
-       <div class="udays">${rows}</div>
-       <table class="tbl"><thead><tr><th>โมเดล</th><th class="num">ครั้ง</th>
-         <th class="num">token เข้า</th><th class="num">token ออก</th></tr></thead>
-         <tbody>${models}</tbody></table>`
-    : '<div class="empty">ยังไม่มีการใช้งานในช่วงนี้</div>';
+
+  $('usage').innerHTML = rows.length
+    ? `<table class="tbl"><thead><tr>
+         <th>โมเดล</th><th>ทำอะไรได้</th>
+         <th class="num">ครั้ง</th><th class="num">token เข้า</th><th class="num">token ออก</th>
+       </tr></thead><tbody>${body}</tbody></table>
+       ${daily.length ? `<h3 class="uh">${usage.window_days} วันที่ผ่านมา</h3>
+         <div class="udays">${spark}</div>` : ''}`
+    : '<div class="empty">ยังไม่มีโมเดลที่เปิดให้คุณใช้ · ติดต่อผู้ดูแลของคุณ</div>';
 }
 
 /* ── ทางเดินหลัก ────────────────────────────────────────────────────────── */
@@ -181,8 +209,8 @@ async function load() {
   renderWho(me);
   renderKey(keyInfo);
   renderQuota(me);
-  renderModels(catalog);
-  renderUsage(usage);
+  renderAccessNote(catalog);
+  renderUsage(usage, catalog);
   $('gate').hidden = true;
   $('result').hidden = false;
   $('signout').hidden = false;

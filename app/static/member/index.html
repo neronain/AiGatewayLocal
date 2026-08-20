@@ -5,19 +5,29 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LiteGate — ตรวจสอบสิทธิ์ของคุณ</title>
 <!-- ใช้สไตล์ชุดเดียวกับคอนโซล ไม่ให้กลายเป็นสองหน้าตาที่ต้องดูแลแยกกัน -->
-<link rel="stylesheet" href="../style.css?v=1.35.6">
-<link rel="stylesheet" href="member.css?v=1.35.6">
+<link rel="stylesheet" href="../style.css?v=1.35.7">
+<link rel="stylesheet" href="member.css?v=1.35.7">
 </head>
 <body>
 
-<header class="topbar">
-  <div class="brand">
-    <span class="brand-mark" data-icon="logo" aria-hidden="true"></span>
-    <div><div class="brand-name">LiteGate</div><div class="brand-sub">สิทธิ์ของฉัน</div></div>
+<header>
+  <div class="wrap">
+    <div class="bar">
+      <h1 class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 7h4M4 12h4M4 17h4M16 7h4M16 12h4M16 17h4"/>
+            <rect x="9" y="4" width="6" height="16" rx="2"/><path d="M12 9v6"/>
+          </svg>
+        </span>
+        <span class="brand-text"><strong>LiteGate</strong><span>สิทธิ์ของฉัน</span></span>
+      </h1>
+      <span class="spacer"></span>
+      <button id="theme" class="icon-btn" title="สลับธีม" aria-label="สลับธีม">◐</button>
+      <button id="signout" class="icon-btn" hidden title="ลืม key ในเครื่องนี้">ออก</button>
+    </div>
   </div>
-  <div class="grow"></div>
-  <button id="theme" class="icon-btn" title="สลับธีม" aria-label="สลับธีม">◐</button>
-  <button id="signout" class="icon-btn" hidden title="ลืม key ในเครื่องนี้">ออก</button>
 </header>
 
 <main class="wrap">
@@ -54,10 +64,9 @@
     <section class="card" id="keycard"></section>
     <section class="card" id="quota"></section>
 
-    <h2>โมเดลที่คุณเรียกได้</h2>
-    <div id="models"></div>
+    <div id="access-note"></div>
 
-    <h2>การใช้งานของคุณ</h2>
+    <h2>โมเดลที่คุณใช้ได้ และใช้ไปเท่าไร</h2>
     <section class="card" id="usage"></section>
   </div>
 </main>
@@ -70,6 +79,6 @@
   <span class="cred-dim">MIT — attribution required</span>
 </footer>
 
-<script src="member.js?v=1.35.6"></script>
+<script src="member.js?v=1.35.7"></script>
 </body>
 </html>
