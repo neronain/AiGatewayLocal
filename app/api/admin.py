@@ -2478,13 +2478,14 @@ class ProbeIn(BaseModel):
 async def detect_capabilities(
     payload: ProbeIn,
     actor: Principal = Depends(require_admin),
+    state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
     """Probe a backend and suggest capabilities (PRD FR-39).
 
     The result is advisory. The admin confirms before anything is saved - the
     gateway never flips a declared capability from a probe on its own.
     """
-    api_key = os.environ.get(payload.api_key_env, "") if payload.api_key_env else ""
+    api_key = state.secrets.resolve(payload.api_key_env)
     result = await probe_backend(payload.base_url, payload.upstream_model, api_key)
     return {"suggestion": result.to_dict(), "confirmed": False}
 
@@ -2551,7 +2552,7 @@ async def model_advice(
     for endpoint in model.spec.endpoints:
         if not endpoint.enabled:
             continue
-        api_key = os.environ.get(endpoint.api_key_env, "") if endpoint.api_key_env else ""
+        api_key = state.secrets.resolve(endpoint.api_key_env)
         probe = await probe_backend(
             endpoint.normalized_base_url,
             upstream_model_for(model, endpoint),

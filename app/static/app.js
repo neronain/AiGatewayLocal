@@ -679,8 +679,10 @@ function applyProviderDefaults(select) {
     noteWrap.hidden = false;
     note.innerHTML = [
       chosen.note ? esc(chosen.note) : '',
-      `คีย์อ่านจาก env <code>${esc(chosen.suggested_env)}</code> บนเครื่องที่รันเกตเวย์ —
-       ไม่ได้เก็บลงไฟล์ตั้งค่า`,
+      // เดิมบรรทัดนี้บอกให้ไปตั้ง env var บนเครื่องเซิร์ฟเวอร์ ซึ่งตอนนี้ขัดกับของจริง
+      // เพราะมีช่องกรอกคีย์อยู่ในกล่องข้างล่างแล้ว — สองคำสั่งที่สวนกันบนหน้าจอเดียว
+      // แย่กว่าไม่บอกอะไรเลย
+      'กรอกคีย์ในช่อง API key ข้างล่าง',
       chosen.docs ? `<a href="${esc(chosen.docs)}" target="_blank" rel="noopener">เอกสารของผู้ให้บริการ</a>` : '',
     ].filter(Boolean).join(' · ');
   }
@@ -1197,16 +1199,58 @@ function addEndpointRow(data = {}) {
   function refreshSecretState() {
     const name = keyenv.value.trim();
     const known = secretStatus[name];
-    secretState.classList.toggle('ok-text', !!known?.set);
+    secretState.className = 'ep-secret-state ' + (known?.set ? 'ok' : name ? 'off' : '');
     secretState.textContent = !name
       ? ''
       : known?.set
-        ? (known.source === 'env' ? `· ${name} ตั้งไว้แล้วในสภาพแวดล้อมของเครื่อง` : `· ${name} ตั้งไว้แล้ว`)
-        : `· ${name} ยังไม่มีคีย์`;
+        ? (known.source === 'env' ? 'มีคีย์แล้ว (จากสภาพแวดล้อมของเครื่อง)' : 'มีคีย์แล้ว')
+        : 'ยังไม่มีคีย์';
     secretHint.textContent = known?.source === 'env'
       ? 'ค่านี้มาจากสภาพแวดล้อมของ process ซึ่งชนะเสมอ — บันทึกที่นี่จะยังไม่มีผลจนกว่าจะเอาออกจากที่นั่น'
-      : 'เก็บแยกจากไฟล์ตั้งค่า อ่านกลับออกมาไม่ได้ · ตั้งชื่อช่องด้านซ้ายก่อน';
+      : 'เก็บแยกจากไฟล์ตั้งค่า อ่านกลับออกมาไม่ได้';
   }
+
+  const modelsOut = q('ep-models-out');
+
+  /* ตอบคำถาม "token ที่ได้มามี ai อะไรบ้าง" ตรงจุดที่เพิ่งกรอกคีย์
+   *
+   * รายชื่อนี้เคยมีอยู่แล้ว แต่ต้องกด Detect ก่อนและไปโผล่ท้ายกล่องห่างจากช่องคีย์
+   * คนที่เพิ่งเอาคีย์คลาวด์มาจึงไม่รู้ว่ามีอะไรให้เลือก · ทำเป็นปุ่มของตัวเองข้างช่องคีย์
+   * และเรียกให้เองทันทีหลังบันทึกคีย์สำเร็จ */
+  const listModels = async ({ quiet = false } = {}) => {
+    const base_url = q('ep-url').value.trim();
+    if (!base_url) {
+      if (!quiet) modelsOut.innerHTML = '<p class="hint err-text">ใส่ Base URL ก่อน</p>';
+      return;
+    }
+    modelsOut.innerHTML = '<p class="hint">กำลังถามปลายทาง…</p>';
+    try {
+      const { suggestion } = await post('/admin/models/detect', {
+        base_url, upstream_model: '', api_key_env: keyenv.value.trim(),
+      });
+      const served = suggestion.served_models || [];
+      if (!suggestion.reachable) {
+        modelsOut.innerHTML = `<p class="hint err-text">ต่อไม่ได้ — ${
+          esc(suggestion.notes.join(' '))}</p>`;
+        return;
+      }
+      if (!served.length) {
+        modelsOut.innerHTML = '<p class="hint">ต่อได้ แต่ปลายทางไม่บอกรายชื่อโมเดล — พิมพ์ชื่อเองในช่อง Upstream model</p>';
+        return;
+      }
+      modelsOut.innerHTML =
+        `<p class="hint">คีย์ใบนี้เรียกได้ ${served.length} ตัว — กดเลือกตัวที่ต้องการ</p>
+         <div class="chips">${served.map((m) => {
+           const on = m === ($('m-upstream').value.trim() || q('ep-upstream').value.trim());
+           return `<button type="button" class="chip pick-model${on ? ' on' : ''}"
+             data-model="${esc(m)}">${esc(m)}${on ? ' ✓' : ''}</button>`;
+         }).join(' ')}</div>`;
+      wireServedModelPicks(modelsOut, node);
+    } catch (e) {
+      modelsOut.innerHTML = `<p class="hint err-text">${esc(e.message)}</p>`;
+    }
+  };
+  q('ep-list-models').onclick = () => listModels();
 
   q('ep-secret-save').onclick = async () => {
     const name = keyenv.value.trim();
@@ -1225,6 +1269,7 @@ function addEndpointRow(data = {}) {
       secret.value = '';
       await loadSecrets();
       refreshSecretState();
+      listModels({ quiet: true });
     } catch (e) { showError(e.message); }
   };
 

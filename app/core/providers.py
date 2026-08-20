@@ -57,13 +57,13 @@ CLOUD: dict[str, Provider] = {
     "minimax": Provider(
         "minimax", "MiniMax (Global)",
         "https://api.minimax.io/v1",
-        note="บัญชี minimax.io · คีย์คนละใบกับฝั่งจีน — ตั้ง env var เช่น MINIMAX_API_KEY",
+        note="บัญชี minimax.io · คีย์คนละใบกับฝั่งจีน",
         docs="https://www.minimax.io/platform/document",
     ),
     "minimax-cn": Provider(
         "minimax-cn", "MiniMax (จีนแผ่นดินใหญ่)",
         "https://api.minimaxi.com/v1",
-        note="บัญชี minimaxi.com · คีย์คนละใบกับฝั่ง Global — ตั้ง env var เช่น MINIMAX_CN_API_KEY",
+        note="บัญชี minimaxi.com · คีย์คนละใบกับฝั่ง Global",
         docs="https://platform.minimaxi.com/document",
     ),
     "openrouter": Provider(

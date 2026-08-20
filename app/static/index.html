@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.35.10">
+<link rel="stylesheet" href="style.css?v=1.35.12">
 </head>
 <body>
 
@@ -698,24 +698,34 @@
         <p class="hint ep-note"></p>
       </div>
     </div>
+    <!-- คีย์เป็นขั้นที่คนติดมากที่สุด จึงแยกเป็นกล่องของตัวเองแทนที่จะเบียดอยู่กับ
+         ช่องตัวเลข · เดิมห้าช่องเรียงในแถวเดียว ช่องวางคีย์เลยแคบจน placeholder
+         ยังอ่านไม่จบ -->
+    <div class="ep-auth">
+      <div class="ep-auth-head">การเข้าถึง<span class="ep-secret-state"></span></div>
+      <div class="row">
+        <div class="field">
+          <label>ชื่อช่องเก็บคีย์</label>
+          <input class="ep-keyenv" placeholder="MINIMAX_API_KEY" autocomplete="off">
+        </div>
+        <div class="field grow2">
+          <label>API key</label>
+          <div class="row tight">
+            <input class="ep-secret" type="password" autocomplete="new-password"
+                   placeholder="วางคีย์ที่ได้จากผู้ให้บริการ">
+            <button type="button" class="ep-secret-save">บันทึกคีย์</button>
+            <button type="button" class="ghost ep-list-models">ดูโมเดลที่เรียกได้</button>
+          </div>
+        </div>
+      </div>
+      <p class="hint ep-keyenv-hint">ชื่อช่อง ไม่ใช่ตัวคีย์ — ตัวคีย์กรอกในช่องถัดไป</p>
+      <p class="hint ep-secret-hint">เก็บแยกจากไฟล์ตั้งค่า อ่านกลับออกมาไม่ได้</p>
+      <div class="ep-models-out"></div>
+    </div>
     <div class="row">
-      <div class="field">
+      <div class="field grow2">
         <label>Upstream model override (optional)</label>
         <input class="ep-upstream" placeholder="same as the model's" autocomplete="off">
-      </div>
-      <div class="field">
-        <label>ชื่อช่องเก็บคีย์</label>
-        <input class="ep-keyenv" placeholder="MINIMAX_API_KEY" autocomplete="off">
-        <p class="hint ep-keyenv-hint">ชื่อช่อง ไม่ใช่ตัวคีย์ — ตัวคีย์กรอกในช่องถัดไป</p>
-      </div>
-      <div class="field ep-secret-field">
-        <label>API key <span class="ep-secret-state hint"></span></label>
-        <div class="row tight">
-          <input class="ep-secret" type="password" autocomplete="new-password"
-                 placeholder="วางคีย์ที่ได้จากผู้ให้บริการ">
-          <button type="button" class="ghost small ep-secret-save">บันทึกคีย์</button>
-        </div>
-        <p class="hint ep-secret-hint">เก็บแยกจากไฟล์ตั้งค่า อ่านกลับออกมาไม่ได้ · ตั้งชื่อช่องด้านซ้ายก่อน</p>
       </div>
       <div class="field">
         <label>Priority (higher wins)</label>
@@ -760,6 +770,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.35.10"></script>
+<script src="app.js?v=1.35.12"></script>
 </body>
 </html>

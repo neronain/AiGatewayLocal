@@ -279,6 +279,24 @@ input.bad { border-color: var(--bad); }
 .hint.ok-text { color: var(--ok); }
 .row.tight { display: flex; gap: 8px; align-items: center; }
 .row.tight input { flex: 1 1 auto; min-width: 0; }
+
+/* กล่องคีย์ของ backend — ขั้นที่คนติดมากที่สุด จึงไม่เบียดอยู่ในแถวเดียวกับช่องตัวเลข */
+.ep-auth {
+  margin: 10px 0; padding: 12px; border: 1px solid var(--line);
+  border-radius: 10px; background: var(--sunken);
+}
+.ep-auth-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 0.8rem; font-weight: 600; color: var(--fg2); margin-bottom: 8px;
+}
+.ep-secret-state { font-size: 0.72rem; font-weight: 500; padding: 2px 8px; border-radius: 999px; }
+.ep-secret-state.ok  { color: var(--ok);  background: var(--ok-bg); }
+.ep-secret-state.off { color: var(--warn); background: var(--warn-bg); }
+.ep-auth .row { align-items: flex-end; }
+.ep-auth .hint { margin-top: 6px; }
+.ep-models-out { margin-top: 10px; }
+/* ช่องที่ต้องรับข้อความยาว (คีย์, ชื่อโมเดล) ควรได้ที่มากกว่าช่องตัวเลขข้าง ๆ */
+.field.grow2 { flex: 2 1 320px; }
 .empty { color: var(--fg3); font-size: 0.8125rem; padding: 14px 0; }
 
 /* ── surfaces ───────────────────────────────────────────────────────── */

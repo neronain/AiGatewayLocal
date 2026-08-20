@@ -89,3 +89,27 @@ def test_upstream_uses_a_stored_key(tmp_path, monkeypatch):
     )
     headers = {k.lower(): v for k, v in upstream.upstream_headers(endpoint, {}).items()}
     assert headers["authorization"] == "Bearer sk-stored"
+
+
+def test_the_console_does_not_still_tell_people_to_set_an_env_var():
+    """หน้าเดียวกันเคยบอกสองอย่างที่สวนกัน: ไปตั้ง env var บนเซิร์ฟเวอร์ กับ กรอกในช่องนี้"""
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parents[1] / "app/static/app.js").read_text(encoding="utf-8")
+    assert "คีย์อ่านจาก env" not in js
+    assert "กรอกคีย์ในช่อง API key" in js
+
+
+def test_the_key_field_and_the_model_list_are_in_the_page():
+    """คำถามที่เกิดจริงสองข้อ: กรอกคีย์ตรงไหน และคีย์นี้เรียกโมเดลอะไรได้บ้าง"""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "app/static"
+    page = (root / "index.html").read_text(encoding="utf-8")
+    js = (root / "app.js").read_text(encoding="utf-8")
+
+    assert 'class="ep-secret"' in page and 'type="password"' in page
+    assert "ep-secret-save" in page and "ep-list-models" in page
+    # รายชื่อโมเดลต้องอยู่ในกล่องคีย์ ไม่ใช่ท้ายผล Detect ที่ต้องกดอีกปุ่มถึงจะเห็น
+    assert "ep-models-out" in page
+    assert "listModels" in js
