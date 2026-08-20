@@ -51,11 +51,20 @@ CLOUD: dict[str, Provider] = {
         note="ใช้ทาง OpenAI-compatible ของ Google · ชื่อโมเดลเช่น gemini-2.5-flash",
         docs="https://ai.google.dev/gemini-api/docs/openai",
     ),
+    # MiniMax แยกเป็นคนละระบบตามภูมิภาค ไม่ใช่แค่คนละโดเมน — คีย์ของฝั่งหนึ่งใช้กับอีก
+    # ฝั่งไม่ได้ (ตอบ invalid api key) จึงต้องเป็นคนละตัวเลือกและคนละ env var
+    # ไม่ใช่หมายเหตุให้ผู้ใช้ไปแก้ URL เอง
     "minimax": Provider(
-        "minimax", "MiniMax",
+        "minimax", "MiniMax (Global)",
         "https://api.minimax.io/v1",
-        note="ถ้าบัญชีอยู่จีนแผ่นดินใหญ่ ใช้ https://api.minimaxi.com/v1 แทน",
+        note="บัญชี minimax.io · คีย์คนละใบกับฝั่งจีน — ตั้ง env var เช่น MINIMAX_API_KEY",
         docs="https://www.minimax.io/platform/document",
+    ),
+    "minimax-cn": Provider(
+        "minimax-cn", "MiniMax (จีนแผ่นดินใหญ่)",
+        "https://api.minimaxi.com/v1",
+        note="บัญชี minimaxi.com · คีย์คนละใบกับฝั่ง Global — ตั้ง env var เช่น MINIMAX_CN_API_KEY",
+        docs="https://platform.minimaxi.com/document",
     ),
     "openrouter": Provider(
         "openrouter", "OpenRouter",

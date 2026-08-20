@@ -51,6 +51,8 @@ class ServerType(StrEnum):
     # ส่งด้วย header แบบไหน — Anthropic ใช้ x-api-key ไม่ใช่ Authorization: Bearer
     GEMINI = "gemini"
     MINIMAX = "minimax"
+    # คนละบัญชี คนละคีย์ คนละโดเมน — ไม่ใช่แค่ URL สำรองของอันบน
+    MINIMAX_CN = "minimax-cn"
     OPENROUTER = "openrouter"
     OPENAI = "openai"
     ANTHROPIC = "anthropic"

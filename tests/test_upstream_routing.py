@@ -34,3 +34,24 @@ def test_a_local_server_written_with_v1_is_forgiven():
 
     endpoint = Endpoint(name="local", server_type="vllm", base_url="http://dgx03:8000/v1")
     assert upstream_url(endpoint, "/v1/models") == "http://dgx03:8000/v1/models"
+
+
+def test_every_cloud_provider_is_a_valid_server_type():
+    """เพิ่มเจ้าใหม่ในตาราง CLOUD แล้วลืมเติมใน ServerType = เลือกในหน้าเว็บได้แต่บันทึกไม่ผ่าน"""
+    from app.core.providers import CLOUD
+    from app.registry.schema import ServerType
+
+    known = {t.value for t in ServerType}
+    assert set(CLOUD) <= known, set(CLOUD) - known
+
+
+def test_minimax_regions_are_separate_providers():
+    """คีย์ของฝั่งหนึ่งใช้กับอีกฝั่งไม่ได้จริง — ยิงทดสอบแล้วได้ invalid api key กลับมา
+
+    ตอนแรกเป็นตัวเลือกเดียวพร้อมหมายเหตุให้ไปแก้ URL เอง ซึ่งไม่มีใครทำ
+    """
+    from app.core.providers import CLOUD
+
+    assert CLOUD["minimax"].base_url == "https://api.minimax.io/v1"
+    assert CLOUD["minimax-cn"].base_url == "https://api.minimaxi.com/v1"
+    assert CLOUD["minimax"].base_url != CLOUD["minimax-cn"].base_url
