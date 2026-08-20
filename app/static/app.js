@@ -621,6 +621,64 @@ function setupFoldSections(root = document) {
   }
 }
 
+// ── ผู้ให้บริการออนไลน์ ────────────────────────────────────────────────────────
+//
+// ผู้ใช้ไม่ควรต้องไปเปิดเอกสารของแต่ละเจ้าเพื่อหาว่า base URL คืออะไร · เลือกเจ้าแล้ว
+// เติมให้เอง แต่ยังแก้ทับได้ทุกช่อง — บางบัญชีอยู่คนละภูมิภาคและใช้ endpoint คนละตัว
+let cloudProviders = null;
+
+async function loadProviders() {
+  if (cloudProviders) return cloudProviders;
+  try {
+    cloudProviders = (await api('/admin/providers')).data || [];
+  } catch {
+    cloudProviders = [];   // ไม่ใช่ admin หรือเรียกไม่ได้ — dropdown เหลือแค่ของ local
+  }
+  return cloudProviders;
+}
+
+function fillProviderOptions(root = document) {
+  for (const group of root.querySelectorAll('optgroup.ep-cloud')) {
+    if (group.childElementCount) continue;
+    group.innerHTML = (cloudProviders || [])
+      .map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`).join('');
+  }
+}
+
+// เลือกเจ้าไหนแล้วเติมค่าที่รู้ให้ · ไม่ทับช่องที่ผู้ใช้กรอกไว้เองแล้ว
+function applyProviderDefaults(select) {
+  const card = select.closest('.endpoint') || document;
+  const chosen = (cloudProviders || []).find((p) => p.id === select.value);
+  const noteWrap = card.querySelector('.ep-note-wrap');
+  const note = card.querySelector('.ep-note');
+  if (!chosen) {
+    if (noteWrap) noteWrap.hidden = true;
+    return;
+  }
+  const url = card.querySelector('.ep-url');
+  const keyenv = card.querySelector('.ep-keyenv');
+  if (url && !url.value.trim()) url.value = chosen.base_url;
+  if (keyenv && !keyenv.value.trim()) keyenv.value = chosen.suggested_env;
+  const openai = card.querySelector('.ep-openai');
+  const anthropic = card.querySelector('.ep-anthropic');
+  if (openai) openai.checked = chosen.speaks_openai;
+  if (anthropic) anthropic.checked = chosen.speaks_anthropic;
+  if (noteWrap && note) {
+    noteWrap.hidden = false;
+    note.innerHTML = [
+      chosen.note ? esc(chosen.note) : '',
+      `คีย์อ่านจาก env <code>${esc(chosen.suggested_env)}</code> บนเครื่องที่รันเกตเวย์ —
+       ไม่ได้เก็บลงไฟล์ตั้งค่า`,
+      chosen.docs ? `<a href="${esc(chosen.docs)}" target="_blank" rel="noopener">เอกสารของผู้ให้บริการ</a>` : '',
+    ].filter(Boolean).join(' · ');
+  }
+}
+
+document.addEventListener('change', (event) => {
+  const select = event.target.closest('.ep-server');
+  if (select) applyProviderDefaults(select);
+});
+
 function renderHealth(report) {
   const rows = Object.values(report);
   $('health').innerHTML = `
@@ -1062,7 +1120,10 @@ function addEndpointRow(data = {}) {
   const q = (cls) => node.querySelector('.' + cls);
 
   q('ep-name').value = data.name || '';
+  fillProviderOptions(node);
   q('ep-server').value = data.server_type || 'vllm';
+  // แถวที่โหลดจาก registry อาจเป็นเจ้าคลาวด์อยู่แล้ว — โชว์หมายเหตุให้ตรงกัน
+  queueMicrotask(() => applyProviderDefaults(q('ep-server')));
   q('ep-url').value = data.base_url || '';
   q('ep-upstream').value = data.upstream_model || '';
   q('ep-keyenv').value = data.api_key_env || '';
@@ -2715,6 +2776,7 @@ $('refresh').onclick = () => {
   // เคยวางไว้ในทางเดิน sign-in อย่างเดียว (สตริงที่ใช้ยึดมีสองที่ในไฟล์นี้ แล้วแก้โดน
   // อันแรก) ผลคือคนที่เปิดหน้าด้วย session เดิม — ซึ่งคือเกือบทุกครั้ง — ไม่เคยเห็นปุ่มเลย
   setupFoldSections();
+  loadProviders().then(() => fillProviderOptions());
   $('fold-all').onclick = () => foldAllInTab(true);
   $('unfold-all').onclick = () => foldAllInTab(false);
   let status;

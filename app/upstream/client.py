@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 
+from app.core import providers
 from app.config import get_settings
 from app.core.errors import ErrorCode, GatewayError
 from app.registry.schema import Endpoint, ServerType
@@ -91,7 +92,15 @@ def upstream_headers(endpoint: Endpoint, incoming: dict[str, str]) -> dict[str, 
     if endpoint.api_key_env:
         key = os.environ.get(endpoint.api_key_env, "")
         if key:
-            headers["authorization"] = f"Bearer {key}"
+            # ผู้ให้บริการส่วนใหญ่รับ Authorization: Bearer · Anthropic ไม่รับ ใช้ x-api-key
+            # และบังคับ anthropic-version · ส่งผิดแบบได้ 401 ที่อ่านแล้วนึกว่าคีย์ผิด
+            if providers.auth_style(str(endpoint.server_type.value)) == providers.AUTH_X_API_KEY:
+                headers["x-api-key"] = key
+                headers.setdefault("anthropic-version", providers.ANTHROPIC_VERSION)
+                # ต้นทางบางเจ้าปฏิเสธถ้ามีทั้งสองอย่าง — เอาของ client ที่หลุดมาออก
+                headers.pop("authorization", None)
+            else:
+                headers["authorization"] = f"Bearer {key}"
         else:
             log.warning(
                 "endpoint %s declares api_key_env=%s but it is unset",

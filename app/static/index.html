@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.35.5">
+<link rel="stylesheet" href="style.css?v=1.35.6">
 </head>
 <body>
 
@@ -679,13 +679,22 @@
       <div class="field">
         <label>Server type</label>
         <select class="ep-server">
-          <option>vllm</option><option>ollama</option><option>sglang</option>
-          <option>llama.cpp</option><option>openai_compatible</option>
+          <optgroup label="รันบนเครื่องเรา">
+            <option>vllm</option><option>ollama</option><option>sglang</option>
+            <option>llama.cpp</option><option>openai_compatible</option>
+          </optgroup>
+          <!-- เติมจาก /admin/providers ตอนโหลด — ไม่ hardcode base URL ซ้ำฝั่ง client -->
+          <optgroup label="ผู้ให้บริการออนไลน์" class="ep-cloud"></optgroup>
         </select>
       </div>
       <div class="field">
         <label>Base URL</label>
         <input class="ep-url" placeholder="http://10.0.0.23:8000" autocomplete="off">
+      </div>
+    </div>
+    <div class="row">
+      <div class="field ep-note-wrap" hidden>
+        <p class="hint ep-note"></p>
       </div>
     </div>
     <div class="row">
@@ -740,6 +749,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.35.5"></script>
+<script src="app.js?v=1.35.6"></script>
 </body>
 </html>

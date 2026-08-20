@@ -42,6 +42,20 @@ class ServerType(StrEnum):
     LLAMACPP = "llama.cpp"
     OPENAI_COMPATIBLE = "openai_compatible"
 
+    # ── ผู้ให้บริการออนไลน์ ──
+    #
+    # เป็นป้ายกำกับเหมือนชนิดอื่นในนี้ (ไม่มีอะไร branch จาก server_type) แต่มีเพื่อสองอย่าง:
+    # หน้าเว็บเติม base URL / health path ให้เองได้ และ upstream_headers รู้ว่าคีย์ของเจ้านี้
+    # ส่งด้วย header แบบไหน — Anthropic ใช้ x-api-key ไม่ใช่ Authorization: Bearer
+    GEMINI = "gemini"
+    MINIMAX = "minimax"
+    OPENROUTER = "openrouter"
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    DEEPSEEK = "deepseek"
+    GROQ = "groq"
+    TOGETHER = "together"
+
 
 class Visibility(StrEnum):
     MEMBER = "member"

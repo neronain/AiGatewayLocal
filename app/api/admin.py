@@ -2817,6 +2817,20 @@ async def usage_summary(
     }
 
 
+@router.get("/providers")
+async def cloud_providers(
+    actor: Principal = Depends(require_admin),
+) -> dict[str, Any]:
+    """ผู้ให้บริการออนไลน์ที่รู้ค่าตั้งต้นไว้แล้ว — ให้หน้าเว็บเติม base URL ให้เอง
+
+    ผู้ใช้ไม่ควรต้องไปเปิดเอกสารของแต่ละเจ้าเพื่อหาว่า base URL คืออะไร ต้องยิงไปที่ path
+    ไหน และคีย์ส่งด้วย header แบบใด · **ไม่มีคีย์อยู่ในนี้** มีแต่ *ชื่อ* env var ที่แนะนำ
+    """
+    from app.core import providers
+
+    return {"data": providers.catalogue()}
+
+
 @router.get("/auto/preview")
 async def auto_preview(
     prompt_tokens: int = Query(1000, ge=0, le=2_000_000),
