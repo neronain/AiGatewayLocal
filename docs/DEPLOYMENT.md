@@ -134,7 +134,18 @@ cp .env.example .env
 ```
 
 Edit `.env` — at minimum `GW_API_KEY_PEPPER`, `POSTGRES_PASSWORD`, and any
-`DGX*_API_KEY` your backends require. Then:
+`DGX*_API_KEY` your backends require.
+
+**Do [§1.1](#11-point-the-registry-at-your-real-backends) before you start it.**
+Compose mounts `config/` from the repository read-only, so the sample models go
+in exactly as they ship — pointed at `dgx01`/`dgx02`/`dgx03`, which are machine
+names on our network, not yours. Started as-is, the health prober reports
+connection failures against all three every few seconds and the first thing you
+read is a log full of errors about hosts you have never heard of. The native
+installer disables them for you; on this path the file is read-only and only you
+can fix it. Repoint them, or set `enabled: false` under `spec:` in each file.
+
+Then:
 
 ```bash
 docker compose -f docker/docker-compose.yml up -d --build
