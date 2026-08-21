@@ -122,6 +122,14 @@ def window_bounds(
     if window == "minute":
         start = now.replace(second=0, microsecond=0)
         return start, start + timedelta(minutes=1)
+    # หน้าต่างรายชั่วโมง — อยู่ระหว่างนาทีกับวัน
+    #
+    # โควตารายวันหยุดคนที่ใช้เกินตัวได้ก็จริง แต่คนที่เผลอปล่อย loop ตอนเช้าจะโดนตัด
+    # ไปทั้งวัน · ลิมิตต่อนาทีก็สั้นเกินจะเป็นเพดานของงานจริง · รายชั่วโมงคือช่วงที่
+    # "พลาดแล้วรอไม่นานเกินไป" ซึ่งเป็นสิ่งที่ token ของสคริปต์ต้องการจริง ๆ
+    if window == "hour":
+        start = now.replace(minute=0, second=0, microsecond=0)
+        return start, start + timedelta(hours=1)
     if window == "month":
         start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         last_day = monthrange(now.year, now.month)[1]

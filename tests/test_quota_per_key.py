@@ -173,3 +173,35 @@ def test_a_key_policy_says_which_key_it_targets(client):
     rows = client.get("/admin/quota-policies", headers=auth(client.admin_key)).json()["data"]
     mine = [r for r in rows if r["scope"] == "key"]
     assert mine and mine[0]["api_key_id"] == key["id"]
+
+
+def test_an_hourly_window_exists(client):
+    """day เป็นช่วงที่ยาวไป — เผลอปล่อย loop ตอนเช้าแล้วโดนตัดทั้งวัน
+    ส่วนต่อนาทีสั้นเกินจะเป็นเพดานของงานจริง
+    """
+    from datetime import timedelta
+
+    from app.core.quota import window_bounds
+
+    start, end = window_bounds("hour")
+    assert end - start == timedelta(hours=1)
+    assert start.minute == 0 and start.second == 0
+
+    _user, key = _member(client, "6499000014")
+    created = client.post(
+        "/admin/quota-policies",
+        json={"scope": "key", "api_key_id": key["id"], "window": "hour", "max_requests": 20},
+        headers=auth(client.admin_key),
+    )
+    assert created.status_code == 201, created.text
+
+    rows = client.get("/admin/quota-policies", headers=auth(client.admin_key)).json()["data"]
+    assert any(r["window"] == "hour" for r in rows)
+
+
+def test_the_console_offers_the_hourly_window():
+    from pathlib import Path
+
+    page = (Path(__file__).resolve().parents[1] / "app/static/index.html").read_text()
+    # ทั้งฟอร์มนโยบายหลักและกล่องเพดานของ key
+    assert page.count('<option value="hour">hour</option>') >= 2

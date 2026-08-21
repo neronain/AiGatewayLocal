@@ -1448,8 +1448,8 @@ async def update_quota_policy(
 
     if "window" in payload:
         window = payload["window"]
-        if window not in {"day", "month", "term"}:
-            raise GatewayError(ErrorCode.INVALID_REQUEST, "window must be day, month or term.")
+        if window not in {"hour", "day", "month", "term"}:
+            raise GatewayError(ErrorCode.INVALID_REQUEST, "window must be hour, day, month or term.")
         policy.window = window
         changed["window"] = window
 
@@ -1606,8 +1606,8 @@ async def create_quota_policy(
     actor: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    if payload.window not in {"day", "month", "term"}:
-        raise GatewayError(ErrorCode.INVALID_REQUEST, "window must be day, month or term.")
+    if payload.window not in {"hour", "day", "month", "term"}:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "window must be hour, day, month or term.")
     if payload.model_alias and payload.access_group_id:
         raise GatewayError(
             ErrorCode.INVALID_REQUEST,

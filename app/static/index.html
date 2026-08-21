@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.35.14">
+<link rel="stylesheet" href="style.css?v=1.35.16">
 </head>
 <body>
 
@@ -163,7 +163,7 @@
       </div>
       <div class="panel" id="savings-panel">
         <div class="panel-hd">
-          <div><h3>ถ้าไม่ได้รันเอง</h3>
+          <div><h3>If you did not start it yourself</h3>
             <div class="sub">ทราฟฟิกช่วงนี้ถ้าวิ่งผ่าน API เชิงพาณิชย์จะจ่ายเท่าไร</div></div>
           <select id="savings-baseline" class="mini"></select>
         </div>
@@ -178,7 +178,7 @@
           <div><h3><code>model: "auto"</code></h3>
             <div class="sub">ให้เกตเวย์เลือกโมเดลที่เร็วที่สุดที่รับคำขอนั้นได้
               จากตัวที่คีย์นั้นใช้ได้อยู่แล้ว</div></div>
-          <button id="auto-refresh" class="ghost small">ดูอันดับตอนนี้</button>
+          <button id="auto-refresh" class="ghost small">Rank now</button>
         </div>
         <div class="panel-bd"><div id="auto-body"></div></div>
       </div>
@@ -195,7 +195,7 @@
     <div data-fold-section="reg-models">
       <div class="bar" style="margin-bottom:12px">
         <h2 style="margin:0;flex:1"><span class="hi" data-icon="models" data-icon-size="15" aria-hidden="true"></span>Registered models</h2>
-        <button id="models-expand-all" class="ghost">กางทั้งหมด</button>
+        <button id="models-expand-all" class="ghost">Expand all</button>
         <button id="verify-all" class="ghost">Verify backends</button>
         <button id="new-model" class="primary">+ Add model</button>
         <button id="reload-registry" class="ghost">Reload registry</button>
@@ -336,30 +336,34 @@
           <!-- โควตาที่จะมีผลกับคนที่เลือก · เดิมต้องข้ามไปแท็บ Quota เพื่อดูและตั้ง
                ผู้ดูแลจึงออก key เสร็จโดยไม่รู้ว่าคนนี้มีเพดานเท่าไรหรือมีหรือยัง -->
           <div class="field full" id="k-quota-wrap" hidden>
-            <label>โควตาที่จะมีผล</label>
+            <label>Quota that will apply</label>
             <div id="k-quota" class="quotabox"></div>
           </div>
           <!-- เพดานเฉพาะใบนี้ · ไม่ได้แทนโควตาของคน แต่บวกเข้ามาอีกด่าน
                ใช้กับ token ของ CI หรือใบทดลองที่แจกคนนอก -->
           <div class="field full">
-            <label class="tog" for="k-cap-on" style="cursor:pointer">
-              <input type="checkbox" id="k-cap-on" style="min-width:auto;flex:none">
-              จำกัดเพดานเฉพาะใบนี้ด้วย <span class="opt">(ไม่บังคับ)</span>
+            <!-- ใช้รูปแบบเดียวกับ .checks: label เป็น block ตามค่าตั้งต้นของหน้านี้
+                 ถ้าไม่บังคับเป็น flex ช่องติ๊กจะหลุดไปลอยอยู่คนละบรรทัดกับข้อความ -->
+            <label for="k-cap-on"
+                   style="display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--fg)">
+              <input type="checkbox" id="k-cap-on" style="width:auto;min-width:auto;flex:none">
+              Cap this key as well <span class="opt">(optional)</span>
             </label>
             <div id="k-cap-fields" class="quotabox" hidden>
-              <div class="qline">
-                <label for="k-cap-window">ต่อ</label>
-                <select id="k-cap-window" style="flex:none">
-                  <option value="day">day</option>
-                  <option value="month">month</option>
-                  <option value="term">term</option>
-                </select>
-                <label for="k-cap-req">ครั้ง</label>
-                <input id="k-cap-req" type="number" value="1000" min="0" style="flex:none;width:120px">
-                <label for="k-cap-in">token เข้า</label>
-                <input id="k-cap-in" type="number" value="0" min="0" style="flex:none;width:140px">
-                <label for="k-cap-out">token ออก</label>
-                <input id="k-cap-out" type="number" value="0" min="0" style="flex:none;width:140px">
+              <div class="capgrid">
+                <div><label for="k-cap-window">Per</label>
+                  <select id="k-cap-window">
+                    <option value="hour">hour</option>
+                    <option value="day" selected>day</option>
+                    <option value="month">month</option>
+                    <option value="term">term</option>
+                  </select></div>
+                <div><label for="k-cap-req">Requests</label>
+                  <input id="k-cap-req" type="number" value="1000" min="0"></div>
+                <div><label for="k-cap-in">Input tokens</label>
+                  <input id="k-cap-in" type="number" value="0" min="0"></div>
+                <div><label for="k-cap-out">Output tokens</label>
+                  <input id="k-cap-out" type="number" value="0" min="0"></div>
               </div>
               <p class="hint">0 = ไม่จำกัดข้อนั้น · คำขอต้องผ่านทั้งเพดานของใบนี้และโควตาของเจ้าของ
                 — ออกใบใหม่จึงไม่ใช่วิธีขอโควตาเพิ่ม</p>
@@ -396,7 +400,7 @@
         <summary>สามระดับนี้ต่างกันอย่างไร · ตั้งค่าเองไม่ได้</summary>
         <div class="roles-body">
           <table>
-            <tr><th>Role</th><th>เรียกโมเดลได้</th><th>ดูแลอะไรได้</th></tr>
+            <tr><th>Role</th><th>Models</th><th>Scope</th></tr>
             <tr>
               <td><code>member</code></td>
               <td>เท่าที่กลุ่มของตัวเองเปิดให้</td>
@@ -586,6 +590,7 @@
         <div class="field">
           <label for="q-window">Window</label>
           <select id="q-window">
+            <option value="hour">hour</option>
             <option value="day">day</option>
             <option value="month">month</option>
             <option value="term">term</option>
@@ -594,7 +599,7 @@
       </div>
       <div class="row">
         <div class="field" style="flex:1 1 100%">
-          <label for="q-name">ชื่อนโยบาย (ไม่บังคับ)</label>
+          <label for="q-name">Policy name <span class="opt">(optional)</span></label>
           <input id="q-name" placeholder="เช่น ช่วงสอบปลายภาค · วิชาที่ใช้ vision หนัก" autocomplete="off">
         </div>
       </div>
@@ -614,7 +619,7 @@
           <input id="q-tpm" type="number" value="0" min="0">
         </div>
         <div class="field">
-          <label for="q-days">หมดอายุใน (วัน)</label>
+          <label for="q-days">Expires in (days)</label>
           <input id="q-days" type="number" value="0" min="0" placeholder="0 = ไม่หมดอายุ">
         </div>
       </div>
@@ -640,8 +645,8 @@
       <details class="advanced">
         <summary>ตัวเลือกขั้นสูง — จำกัดเฉพาะบางโมเดล</summary>
         <div class="field" style="margin-top:10px">
-          <label for="q-model">ใช้กับโมเดล</label>
-          <select id="q-model"><option value="">— ทุกโมเดลที่คนนั้นเรียกได้ —</option></select>
+          <label for="q-model">Applies to model</label>
+          <select id="q-model"><option value="">— every model they may call —</option></select>
           <span class="hint">
             ปกติไม่ต้องแตะ · โควตาคุมรวมทุกโมเดลที่คนนั้นเรียกได้อยู่แล้ว ·
             เลือกที่นี่เมื่อจะคุม<em>เฉพาะ</em>ตัวที่กิน GPU หนัก เช่นจำกัด vision ไว้
@@ -737,7 +742,7 @@
       <div class="ep-auth-head">การเข้าถึง<span class="ep-secret-state"></span></div>
       <div class="row">
         <div class="field">
-          <label>ชื่อช่องเก็บคีย์</label>
+          <label>Env var name</label>
           <input class="ep-keyenv" placeholder="MINIMAX_API_KEY" autocomplete="off">
         </div>
         <div class="field grow2">
@@ -745,8 +750,8 @@
           <div class="row tight">
             <input class="ep-secret" type="password" autocomplete="new-password"
                    placeholder="วางคีย์ที่ได้จากผู้ให้บริการ">
-            <button type="button" class="ep-secret-save">บันทึกคีย์</button>
-            <button type="button" class="ghost ep-list-models">ดูโมเดลที่เรียกได้</button>
+            <button type="button" class="ep-secret-save">Save key</button>
+            <button type="button" class="ghost ep-list-models">List models</button>
           </div>
         </div>
       </div>
@@ -802,6 +807,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.35.14"></script>
+<script src="app.js?v=1.35.16"></script>
 </body>
 </html>

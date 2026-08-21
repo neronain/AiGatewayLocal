@@ -367,7 +367,7 @@ function modelRow(model) {
         <span class="hint">ที่</span>
         <code class="mono">${esc(location.origin)}/v1</code>
         <button class="ghost small" data-copy-model="${esc(model.id)}"
-          >${icon('copy', 14)} คัดลอกชื่อ</button>
+          >${icon('copy', 14)} Copy name</button>
       </div>
     </div>
   </details>`;
@@ -495,8 +495,8 @@ function renderSavings(d) {
       <div class="hint">ใน ${d.window_days} วัน · ${(d.requests || 0).toLocaleString()} คำขอ ·
         เทียบกับ ${esc((d.baseline || {}).label || '')}</div>
     </div>
-    ${rows ? `<table class="tbl"><thead><tr><th>โมเดล</th><th class="num">คำขอ</th>
-        <th class="num">token</th><th class="num">ถ้าจ่าย</th></tr></thead>
+    ${rows ? `<table class="tbl"><thead><tr><th>Model</th><th class="num">Requests</th>
+        <th class="num">Tokens</th><th class="num">If paid</th></tr></thead>
       <tbody>${rows}</tbody></table>` : '<div class="empty">ยังไม่มีทราฟฟิกในช่วงนี้</div>'}
     <p class="hint" style="margin:10px 0 0">${esc(d.caveat || '')} ·
       ราคา ณ ${esc(d.prices_updated || '')}</p>`;
@@ -522,9 +522,9 @@ async function loadAutoPreview() {
   body.innerHTML = rows ? `
     <div class="hint" style="margin-bottom:8px">ตอนนี้จะเลือก
       <strong>${esc(d.chosen || '—')}</strong> — ${esc(d.reason || '')}</div>
-    <table class="tbl"><thead><tr><th>#</th><th>โมเดล</th>
+    <table class="tbl"><thead><tr><th>#</th><th>Model</th>
       <th class="num">tok/s</th><th class="num">TTFT</th>
-      <th class="num">context</th><th class="num">ตัวอย่าง</th></tr></thead>
+      <th class="num">Context</th><th class="num">Sample</th></tr></thead>
       <tbody>${rows}</tbody></table>
     <p class="hint" style="margin:8px 0 0">ตัวเลขมาจากทราฟฟิกจริงที่ผ่านเกตเวย์ ·
       ต้องเห็นอย่างน้อย ${d.min_samples} คำขอก่อนถึงจะนับ ตัวที่ยังไม่ถึงจะอยู่ท้ายแถว
@@ -930,7 +930,7 @@ async function loadModels() {
       <label class="tune">priority
         <input type="number" min="0" max="1000" value="${esc(e.priority)}"
           data-tune="priority" data-model="${esc(m.alias)}" data-ep="${esc(e.name)}"></label>
-      <label class="tune">พร้อมกัน
+      <label class="tune">Concurrent
         <input type="number" min="1" max="4096" value="${esc(e.max_concurrency)}"
           data-tune="max_concurrency" data-model="${esc(m.alias)}" data-ep="${esc(e.name)}"></label>
       ${e.health?.in_flight ? `<span class="hint">กำลังวิ่ง ${esc(e.health.in_flight)}</span>` : ''}
@@ -1027,7 +1027,7 @@ async function loadModels() {
       .map((b) => b.dataset.expand);
     const paint = () => {
       const anyClosed = aliases.some((a) => !openAliases().has(a));
-      all.textContent = anyClosed ? 'กางทั้งหมด' : 'ยุบทั้งหมด';
+      all.textContent = anyClosed ? 'Expand all' : 'Collapse all';
     };
     all.onclick = () => {
       const anyClosed = aliases.some((a) => !openAliases().has(a));
@@ -1883,7 +1883,7 @@ async function loadAccess() {
   const adminCount = users.data.filter((u) => u.role === 'admin').length;
   $('user-table').innerHTML = `
     <tr><th>ID</th><th>Name</th><th>Role</th><th>Workspaces</th>
-        <th>โควตาที่ใช้ไป</th><th>Status</th></tr>
+        <th>Quota used</th><th>Status</th></tr>
     ${users.data.map((u) => {
       // admin คนสุดท้ายเปลี่ยน role ไม่ได้ — ไม่มี admin แปลว่าไม่มีใครออก key
       // ตั้ง quota หรือแก้ registry ได้อีก และไม่มีทางกลับผ่านหน้าเว็บ
@@ -1919,7 +1919,7 @@ async function loadAccess() {
           : `<button class="link small" data-reset-quota="${esc(u.id)}"
                data-who="${esc(u.external_id)}"
                title="คืนโควตารอบนี้ให้ ${esc(u.external_id)} · ประวัติการใช้งานยังอยู่ครบ"
-               >คืนโควตา</button>`}</td>
+               >Reset quota</button>`}</td>
         <td>${statusDot(u.status === 'active', 'active', esc(u.status || 'disabled'))}</td>
       </tr>`;
     }).join('') || '<tr><td class="empty">No people yet.</td></tr>'}`;
@@ -1987,13 +1987,13 @@ async function loadAccess() {
       ? `<button class="small" data-purge="${esc(k.id)}"
            title="ลบแถวนี้ถาวร — ประวัติการใช้งานยังอยู่">Delete</button>`
       : `<button class="ghost small" data-extend="${esc(k.id)}" data-name="${esc(k.name || k.key_prefix)}"
-           title="เลื่อนวันหมดอายุ · ตัว key เดิมใช้ต่อได้เลย">ต่ออายุ</button>
+           title="เลื่อนวันหมดอายุ · ตัว key เดิมใช้ต่อได้เลย">Extend</button>
          <span class="rowmenu"><button class="ghost small menu-t" data-menu aria-label="More actions"
            >${icon('chevron', 14)}</button>
            <div class="menu-pop">
              <button data-scope="${esc(k.id)}" data-name="${esc(k.name || k.key_prefix)}">Models…</button>
              ${myRole !== 'admin' ? '' : k.revealable
-               ? `<button data-reveal="${esc(k.id)}" data-label="${esc(k.name || k.key_prefix)}">ดู key</button>`
+               ? `<button data-reveal="${esc(k.id)}" data-label="${esc(k.name || k.key_prefix)}">Reveal</button>`
                : '<div class="menu-note">ดู key ไม่ได้ — เก็บแค่ hash</div>'}
              <button class="danger" data-revoke="${esc(k.id)}">Revoke</button>
            </div></span>`;
@@ -2086,7 +2086,7 @@ async function loadAccess() {
           <label><input type="checkbox" class="scope-model" value="${esc(m.alias)}"
             ${current.has(m.alias) ? 'checked' : ''}> ${esc(m.alias)}</label>`).join('')}</div>
         <p class="hint" id="scope-note"></p>
-        <button class="primary" id="scope-save">บันทึก</button>`);
+        <button class="primary" id="scope-save">Save</button>`);
 
       // ไม่ติ๊กเลย = ไม่จำกัด ซึ่งกว้างกว่าเดิม ไม่ใช่แคบกว่า · ต้องเห็นก่อนกดบันทึก
       const note = () => {
@@ -2166,15 +2166,15 @@ async function loadAccess() {
                 title="เอา ${esc(m.external_id)} ออก">×</button></span>`).join(' ')
               || '<span class="hint">ยังไม่มีใครอยู่ในวิชานี้</span>'}
           </div>
-          <label class="ws-add">เพิ่มหลายคนพร้อมกัน
+          <label class="ws-add">Add several at once
             <select multiple size="4" data-bulk="${esc(c.id)}">${
               (state.cache.users || [])
                 .filter((u) => !(c.members || []).some((m) => m.id === u.id))
                 .map((u) => `<option value="${esc(u.id)}">${esc(u.external_id)}${
                   u.display_name ? ` — ${esc(u.display_name)}` : ''}</option>`).join('')
-              || '<option disabled>ทุกคนอยู่ในวิชานี้แล้ว</option>'}</select></label>
+              || '<option disabled>everyone is already in this workspace</option>'}</select></label>
           <button class="ghost small" data-bulkadd="${esc(c.id)}"
-            data-code="${esc(c.code)}">เพิ่มที่เลือกไว้</button>
+            data-code="${esc(c.code)}">Add selected</button>
         </details>
       </td>
       <td class="checks">${aliases.map((a) => `
@@ -2183,13 +2183,13 @@ async function loadAccess() {
       `).join('') || '<span class="hint">ยังไม่มีโมเดลใน registry</span>'}
         <div class="ws-defaults">
           <span class="ws-defaults-title">key ของสมาชิกใหม่เริ่มต้นที่</span>
-          <label>จำกัดไว้ที่
+          <label>Limited to
             <select multiple size="3" data-wsdefault="${esc(c.id)}">${
               (c.models || []).map((a) => `
               <option value="${esc(a)}"${(c.default_member_models || []).includes(a)
                 ? ' selected' : ''}>${esc(a)}</option>`).join('')
-              || '<option disabled>ยังไม่ได้ติ๊กโมเดลไว้ข้างบน</option>'}</select></label>
-          <label>อายุ (วัน)
+              || '<option disabled>no model ticked above yet</option>'}</select></label>
+          <label>Lifetime (days)
             <input type="number" min="0" data-wsdays="${esc(c.id)}"
               value="${c.default_key_days || 0}"></label>
           <span class="hint">
@@ -2329,7 +2329,7 @@ async function showQuotaFor(userId) {
           : ''}</div>
       <div class="qline">
         <button id="k-quota-set" class="ghost small">${
-          q.source === 'user' ? 'แก้โควตาของคนนี้' : 'ตั้งโควตาเฉพาะคนนี้'}</button>
+          q.source === 'user' ? 'Edit their quota' : 'Set a quota for them'}</button>
         <span class="hint">โควตานับต่อคน ไม่ใช่ต่อ key — key ทุกใบของคนนี้ใช้กองเดียวกัน</span>
       </div>`;
     $('k-quota-set').onclick = () => openQuotaFor(userId, q);
@@ -2497,7 +2497,7 @@ async function loadQuota() {
         <button class="ghost small" data-edit-policy="${esc(p.id)}"
           data-name="${esc(p.name || p.scope)}">Edit</button>${p.expires_at
         ? `<button class="ghost small" data-extend-policy="${esc(p.id)}"
-             data-name="${esc(p.name || p.scope)}">ต่ออายุ</button>` : ''}
+             data-name="${esc(p.name || p.scope)}">Extend</button>` : ''}
         <button class="danger small" data-del-policy="${esc(p.id)}">Delete</button></td>
     </tr>`).join('') || '<tr><td class="empty">No policies — the gateway.yaml defaults apply.</td></tr>'}`;
 
@@ -2532,7 +2532,7 @@ async function loadQuota() {
             </select></div>
         </div>
         <p class="hint" id="e-note"></p>
-        <button class="primary" id="e-save">บันทึก</button>`);
+        <button class="primary" id="e-save">Save</button>`);
       $('e-save').onclick = async () => {
         try {
           await patch(`/admin/quota-policies/${p.id}`, {

@@ -381,7 +381,7 @@ class ModelDefinition(BaseModel):
 class QuotaDefaults(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    window: Literal["day", "month", "term"] = "day"
+    window: Literal["hour", "day", "month", "term"] = "day"
     # Months a "term" begins on, for organisations that bill or budget on a
     # calendar of their own: [1, 4, 7, 10] for fiscal quarters, [9, 2] for a
     # two-semester year. Default is the Thai academic year this first ran on.

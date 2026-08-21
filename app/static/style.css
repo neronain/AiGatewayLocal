@@ -284,6 +284,11 @@ input.bad { border-color: var(--bad); }
 .chip.on { border-color: var(--accent); background: var(--accent-bg); color: var(--fg); font-weight: 600; }
 .hint.err-text { color: var(--bad); }
 .hint.ok-text { color: var(--ok); }
+/* ช่องเพดานของ key — ป้ายอยู่เหนือช่องเสมอ ไม่ใช่แถวเดียวกันแล้วห่อจนป้ายพรากจากช่อง */
+.capgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.capgrid > div { display: flex; flex-direction: column; gap: 4px; }
+.capgrid label { min-width: 0; font-size: 0.75rem; color: var(--fg2); }
+.capgrid input, .capgrid select { width: 100%; }
 .row.tight { display: flex; gap: 8px; align-items: center; }
 .row.tight input { flex: 1 1 auto; min-width: 0; }
 
