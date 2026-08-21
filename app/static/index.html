@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.35.13">
+<link rel="stylesheet" href="style.css?v=1.35.14">
 </head>
 <body>
 
@@ -338,6 +338,32 @@
           <div class="field full" id="k-quota-wrap" hidden>
             <label>โควตาที่จะมีผล</label>
             <div id="k-quota" class="quotabox"></div>
+          </div>
+          <!-- เพดานเฉพาะใบนี้ · ไม่ได้แทนโควตาของคน แต่บวกเข้ามาอีกด่าน
+               ใช้กับ token ของ CI หรือใบทดลองที่แจกคนนอก -->
+          <div class="field full">
+            <label class="tog" for="k-cap-on" style="cursor:pointer">
+              <input type="checkbox" id="k-cap-on" style="min-width:auto;flex:none">
+              จำกัดเพดานเฉพาะใบนี้ด้วย <span class="opt">(ไม่บังคับ)</span>
+            </label>
+            <div id="k-cap-fields" class="quotabox" hidden>
+              <div class="qline">
+                <label for="k-cap-window">ต่อ</label>
+                <select id="k-cap-window" style="flex:none">
+                  <option value="day">day</option>
+                  <option value="month">month</option>
+                  <option value="term">term</option>
+                </select>
+                <label for="k-cap-req">ครั้ง</label>
+                <input id="k-cap-req" type="number" value="1000" min="0" style="flex:none;width:120px">
+                <label for="k-cap-in">token เข้า</label>
+                <input id="k-cap-in" type="number" value="0" min="0" style="flex:none;width:140px">
+                <label for="k-cap-out">token ออก</label>
+                <input id="k-cap-out" type="number" value="0" min="0" style="flex:none;width:140px">
+              </div>
+              <p class="hint">0 = ไม่จำกัดข้อนั้น · คำขอต้องผ่านทั้งเพดานของใบนี้และโควตาของเจ้าของ
+                — ออกใบใหม่จึงไม่ใช่วิธีขอโควตาเพิ่ม</p>
+            </div>
           </div>
           <div class="issue-foot">
             <button id="issue-key" class="primary">Issue key</button>
@@ -776,6 +802,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.35.13"></script>
+<script src="app.js?v=1.35.14"></script>
 </body>
 </html>

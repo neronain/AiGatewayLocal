@@ -389,6 +389,15 @@ class QuotaService:
     def subject_key(user_id: str, model_alias: str | None = None) -> str:
         return f"user:{user_id}:model:{model_alias}" if model_alias else f"user:{user_id}"
 
+    @staticmethod
+    def key_subject(api_key_id: str) -> str:
+        """ตัวนับของ key ใบเดียว — แยกกองจากของคน
+
+        คนละกองกันโดยตั้งใจ: ใบหนึ่งหมดโควตาไม่ควรลากใบอื่นของคนเดียวกันไปด้วย และ
+        เจ้าของยังต้องไม่เกินโควตารวมของตัวเองอยู่ดี
+        """
+        return f"key:{api_key_id}"
+
     async def resolve_limits(
         self,
         session: AsyncSession,
@@ -406,7 +415,14 @@ class QuotaService:
         """
         now = datetime.now(UTC)
         result = await session.execute(
-            select(QuotaPolicy).where(QuotaPolicy.enabled.is_(True))
+            # นโยบายของ key ไม่เกี่ยวกับการคิดโควตาของคน · ถ้าไม่กันไว้ นโยบายที่ตั้ง
+            # เพดานให้ key ใบเดียว (ซึ่งไม่ได้ระบุ user/workspace) จะได้คะแนน 0
+            # เท่ากับนโยบายกลาง แล้วไปชนะ — ตั้งเพดานให้ CI token ใบเดียวกลายเป็น
+            # การลดโควตาของทุกคนในระบบ · เทสต์จับได้ตอนเขียนฟีเจอร์นี้พอดี
+            select(QuotaPolicy).where(
+                QuotaPolicy.enabled.is_(True),
+                QuotaPolicy.api_key_id.is_(None),
+            )
         )
         # An expired policy is skipped rather than deleted: the row is the record
         # of what was granted and when, which is the first thing anyone asks
@@ -429,6 +445,8 @@ class QuotaService:
             bundles = {gid: set(models or []) for gid, models in rows}
 
         def score(policy: QuotaPolicy) -> int:
+            if policy.api_key_id:
+                return -1          # เพดานของ key คนละด่าน ไม่ใช่โควตาของคน
             if policy.user_id and policy.user_id != user_id:
                 return -1
             if policy.workspace_id and policy.workspace_id != workspace_id:
@@ -480,8 +498,60 @@ class QuotaService:
             policy_name=best.name or "",
         )
 
+    async def resolve_key_limits(
+        self, session: AsyncSession, api_key_id: str
+    ) -> ResolvedLimits | None:
+        """เพดานของ key ใบนี้ ถ้ามีคนตั้งไว้ · ไม่มี = None
+
+        แยกจาก resolve_limits ของคนโดยตั้งใจ — ไม่ไปแตะตรรกะที่ทางเดินของคำขอทุกคำขอ
+        ใช้อยู่ · และเมื่อไม่มีนโยบายของ key (ซึ่งคือค่าเริ่มต้นของทุก deployment)
+        ทางเดินจะไม่มีอะไรเปลี่ยนเลย ไม่มีการอ่านตัวนับเพิ่ม
+        """
+        if not api_key_id:
+            return None
+        now = datetime.now(UTC)
+        result = await session.execute(
+            select(QuotaPolicy).where(
+                QuotaPolicy.enabled.is_(True),
+                QuotaPolicy.api_key_id == api_key_id,
+            )
+        )
+        policies = [
+            p for p in result.scalars()
+            if p.expires_at is None or _aware(p.expires_at) > now
+        ]
+        if not policies:
+            return None
+        # ตั้งซ้อนกันหลายอันบนใบเดียวไม่ใช่เรื่องปกติ — เอาอันที่เข้มที่สุดไว้ก่อน
+        # เพราะนโยบายของ key มีไว้เพื่อ *จำกัด* ไม่ใช่เพื่อปลด
+        best = min(policies, key=lambda p: (p.max_requests or 1 << 62))
+        return ResolvedLimits(
+            window=best.window,
+            max_requests=best.max_requests,
+            max_input_tokens=best.max_input_tokens,
+            max_output_tokens=best.max_output_tokens,
+            max_images=best.max_images,
+            source="key",
+            max_requests_per_minute=best.max_requests_per_minute or 0,
+            max_tokens_per_minute=best.max_tokens_per_minute or 0,
+            policy_id=best.id,
+            policy_name=best.name or "",
+        )
+
+    async def check_key(self, api_key_id: str, limits: ResolvedLimits) -> Consumption:
+        """ด่านที่สอง: ใบนี้เองยังไม่เกินเพดานของมัน
+
+        เรียกหลังด่านของคนเสมอ · ข้อความที่ผู้ใช้ได้จะบอกว่าเป็นเพดานของ key ไม่ใช่
+        ของตัวเขา ไม่งั้นคนที่ยังมีโควตาเหลือเยอะจะงงว่าทำไมโดนปฏิเสธ
+        """
+        return await self._check_subject(self.key_subject(api_key_id), limits, subject="key")
+
     async def check(self, user_id: str, limits: ResolvedLimits) -> Consumption:
-        key = self.subject_key(user_id)
+        return await self._check_subject(self.subject_key(user_id), limits, subject="user")
+
+    async def _check_subject(
+        self, key: str, limits: ResolvedLimits, *, subject: str = "user"
+    ) -> Consumption:
         used = await self._store.get(key, limits.window)
 
         def exceeded(name: str, used_value: int, limit: int, window: str) -> None:
@@ -493,13 +563,15 @@ class QuotaService:
                 if window == "minute"
                 else f"It resets at the start of the next {window}."
             )
+            whose = "This API key's" if subject == "key" else "Your"
             raise GatewayError(
                 ErrorCode.QUOTA_EXCEEDED,
-                f"Your {window} {name} quota is exhausted "
+                f"{whose} {window} {name} quota is exhausted "
                 f"({used_value:,} of {limit:,}). {when}",
                 retry_after=wait,
                 details={
                     "quota": name,
+                    "subject": subject,
                     "used": used_value,
                     "limit": limit,
                     "window": window,
@@ -527,7 +599,15 @@ class QuotaService:
         return used
 
     async def record(
-        self, user_id: str, window: str, delta: Consumption, *, rate_limited: bool = False
+        self,
+        user_id: str,
+        window: str,
+        delta: Consumption,
+        *,
+        rate_limited: bool = False,
+        api_key_id: str = "",
+        key_window: str = "",
+        key_rate_limited: bool = False,
     ) -> None:
         try:
             key = self.subject_key(user_id)
@@ -536,6 +616,13 @@ class QuotaService:
             # that never wanted one would pay for a second counter per request.
             if rate_limited:
                 await self._store.increment(key, "minute", delta)
+            # กองของ key นับเฉพาะเมื่อมีนโยบายของ key จริง ๆ · ไม่มีนโยบาย = ไม่มี
+            # ตัวนับเพิ่ม ทุก deployment ที่ไม่ได้ใช้ฟีเจอร์นี้จึงไม่จ่ายอะไรเลย
+            if api_key_id and key_window:
+                subject = self.key_subject(api_key_id)
+                await self._store.increment(subject, key_window, delta)
+                if key_rate_limited:
+                    await self._store.increment(subject, "minute", delta)
         except Exception:
             # Never fail a completed request because bookkeeping failed.
             log.exception("failed to record quota consumption for user %s", user_id)

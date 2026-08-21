@@ -204,6 +204,11 @@ async def run_chat(
         session, principal.user_id, principal.workspace_id, alias
     )
     await state.quota.check(principal.user_id, limits)
+    # ด่านที่สอง: เพดานของ key ใบนี้เอง (ถ้ามีคนตั้งไว้) · ต้องผ่านทั้งสองด่าน —
+    # ถ้าให้ด่านใดด่านหนึ่งชนะ การออก key ใบใหม่จะกลายเป็นวิธีขอโควตาเพิ่ม
+    key_limits = await state.quota.resolve_key_limits(session, principal.api_key_id)
+    if key_limits is not None:
+        await state.quota.check_key(principal.api_key_id, key_limits)
 
     try:
         endpoint = state.router.select(model, profile, "openai")
@@ -251,6 +256,8 @@ async def run_chat(
         profile=profile,
         limits_window=limits.window,
         rate_limited=limits.rate_limited,
+        key_window=key_limits.window if key_limits else "",
+        key_rate_limited=bool(key_limits and key_limits.rate_limited),
         request_id=request_id,
         started=started,
         client_agent=client_agent,
@@ -277,6 +284,8 @@ class _RequestContext:
         profile: RequestProfile,
         limits_window: str,
         rate_limited: bool,
+        key_window: str = "",
+        key_rate_limited: bool = False,
         request_id: str,
         started: float,
         client_agent: str,
@@ -293,6 +302,9 @@ class _RequestContext:
         self.profile = profile
         self.limits_window = limits_window
         self.rate_limited = rate_limited
+        # ว่าง = ใบนี้ไม่มีนโยบายของตัวเอง · ไม่ต้องนับกองที่สอง
+        self.key_window = key_window
+        self.key_rate_limited = key_rate_limited
         self.request_id = request_id
         self.started = started
         self.client_agent = client_agent
@@ -391,6 +403,9 @@ class _RequestContext:
             self.principal.user_id,
             self.limits_window,
             rate_limited=self.rate_limited,
+            api_key_id=self.principal.api_key_id,
+            key_window=self.key_window,
+            key_rate_limited=self.key_rate_limited,
             delta=Consumption(
                 requests=1,
                 text_input_tokens=usage.text_input_tokens,

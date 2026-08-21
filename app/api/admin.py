@@ -1581,6 +1581,8 @@ class QuotaPolicyIn(BaseModel):
     scope: str = "global"
     workspace_id: str | None = None
     user_id: str | None = None
+    # เพดานของ key ใบเดียว · เป็นด่านที่ *บวกเข้ามา* ไม่ได้แทนโควตาของคน
+    api_key_id: str | None = None
     model_alias: str | None = None
     # หรือทั้งมัด · มัดคือชุดโมเดลที่มีชื่ออยู่แล้ว จึงเล็งไปที่มัดแทนที่จะสร้างรายชื่อ
     # โมเดลชุดที่สองซึ่งต้องคอยไล่ให้ตรงกัน
@@ -1616,6 +1618,19 @@ async def create_quota_policy(
         AccessGroup, payload.access_group_id
     ):
         raise GatewayError(ErrorCode.INVALID_REQUEST, "Access group not found.")
+    if payload.scope == "key" and not payload.api_key_id:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "A key-scoped policy needs api_key_id.")
+    if payload.api_key_id:
+        if not await session.get(ApiKey, payload.api_key_id):
+            raise GatewayError(ErrorCode.INVALID_REQUEST, "API key not found.")
+        # เพดานของ key ไม่ใช่ที่ทางสำหรับเจาะจงคนหรือวิชา — สองเรื่องนี้มีนโยบายของ
+        # ตัวเองอยู่แล้ว และการรวมกันทำให้เดาไม่ออกว่ากฎไหนบังคับใช้จริง
+        if payload.user_id or payload.workspace_id:
+            raise GatewayError(
+                ErrorCode.INVALID_REQUEST,
+                "A key-scoped policy names only the key — set user or workspace "
+                "limits with their own policy.",
+            )
     fields = payload.model_dump()
     days = fields.pop("expires_in_days", None)
     policy = QuotaPolicy(
@@ -1657,6 +1672,9 @@ async def list_quota_policies(
                 "access_group_id": p.access_group_id,
                 "workspace_id": p.workspace_id,
                 "user_id": p.user_id,
+                # ไม่คืนออกมา = แท็บ Quota โชว์นโยบายชื่อ "เพดานของใบ ci-token"
+                # โดยไม่มีอะไรบอกว่ามันเล็งไปที่ใบไหน
+                "api_key_id": p.api_key_id,
                 "model_alias": p.model_alias,
                 "window": p.window,
                 "max_requests": p.max_requests,

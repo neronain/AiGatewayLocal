@@ -2359,6 +2359,9 @@ function openQuotaFor(userId, current) {
 }
 
 $('k-user').addEventListener('change', (e) => showQuotaFor(e.target.value));
+$('k-cap-on').addEventListener('change', (e) => {
+  $('k-cap-fields').hidden = !e.target.checked;
+});
 
 $('issue-key').onclick = async () => {
   try {
@@ -2376,6 +2379,31 @@ $('issue-key').onclick = async () => {
       <code class="mono">${esc(result.api_key)}</code>
       <button class="ghost small" id="copy-key">Copy</button></div>`;
     $('copy-key').onclick = () => navigator.clipboard.writeText(result.api_key);
+
+    // เพดานเฉพาะใบนี้ · ตั้งหลังออก key เพราะต้องรู้ id ของใบก่อน
+    //
+    // ถ้าตั้งไม่สำเร็จต้องบอกให้ชัด ไม่ใช่เงียบ — key ออกไปแล้วและใช้ได้จริง คนที่คิดว่า
+    // ตัวเองจำกัดไว้ 100 ครั้งแต่จริง ๆ ไม่ได้จำกัด คือสถานการณ์ที่แย่กว่าไม่มีฟีเจอร์นี้
+    if ($('k-cap-on').checked) {
+      try {
+        await post('/admin/quota-policies', {
+          scope: 'key',
+          api_key_id: result.id,
+          name: `เพดานของใบ ${$('k-name').value.trim() || result.key_prefix || ''}`.trim(),
+          window: $('k-cap-window').value,
+          max_requests: Number($('k-cap-req').value) || 0,
+          max_input_tokens: Number($('k-cap-in').value) || 0,
+          max_output_tokens: Number($('k-cap-out').value) || 0,
+        });
+        $('key-out').insertAdjacentHTML('beforeend',
+          `<p class="hint ok-text">ตั้งเพดานเฉพาะใบนี้แล้ว — ${
+            esc(Number($('k-cap-req').value).toLocaleString())} ครั้งต่อ ${esc($('k-cap-window').value)}</p>`);
+      } catch (e) {
+        $('key-out').insertAdjacentHTML('beforeend',
+          `<p class="hint err-text">key ออกให้แล้วแต่ <b>ตั้งเพดานไม่สำเร็จ</b> — ${esc(e.message)}
+           · ใบนี้ยังใช้ได้เต็มโควตาของเจ้าของ ตั้งใหม่ได้ที่แท็บ Quota</p>`);
+      }
+    }
     await loadAccess();
   } catch (e) { showError(e.message); }
 };

@@ -100,6 +100,11 @@ async def messages(
         session, principal.user_id, principal.workspace_id, alias
     )
     await state.quota.check(principal.user_id, limits)
+    # ด่านที่สอง: เพดานของ key ใบนี้เอง (ถ้ามีคนตั้งไว้) · ต้องผ่านทั้งสองด่าน —
+    # ถ้าให้ด่านใดด่านหนึ่งชนะ การออก key ใบใหม่จะกลายเป็นวิธีขอโควตาเพิ่ม
+    key_limits = await state.quota.resolve_key_limits(session, principal.api_key_id)
+    if key_limits is not None:
+        await state.quota.check_key(principal.api_key_id, key_limits)
 
     # Prefer a backend that speaks Anthropic natively; otherwise translate over
     # an OpenAI backend. This is a property of the endpoints, not of the alias.
@@ -140,6 +145,8 @@ async def messages(
         profile=profile,
         limits_window=limits.window,
         rate_limited=limits.rate_limited,
+        key_window=key_limits.window if key_limits else "",
+        key_rate_limited=bool(key_limits and key_limits.rate_limited),
         request_id=request_id,
         started=started,
         client_agent=request.headers.get("user-agent", "")[:128],

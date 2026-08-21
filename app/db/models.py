@@ -272,11 +272,17 @@ class QuotaPolicy(Base, TimestampMixin):
     # identifies a policy to the code; it does not tell the person looking at
     # six of them which is the one they wrote for the exam period.
     name: Mapped[str] = mapped_column(String(128), default="")
-    scope: Mapped[str] = mapped_column(String(16), default="global")  # global|workspace|user
+    scope: Mapped[str] = mapped_column(String(16), default="global")  # global|workspace|user|key
     workspace_id: Mapped[str | None] = mapped_column(
         "course_id", ForeignKey("courses.id"), index=True
     )
     user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), index=True)
+    # เพดานของ key ใบเดียว · ไม่ได้แทนโควตาของคน แต่บวกเข้ามาอีกด่าน — คำขอต้องผ่าน
+    # ทั้งสองด่าน ไม่งั้นการออก key ใบใหม่จะกลายเป็นวิธีขอโควตาเพิ่มด้วยตัวเอง ซึ่งเป็น
+    # เหตุผลเดียวกับที่รายการโมเดลบน key ทำได้แค่ "แคบลง"
+    #
+    # ใช้กับใบที่มีเจ้าของเป็นโปรแกรม เช่น token ของ CI หรือใบทดลองที่แจกคนนอก
+    api_key_id: Mapped[str | None] = mapped_column(ForeignKey("api_keys.id"), index=True)
     model_alias: Mapped[str | None] = mapped_column(String(64), index=True)
     # Or a whole bundle of them. A quota that should cover four models was four
     # policies to write and four to remember to change; an access group is

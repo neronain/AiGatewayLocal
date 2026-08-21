@@ -113,6 +113,11 @@ async def create_response(
         session, principal.user_id, principal.workspace_id, alias
     )
     await state.quota.check(principal.user_id, limits)
+    # ด่านที่สอง: เพดานของ key ใบนี้เอง (ถ้ามีคนตั้งไว้) · ต้องผ่านทั้งสองด่าน —
+    # ถ้าให้ด่านใดด่านหนึ่งชนะ การออก key ใบใหม่จะกลายเป็นวิธีขอโควตาเพิ่ม
+    key_limits = await state.quota.resolve_key_limits(session, principal.api_key_id)
+    if key_limits is not None:
+        await state.quota.check_key(principal.api_key_id, key_limits)
 
     def _select(target):
         want_native = any(
