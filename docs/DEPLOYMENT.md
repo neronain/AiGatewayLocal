@@ -17,6 +17,33 @@ Every command below has been run end-to-end on Ubuntu 24.04 (arm64).
 
 ---
 
+## Forgot the console password
+
+Changing your own password is in the console: **My account → Change password**.
+It asks for the current one, which is no help when that is the thing you have
+lost. On the machine running the gateway:
+
+```bash
+cd /opt/litegate                                    # wherever it is installed
+.venv/bin/python scripts/reset_password.py --list   # which accounts exist
+.venv/bin/python scripts/reset_password.py admin    # new password, printed once
+```
+
+Pass `--password '…'` to choose one instead of taking a generated one. Either
+way every existing session for that account is signed out — somebody resetting a
+password usually suspects the old one is known to someone else, and leaving the
+sessions alive would undo the point of resetting it.
+
+Run it on the gateway host, not from a laptop: it reads the same `.env` the
+service does, and pointed at a different database it will report success against
+an account nobody signs in with.
+
+`GW_ADMIN_PASSWORD` does **not** help here. It applies when the administrator is
+first created, and to an account that somehow has no password at all — it is not
+a way to overwrite one that already exists.
+
+---
+
 ## 0. Prerequisites
 
 **Gateway host**

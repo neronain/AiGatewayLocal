@@ -164,6 +164,10 @@ address you are using, and without the flag the script keeps the old one:
 sudo scripts/install_tls.sh --force gateway.example.ac.th 10.0.0.5 localhost 127.0.0.1
 ```
 
+Lost the console password? `.venv/bin/python scripts/reset_password.py admin`
+on the gateway host — details in
+**[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#forgot-the-console-password)**.
+
 Real deployments — Docker Compose, systemd, Postgres + Redis, backup and
 restore, monitoring: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**
 
