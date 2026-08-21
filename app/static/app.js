@@ -36,7 +36,20 @@ const num = (v) => (v || 0).toLocaleString();
 const stamp = (value) => new Date(/(Z|[+-]\d{2}:?\d{2})$/.test(value) ? value : `${value}Z`);
 
 function banner(target, kind, message) {
-  $(target).innerHTML = message ? `<div class="banner ${kind}">${esc(message)}</div>` : '';
+  const host = $(target);
+  host.innerHTML = message ? `<div class="banner ${kind}">${esc(message)}</div>` : '';
+  const node = host.firstElementChild;
+  if (!node) { host.style.top = ''; return; }
+  // เกาะใต้ header พอดี · ผูกกับความสูงจริงเพราะจอแคบแถวเมนูจะตัดบรรทัดแล้วสูงขึ้น
+  // ถ้าตรึงเป็นตัวเลขตายตัวไว้ แถบนี้จะไปบังแถวเมนูในจอมือถือ
+  const head = document.querySelector('header');
+  if (head) host.style.top = `${head.offsetHeight}px`;
+  // อ่านแล้วปัดทิ้งได้ · แถบนี้ลอยอยู่เหนือเนื้อหา ค้างไว้ก็บังของที่อยู่ข้างหลัง
+  node.title = 'คลิกเพื่อปิด';
+  node.onclick = () => { host.innerHTML = ''; };
+  // ข้อความสำเร็จหมดหน้าที่เมื่ออ่านจบ · ข้อความผิดพลาดอยู่จนกว่าจะปิดเองหรือ
+  // มีอันใหม่มาแทน เพราะคนที่พลาดมักต้องอ่านซ้ำ
+  if (kind === 'ok') setTimeout(() => { if (host.firstElementChild === node) host.innerHTML = ''; }, 6000);
 }
 const showError = (m) => banner('error', 'err', m);
 
@@ -58,8 +71,18 @@ async function api(path, options = {}) {
   });
   const text = await response.text();
   let body = {};
-  try { body = text ? JSON.parse(text) : {}; } catch { body = { raw: text }; }
+  let parsed = true;
+  try { body = text ? JSON.parse(text) : {}; } catch { body = { raw: text }; parsed = false; }
   if (!response.ok) {
+    // คำตอบที่ไม่ใช่ JSON แปลว่าไม่ได้มาจากเกตเวย์ — มีตัวกลางตอบแทน · ที่เจอ
+    // จริงคือ nginx บล็อก /admin/ ตาม allow list แล้วคอนโซล (ซึ่งเรียก /admin/
+    // เกือบทุกปุ่ม) ขึ้นแค่ "403: request failed" ซึ่งไม่ได้บอกอะไรกับใครเลย
+    if (!parsed && (response.status === 403 || response.status === 502)) {
+      throw new Error(response.status === 403
+        ? 'ถูกบล็อกก่อนถึงเกตเวย์ (403 จาก nginx) — เครื่องที่คุณใช้อยู่ไม่อยู่ใน allow list ' +
+          'ของ location /admin/ · แก้ที่ /etc/nginx/sites-available/litegate.conf แล้ว reload'
+        : 'เกตเวย์ไม่ตอบ (502 จาก nginx) — ตัวบริการอาจไม่ได้รัน: systemctl status litegate');
+    }
     const err = body.error || body;
     const detail = err.details?.problems
       ? ' — ' + err.details.problems.map((p) => `${p.field}: ${p.message}`).join('; ')
