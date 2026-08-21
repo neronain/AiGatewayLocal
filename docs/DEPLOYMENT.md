@@ -1109,7 +1109,7 @@ sector-neutral. Nothing in a running deployment has to change on upgrade day:
 | `edu_sk_...` API keys | `lg_sk_...` for newly issued keys | Existing keys keep working — a key is verified by HMAC over the whole string, so the prefix is only a label |
 | `apiVersion: edullm.gateway/v1` | `litegate.dev/v1` | Both accepted; no model file needs editing |
 | `visibility: student` / role `instructor` | `member` / `manager` | Both accepted; rows are not rewritten |
-| `x-edullm-model` response header | `x-litegate-model` | Both sent for one release, then the old one is removed |
+| `x-edullm-model` response header | `x-litegate-model` | **No longer sent.** A client reading the old name gets nothing — read `x-litegate-model` |
 | systemd unit `edullm-gateway` | `litegate` | Rename at your convenience; the old unit keeps running |
 | Prometheus `edullm_*` metrics | `litegate_*` | **Not aliased** — update dashboards, this is the one thing that changes immediately |
 
@@ -1183,6 +1183,54 @@ the console is down.
 > substitute throughout, or the commands will appear to succeed while acting on
 > nothing. `systemctl show <unit> -p FragmentPath -p WorkingDirectory --value`
 > settles which one you have.
+
+### Renaming a legacy install to `litegate`
+
+Optional, and worth doing once rather than substituting names forever. Roughly a
+minute of downtime. Nothing in the database changes, so **issued API keys keep
+working** — a key is verified by HMAC against `GW_API_KEY_PEPPER`, which moves
+with the `.env` file.
+
+```bash
+sudo systemctl stop edullm-gateway && sudo systemctl disable edullm-gateway
+sudo mv /opt/edullm-gateway /opt/litegate
+
+# uid/gid stay the same, so every file's ownership follows the rename by itself
+sudo usermod -l litegate -d /opt/litegate edullm
+sudo groupmod -n litegate edullm
+
+sudo sed -i 's#/opt/edullm-gateway#/opt/litegate#g' /opt/litegate/.env
+```
+
+**The venv will not survive the move on its own.** Python writes its absolute
+path into every script in `.venv/bin` and into `pyvenv.cfg`, so systemd fails
+with `203/EXEC` and `No such file or directory` — pointing at a file that is
+plainly there. What is missing is the *interpreter named in its shebang*:
+
+```bash
+sudo find /opt/litegate/.venv/bin -maxdepth 1 -type f \
+     -exec grep -Il '/opt/edullm-gateway' {} \; |
+  sudo xargs -r sed -i 's#/opt/edullm-gateway#/opt/litegate#g'
+sudo sed -i 's#/opt/edullm-gateway#/opt/litegate#g' /opt/litegate/.venv/pyvenv.cfg
+```
+
+Then install the unit that ships with the repository and start it:
+
+```bash
+sudo mkdir -p /opt/litegate/logs && sudo chown litegate:litegate /opt/litegate/logs
+sudo install -m 644 deploy/systemd/litegate.service /etc/systemd/system/
+sudo rm -f /etc/systemd/system/edullm-gateway.service
+sudo systemctl daemon-reload && sudo systemctl enable --now litegate
+
+curl -s http://127.0.0.1:8080/readyz     # models_loaded and endpoints_healthy should match what you had
+```
+
+`ReadWritePaths` in the shipped unit names `data/` and `logs/`; `logs/` may not
+exist on an install that predates it, and systemd refuses to start a unit whose
+`ReadWritePaths` is missing. Creating it first is the whole fix.
+
+An old `.venv/bin/edullm-gateway` may still be lying around — a console script
+for an entry point the package no longer declares. It does nothing; delete it.
 
 
 ## Reading an issued key back (optional)

@@ -487,7 +487,9 @@ def test_responses_carry_both_header_names_for_one_release(client, member_key):
         json={"model": "coding", "messages": [{"role": "user", "content": "hi"}]},
     )
     assert response.headers["x-litegate-model"] == "coding"
-    assert response.headers["x-edullm-model"] == "coding"
+    # ชื่อเก่าเลิกส่งแล้ว · เอกสารบอกไว้ตั้งแต่ตอนเปลี่ยนชื่อว่าจะส่งคู่กันหนึ่งรุ่น
+    # แล้วเลิก · ปล่อยค้างไว้เท่ากับแบรนด์เก่ายังติดอยู่ในทุกคำตอบที่ระบบส่งออก
+    assert "x-edullm-model" not in response.headers
 
 
 def test_registry_with_pre_rename_vocabulary_still_loads(client):

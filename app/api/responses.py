@@ -279,7 +279,6 @@ async def _complete_response(build: BuildAttempt, ctx: _RequestContext) -> JSONR
             # คือขอ alias ไหนได้ alias นั้น แต่เวลาไล่ปัญหาต้องรู้ว่าใครตอบ ไม่งั้นตัวเลข
             # เร็ว/ช้าที่วัดได้จะถูกโยงไปผิดโมเดล
             "x-litegate-served-by": ctx.model.alias,
-            "x-edullm-model": alias,
             "x-litegate-endpoint": endpoint.name,
             "x-litegate-protocol": (
                 "responses-via-openai" if translate else "responses-native"
@@ -415,6 +414,5 @@ async def _stream_response(build: BuildAttempt, ctx: _RequestContext) -> Streami
             # คือขอ alias ไหนได้ alias นั้น แต่เวลาไล่ปัญหาต้องรู้ว่าใครตอบ ไม่งั้นตัวเลข
             # เร็ว/ช้าที่วัดได้จะถูกโยงไปผิดโมเดล
             "x-litegate-served-by": ctx.model.alias,
-            "x-edullm-model": ctx.requested_alias,
         },
     )

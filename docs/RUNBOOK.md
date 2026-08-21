@@ -21,6 +21,8 @@ journalctl -u litegate -n 100 --no-pager   # or: docker compose logs --tail=100 
 > Gateway still answers to `edullm-gateway` in `/opt/edullm-gateway`, and every
 > `litegate` command below will report success while doing nothing at all.
 > `systemctl show <unit> -p FragmentPath -p WorkingDirectory --value` settles it.
+> Renaming it once beats substituting names at 3am:
+> [Renaming a legacy install](DEPLOYMENT.md#renaming-a-legacy-install-to-litegate).
 
 ---
 

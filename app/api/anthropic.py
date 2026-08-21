@@ -271,9 +271,6 @@ async def _complete_messages(build: BuildAttempt, ctx: _RequestContext) -> JSONR
             # คือขอ alias ไหนได้ alias นั้น แต่เวลาไล่ปัญหาต้องรู้ว่าใครตอบ ไม่งั้นตัวเลข
             # เร็ว/ช้าที่วัดได้จะถูกโยงไปผิดโมเดล
             "x-litegate-served-by": ctx.model.alias,
-            # Legacy alias, one release only: scripts and dashboards still
-            # read x-edullm-model.
-            "x-edullm-model": alias,
             "x-litegate-endpoint": endpoint.name,
             "x-litegate-protocol": "anthropic-native" if not translate else "anthropic-via-openai",
             **({"x-litegate-failed-over": ",".join(sorted(ctx.tried))} if ctx.tried else {}),
@@ -400,7 +397,6 @@ async def _stream_messages(build: BuildAttempt, ctx: _RequestContext) -> Streami
             # คือขอ alias ไหนได้ alias นั้น แต่เวลาไล่ปัญหาต้องรู้ว่าใครตอบ ไม่งั้นตัวเลข
             # เร็ว/ช้าที่วัดได้จะถูกโยงไปผิดโมเดล
             "x-litegate-served-by": ctx.model.alias,
-            "x-edullm-model": ctx.requested_alias,
         },
     )
 
