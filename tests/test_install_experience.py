@@ -154,3 +154,23 @@ def test_a_rejected_config_leaves_nginx_the_way_it_was_found():
     body = script.split("nginx -t")[1].split("systemctl reload")[0]
     assert "default_restore" in body
     assert "ln -sf ../sites-available/default" in body
+
+
+def test_the_console_is_reachable_from_the_machine_it_runs_on():
+    """`/admin/` เป็นทางที่คอนโซลใช้เอง — ที่ไหนไม่อยู่ในลิสต์ คือคอนโซลใช้ไม่ได้
+
+    ของเดิมอนุญาตแค่ 10/8 กับ 192.168/16 · แปลว่าคนที่นั่งอยู่หน้าเครื่องเกตเวย์
+    เอง หรือ curl จาก ssh บนเครื่องนั้น โดน 403 ทั้งที่ทั้งวงแลนรอบตัวเข้าได้
+    และเครื่องที่ resolve ไปเจอ AAAA จะเข้ามาทาง IPv6 ซึ่งกฎเดิมเป็น v4 ล้วน
+    — เบราว์เซอร์ตัวเดียวกันจึงใช้ได้หรือไม่ได้ ขึ้นกับว่ามันหยิบ record ไหน
+
+    อาการที่เห็นคือ login ผ่าน 200 แล้วทุกแผงพัง ซึ่งดูเหมือนของเสีย ไม่เหมือน
+    กฎไฟร์วอลล์
+    """
+    conf = (ROOT / "deploy" / "nginx" / "litegate.conf").read_text(encoding="utf-8")
+    for guarded in ("location /admin/ {", "location /metrics {"):
+        block = conf.split(guarded, 1)[1].split("}", 1)[0]
+        for cidr in ("127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12",
+                     "192.168.0.0/16", "::1/128", "fc00::/7", "fe80::/10"):
+            assert f"allow {cidr};" in block, f"{guarded} ขาด {cidr}"
+        assert "deny all;" in block, f"{guarded} ต้องปิดที่เหลือ"

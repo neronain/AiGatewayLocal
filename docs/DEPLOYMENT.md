@@ -894,6 +894,22 @@ and hand out only the HTTPS address. On an isolated rack where the only things
 that can reach it are yours, leaving it open costs nothing and saves an
 argument with every monitoring probe.
 
+**Who may reach `/admin/` and `/metrics` through nginx.** Both are restricted to
+private address space — `127.0.0.0/8`, `10/8`, `172.16/12`, `192.168/16`, and
+the IPv6 equivalents `::1/128`, `fc00::/7`, `fe80::/10`. Everything else gets
+403. Two things follow from that, and both have bitten real installs:
+
+- **The console is on those paths.** Most of its calls begin with `/admin/`, so
+  an address outside the list does not lose "the admin API" — it loses the
+  console. Sign-in still returns 200 and then every panel fails, which reads as
+  a broken product rather than a firewall rule.
+- **Add your own range if you have one.** A management VLAN on public address
+  space, or a VPN handing out addresses outside these ranges, needs an extra
+  `allow` line in both blocks of `/etc/nginx/sites-available/litegate.conf`.
+  The rule matches the real peer address; `X-Forwarded-For` neither grants nor
+  denies access, so putting another proxy in front means allowing *its* address
+  and re-establishing the restriction there.
+
 Nothing else changes. The session cookie already sets `Secure` when the request
 arrives over HTTPS, which works behind the proxy because the unit passes
 `--proxy-headers`.
