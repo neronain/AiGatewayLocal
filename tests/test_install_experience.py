@@ -101,3 +101,28 @@ def test_the_installer_waits_on_a_path_that_exists(client):
 
     for path in waited:
         assert client.get(path).status_code != 404, f"install.sh รอ {path} แต่แอปตอบ 404"
+
+
+def test_the_nginx_template_is_rendered_for_the_installed_nginx():
+    """`http2 on;` ต้องใช้ nginx 1.25.1 ขึ้นไป · Ubuntu 24.04 มากับ 1.24.0
+
+    ลูกค้ารัน install_tls.sh บน 24.04 แล้วได้ `unknown directive "http2"` —
+    nginx ไม่ยอมสตาร์ต ขั้น TLS ล้มทั้งขั้น · เครื่องที่เราทดสอบกันเองมี 1.28
+    จึงไม่เคยเห็น
+    """
+    script = (ROOT / "scripts" / "install_tls.sh").read_text(encoding="utf-8")
+    assert "1.25.1" in script, "ต้องเทียบเวอร์ชันก่อนเลือกวิธีเขียน http2"
+    assert "listen 443 ssl http2;" in script, "ต้องมีทางถอยไปรูปเก่า"
+    assert "sort -V" in script, "เทียบเวอร์ชันด้วยการเรียงแบบ version ไม่ใช่เทียบสตริง"
+    # ต้องเลือกก่อนที่ nginx จะถูกเรียกมาตรวจ ไม่งั้นก็ล้มเหมือนเดิม
+    assert script.index("1.25.1") < script.index("nginx -t")
+
+
+def test_the_shipped_nginx_config_still_targets_modern_nginx():
+    """ไฟล์ต้นแบบเขียนแบบใหม่ ส่วนเครื่องเก่าให้ตัวติดตั้งแปลงลงให้
+
+    เขียนแบบเก่าไว้ในไฟล์ต้นแบบจะทำให้ nginx ใหม่ขึ้น warning ทุกครั้งที่ reload
+    """
+    conf = (ROOT / "deploy" / "nginx" / "litegate.conf").read_text(encoding="utf-8")
+    assert "http2 on;" in conf
+    assert "listen 443 ssl;" in conf

@@ -208,6 +208,28 @@ sed -e "s#server_name gateway.university.ac.th;#server_name ${server_names};#g" 
     -e "s#server 127.0.0.1:8080;#server 127.0.0.1:${APP_PORT};#" \
     "$REPO_DIR/deploy/nginx/${SITE_NAME}.conf" > "$tmp"
 
+# HTTP/2 เปลี่ยนวิธีเขียนที่ nginx 1.25.1
+#
+#   ตั้งแต่ 1.25.1   listen 443 ssl;  แล้วบรรทัดแยก  http2 on;
+#   ก่อนหน้านั้น     listen 443 ssl http2;   ไม่มี directive ชื่อ http2
+#
+# ไฟล์ที่แจกไปเขียนแบบใหม่ · Ubuntu 24.04 มากับ nginx 1.24.0 ซึ่งอ่านแล้วตอบว่า
+# `unknown directive "http2"` แล้ว nginx ไม่ยอมสตาร์ต — ขั้นติดตั้ง TLS จึงล้ม
+# ทั้งขั้นบนเครื่องที่พบบ่อยที่สุด · เครื่องที่เราทดสอบกันเองมี 1.28 จึงไม่เคยเห็น
+nginx_version="$(nginx -v 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+supports_http2_on() {
+    local want="1.25.1"
+    [[ -z "$nginx_version" ]] && return 1
+    [[ "$(printf '%s\n%s\n' "$want" "$nginx_version" | sort -V | head -1)" == "$want" ]]
+}
+if supports_http2_on; then
+    log "nginx ${nginx_version} — ใช้ http2 on;"
+else
+    log "nginx ${nginx_version:-ไม่ทราบเวอร์ชัน} — ใช้รูปเก่า listen ... http2"
+    sed -i -e 's#^\( *\)listen 443 ssl;#\1listen 443 ssl http2;#' \
+           -e '/^ *http2 on;$/d' "$tmp"
+fi
+
 if [[ "$HSTS" != "yes" ]]; then
     sed -i '/Strict-Transport-Security/d' "$tmp"
 fi
@@ -223,6 +245,18 @@ nginx -t 2>&1 | sed 's/^/    /' || die "nginx rejected the config above; nothing
 systemctl reload nginx 2>/dev/null || systemctl restart nginx
 
 primary="${NAMES[0]}"
+
+# nginx ส่งต่อไปที่แอปบนพอร์ตนี้ · ถ้ายังไม่มีอะไรฟังอยู่ ทุกอย่างจะขึ้น 502
+#
+# เจอจริง: ผู้ติดตั้งรัน install_tls.sh ก่อนจะเปิดเกตเวย์ แล้วเปิดเบราว์เซอร์เจอ 502
+# ทันที · หน้าจอไม่มีอะไรบอกว่า TLS ทำงานถูกแล้วและสิ่งที่ขาดคือตัวแอป เขาจึงสรุปว่า
+# ขั้นตอน TLS พัง แล้วไปรื้อ nginx ซึ่งไม่ได้ผิดอะไรเลย
+app_is_up=""
+if command -v curl >/dev/null 2>&1 &&
+   curl -fsS -m 3 "http://127.0.0.1:${APP_PORT}/healthz" >/dev/null 2>&1; then
+    app_is_up="yes"
+fi
+
 echo
 log "HTTPS is up"
 echo "  Console : https://${primary}/console/"
@@ -243,6 +277,15 @@ elif [[ -s "$CA_OUT/ca.crt" ]]; then
     echo "    Firefox       : Settings → Privacy & Security → Certificates → View Certificates → Authorities → Import"
     echo
     echo "  ยังไม่อยากติดตั้ง CA ก็ใช้พอร์ตธรรมดา http://${primary}:${APP_PORT} ได้ตามเดิม"
+fi
+
+if [[ -z "$app_is_up" ]]; then
+    echo
+    warn "ยังไม่มีอะไรฟังอยู่ที่พอร์ต ${APP_PORT} — nginx ตั้งเสร็จแล้วแต่จะตอบ 502"
+    warn "จนกว่าจะเปิดตัวเกตเวย์ · นี่ไม่ใช่ปัญหาของ TLS"
+    echo
+    echo "  ลองเร็ว ๆ:     ./install.sh --demo"
+    echo "  ลงเป็น service: sudo scripts/bootstrap.sh   (ขึ้นเองหลัง reboot)"
 fi
 if [[ "$HSTS" == "yes" ]]; then
     echo

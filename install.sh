@@ -58,6 +58,13 @@ if ! "$PY" -c 'import venv' 2>/dev/null; then
     die "ไม่มีโมดูล venv — ลง: sudo apt install ${PY}-venv"
 fi
 
+# โหมด --demo รอ /healthz ด้วย curl · เครื่องที่ไม่มี curl จะรอจนหมดเวลาแล้วบอกว่า
+# เกตเวย์ไม่ตอบ ทั้งที่มันขึ้นอยู่เรียบร้อย — บอกตั้งแต่ต้นดีกว่าให้ไปงงตอนท้าย
+if ! command -v curl >/dev/null 2>&1; then
+    die "ไม่มีคำสั่ง curl — ลง: sudo apt install curl"
+fi
+ok "curl"
+
 # ── venv ──────────────────────────────────────────────────────────────────
 if [[ -x "$VENV/bin/python" ]]; then
     log "ใช้ venv เดิมที่ $VENV"
