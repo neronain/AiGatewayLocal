@@ -185,15 +185,31 @@ sudo ./scripts/bootstrap.sh
 
 It creates the `litegate` system user, installs to `/opt/litegate`, builds a
 venv, generates `.env` with a fresh pepper, installs the systemd unit, starts the
-service, and prints the bootstrap admin key.
+service, and prints both ways in — the console sign-in and the API key.
 
 ```
 ==> Gateway is up: http://192.168.139.92:8080
+
+  Console sign-in (shown once)
+    URL      : http://192.168.139.92:8080/console
+    username : admin
+    password : ...
+
 !!  Bootstrap admin key (shown once) - copy it now:
-    BOOTSTRAP ADMIN KEY (shown once): edu_sk_...
-  Console : http://192.168.139.92:8080/console
-  Docs    : http://192.168.139.92:8080/docs
+    BOOTSTRAP ADMIN KEY (shown once): lg_sk_...
+
+  No models are available yet — the samples that ship with the repo point at
+  our machines and were disabled. Add yours in the console: Models → Add.
 ```
+
+**No models on a fresh install, on purpose.** The sample files in
+`config/models/` name hosts on our network. Left enabled they are probed every
+few seconds, and the first thing a new operator sees is a screenful of
+connection errors against machines they have never heard of. `bootstrap.sh`
+disables them at the model level (`spec.enabled: false`) after copying, which
+also stops the health prober from touching them. To use them as a starting
+point, edit the endpoint addresses in `/opt/litegate/config/models/*.yaml` and
+set `enabled: true` — no restart needed, the registry reloads on change.
 
 Custom install location:
 
@@ -213,8 +229,16 @@ By default this path uses SQLite, which is fine up to a few hundred members.
 For more, switch `GW_DATABASE_URL` in `/opt/litegate/.env` to PostgreSQL
 and restart (see §5).
 
-Put nginx in front for TLS — `deploy/nginx/litegate.conf` is ready to use
-and already has the SSE-critical settings (`proxy_buffering off`, 900 s timeouts).
+For TLS, run the installer rather than writing the nginx config by hand:
+
+```bash
+sudo scripts/install_tls.sh
+```
+
+It renders `deploy/nginx/litegate.conf` — which already carries the SSE-critical
+settings (`proxy_buffering off`, 900 s timeouts) — for the nginx version actually
+on the host, issues a certificate covering this machine's names, and reloads.
+Full detail in [§5c](#5c-tls).
 
 ---
 
@@ -773,6 +797,20 @@ What you end up with:
 Underneath, `scripts/make_tls_cert.sh` creates a small CA of your own and
 issues a server certificate with the right names, including IP addresses as IP
 SANs. Call it directly if you want the files without touching nginx.
+
+**What it changes on the host, and why.** Two of these were installs that
+failed in the field, so they are worth reading before you run it on someone
+else's server:
+
+| Change | Reason |
+|---|---|
+| Picks `http2 on;` or `listen 443 ssl http2;` by nginx version | The two spellings changed at nginx 1.25.1. Ubuntu 24.04 ships 1.24.0, which reads the modern file, reports `unknown directive "http2"` and refuses to start — taking the whole TLS step down on the most common host there is. |
+| Disables nginx's stock `default` site | It holds `default_server` on `:80`, so any Host the script did not detect — a name you put in DNS yourself, a second network card, a new DHCP lease — reaches nginx's empty page instead of the redirect. Your file stays in `sites-available/default`; re-enable with `ln -s`. A default site that has been edited is left alone and reported instead. |
+| Restores everything if `nginx -t` fails | Otherwise a rejected render leaves a host with neither the default site nor ours, which is worse than before the command ran. |
+| Warns when nothing is listening on `:8080` | nginx will be correct and still answer 502. Saying so up front stops an hour of debugging TLS that is already working. |
+
+Non-interactive installs (config management, a scripted rollout) set
+`TLS_ASSUME_YES=1` to accept the detected names without the prompt.
 
 List **every** name the gateway will be reached by. A certificate for the
 hostname does not cover the IP, and clients differ in which they send —

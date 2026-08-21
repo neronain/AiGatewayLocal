@@ -221,9 +221,16 @@ class Router:
     async def probe_all(self) -> None:
         snapshot = self._registry.snapshot
         timeout = snapshot.gateway.health_check_timeout_seconds
+        # โมเดลที่ถูกปิดไว้ไม่ควรถูกยิงหา · เดิมกรองแค่ระดับ endpoint ทำให้ alias ที่
+        # ปิดทั้งตัวยังส่ง health probe ออกไปทุกรอบ แล้วขึ้น ERROR เมื่อปลายทางไม่มีจริง
+        #
+        # เจอตอนติดตั้งใหม่บนเครื่องสะอาด: ปิดโมเดลตัวอย่างแล้ว log ยังเต็มไปด้วย
+        # "Name or service not known" ของเครื่องที่ไม่ใช่ของผู้ติดตั้ง · ปิดที่ระดับ
+        # endpoint แทนก็ไม่ได้ เพราะสคีมาบังคับว่าต้องเปิดอย่างน้อยหนึ่งอัน
         tasks = [
             self._probe(alias, endpoint, timeout)
             for alias, model in snapshot.models.items()
+            if model.spec.enabled
             for endpoint in model.spec.endpoints
             if endpoint.enabled
         ]

@@ -234,6 +234,40 @@ if [[ "$HSTS" != "yes" ]]; then
     sed -i '/Strict-Transport-Security/d' "$tmp"
 fi
 
+# ── ให้บล็อกของเราเป็น default_server บนพอร์ต 80 ────────────────────────────
+#
+# Ubuntu ลง nginx มาพร้อมไซต์ "default" ที่จอง default_server บน :80 ไว้ แปลว่า
+# request ที่ Host ไม่ตรงกับ server_name ของเราสักชื่อ จะไปโผล่หน้าเปล่าของ
+# /var/www/html แทนที่จะถูก redirect ขึ้น https · เจอง่ายกว่าที่คิด: ลูกค้าตั้ง
+# ชื่อใน DNS เอง เพิ่มการ์ดแลนใบที่สอง หรือ DHCP เปลี่ยน IP หลังเราตรวจชื่อไปแล้ว
+#
+# ปิดให้เฉพาะตอนที่มันยังเป็นไซต์ default ที่แจกมากับ nginx จริงๆ (ยังชี้
+# /var/www/html และ server_name เป็น _) · ถ้าใครแก้ไฟล์นั้นเองไว้ เราไม่ยุ่ง
+# เพราะไม่รู้ว่าเขาเอาไปทำอะไรต่อ — แค่บอกให้รู้ว่าจะเกิดอะไรขึ้น
+stock_default="/etc/nginx/sites-enabled/default"
+default_restore=""
+if [[ -e "$stock_default" ]] &&
+   grep -qs "var/www/html" "$stock_default" &&
+   grep -qsE '^[[:space:]]*server_name[[:space:]]+_;' "$stock_default"; then
+    log "ปิดไซต์ default ที่แจกมากับ nginx (ไฟล์ต้นฉบับยังอยู่ที่ sites-available/default)"
+    if [[ -L "$stock_default" ]]; then
+        rm -f "$stock_default"
+        default_restore="link"
+    else
+        mv "$stock_default" "${stock_default}.disabled-by-litegate"
+        default_restore="file"
+    fi
+elif [[ -e "$stock_default" ]]; then
+    warn "มีไซต์ default ของ nginx อยู่และถูกแก้ไขไว้ — ไม่แตะให้"
+    warn "ถ้าเข้าด้วยชื่อที่ไม่ได้อยู่ในใบรับรอง แล้ว http ไม่เด้งขึ้น https นี่คือสาเหตุ"
+fi
+
+# ยึด default_server ได้ต่อเมื่อไม่มีใครจองไว้ก่อน — จองซ้ำแล้ว nginx ไม่ยอมสตาร์ต
+if ! grep -qsE '^[[:space:]]*listen[[:space:]]+(\[::\]:)?80[[:space:]].*default_server' \
+        /etc/nginx/nginx.conf /etc/nginx/conf.d/*.conf /etc/nginx/sites-enabled/* 2>/dev/null; then
+    sed -i -e 's#^\( *\)listen 80;#\1listen 80 default_server;#' "$tmp"
+fi
+
 install -m 644 "$tmp" "$conf"
 rm -f "$tmp"
 mkdir -p /etc/nginx/sites-enabled
@@ -241,7 +275,14 @@ ln -sf "../sites-available/${SITE_NAME}.conf" "/etc/nginx/sites-enabled/${SITE_N
 
 # Never hand back a box whose nginx will not start. If the render is wrong the
 # old config is still the running one, and saying so beats a silent reload.
-nginx -t 2>&1 | sed 's/^/    /' || die "nginx rejected the config above; nothing was reloaded"
+if ! nginx -t 2>&1 | sed 's/^/    /'; then
+    # คืนสภาพก่อนตาย · ไม่งั้นเครื่องจะเหลือ nginx ที่ทั้งไม่มีไซต์ default และ
+    # ไม่มีไซต์ของเรา ซึ่งแย่กว่าตอนก่อนรันคำสั่งนี้
+    rm -f "/etc/nginx/sites-enabled/${SITE_NAME}.conf"
+    [[ "$default_restore" == "link" ]] && ln -sf ../sites-available/default "$stock_default"
+    [[ "$default_restore" == "file" ]] && mv "${stock_default}.disabled-by-litegate" "$stock_default"
+    die "nginx rejected the config above; nothing was reloaded"
+fi
 systemctl reload nginx 2>/dev/null || systemctl restart nginx
 
 primary="${NAMES[0]}"

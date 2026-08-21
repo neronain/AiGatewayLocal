@@ -80,16 +80,32 @@ assumes a particular sector.
 
 ## Quick start
 
+Two different jobs, two different commands. Running the wrong one is the most
+common way this install goes wrong, so pick before you start:
+
+| You want to | Run | What you get |
+|---|---|---|
+| **See what it does**, on a laptop, no GPU | `./install.sh --demo` | Runs in your terminal until you press Ctrl-C. Nothing is installed system-wide. |
+| **Actually run it** for a team | `sudo scripts/bootstrap.sh` | systemd service, survives a reboot, starts with no models until you add yours. |
+
+### Trying it out
+
 ```bash
 git clone https://github.com/neronain/AiGatewayLocal.git
 cd AiGatewayLocal
 ./install.sh --demo
 ```
 
-That is the whole thing. It checks Python, builds the venv, generates the
-secrets, points the sample aliases at a local stand-in backend, starts both
-processes, sends one real request through `/v1/chat/completions` to prove the
-path works, and prints the console URL with the credentials to sign in.
+`--demo` exists because a gateway with nothing behind it cannot be evaluated —
+every request 502s and the thing looks broken when it is merely empty. So the
+flag starts a **stand-in backend** alongside the gateway, repoints the sample
+aliases at it, sends one real request through `/v1/chat/completions` to prove the
+path works end to end, and prints the console URL with credentials to sign in.
+The answers come from a script, not a model. It is for seeing the console, the
+quota screens and the API surface — not for measuring anything.
+
+Without the flag, `./install.sh` does the same preparation and starts the
+gateway alone: the right choice when you already have a real backend to point at.
 
 <details>
 <summary>Prefer to run the pieces yourself</summary>
@@ -105,7 +121,22 @@ path works, and prints the console URL with the credentials to sign in.
 
 </details>
 
-The log prints a bootstrap admin key once.
+### Installing it for real
+
+```bash
+git clone https://github.com/neronain/AiGatewayLocal.git
+cd AiGatewayLocal
+sudo scripts/bootstrap.sh
+```
+
+Creates the `litegate` service account, installs to `/opt/litegate`, generates
+the secrets, registers a systemd unit and starts it. The sample models ship
+**disabled** on this path — they name machines on our network, and a fresh
+install that keeps probing them fills your log with errors on day one. Add your
+own in the console, or point the sample files at your backends and switch them
+back on. Details: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#path-b--native--systemd)**.
+
+Either path prints a bootstrap admin key once.
 
 ```bash
 export KEY=lg_sk_...
@@ -152,7 +183,18 @@ What it leaves running:
 
 The plain port stays on purpose: removing it breaks every curl and monitoring
 probe on the network for no security gain. `nginx -t` runs **before** the reload,
-so a bad render never takes the site down. **HSTS is opt-in** (`--hsts`) because
+so a bad render never takes the site down — and if it fails, the host is put back
+exactly as it was found rather than left with no site at all.
+
+Two things it does to the host that are worth knowing about. It **writes the
+config in the dialect your nginx speaks**: `http2 on;` needs nginx 1.25.1, and
+Ubuntu 24.04 ships 1.24.0, which refuses to start on that line. And it
+**switches off the stock `default` site** so ours answers on `:80` — otherwise
+any hostname the script did not detect (a name you added to DNS yourself, a
+second network card, a new DHCP address) lands on nginx's empty welcome page
+instead of being redirected to HTTPS. Your own file stays in
+`/etc/nginx/sites-available/default`; a modified default site is left alone and
+reported instead. **HSTS is opt-in** (`--hsts`) because
 it is host-scoped, not port-scoped — switching it on also upgrades
 `http://host:8080` and can strand a private-CA deployment with no way back.
 

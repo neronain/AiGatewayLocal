@@ -126,3 +126,31 @@ def test_the_shipped_nginx_config_still_targets_modern_nginx():
     conf = (ROOT / "deploy" / "nginx" / "litegate.conf").read_text(encoding="utf-8")
     assert "http2 on;" in conf
     assert "listen 443 ssl;" in conf
+
+
+def test_plain_http_reaches_us_even_under_a_name_we_never_detected():
+    """nginx ที่ Ubuntu แจกมา จอง default_server บน :80 ไว้แล้ว
+
+    ผลคือ request ที่ Host ไม่ตรง server_name ของเราสักชื่อ — ลูกค้าตั้งชื่อใน
+    DNS เอง เพิ่มการ์ดแลนใบที่สอง หรือ DHCP เปลี่ยน IP หลังเราตรวจชื่อไปแล้ว —
+    ไปโผล่ /var/www/html แทนที่จะเด้งขึ้น https · ฝั่ง :443 ไม่เป็นเพราะบล็อก
+    ของเราเป็นตัวเดียวที่ฟัง TLS อยู่ อาการเลยโผล่เฉพาะทาง http ซึ่งเป็นทางที่
+    คนพิมพ์เข้ามาเองพอดี
+    """
+    script = (ROOT / "scripts" / "install_tls.sh").read_text(encoding="utf-8")
+    assert "listen 80 default_server;" in script
+    # ยึดได้ต่อเมื่อไม่มีใครจองไว้ก่อน — จองซ้ำแล้ว nginx ไม่ยอมสตาร์ตเลย
+    assert "default_server" in script.split("sites-enabled/*")[0]
+    assert "var/www/html" in script, "ต้องเช็คว่ายังเป็นไซต์ default ที่แจกมา ก่อนจะไปปิดของใคร"
+
+
+def test_a_rejected_config_leaves_nginx_the_way_it_was_found():
+    """ถ้า nginx -t ไม่ผ่าน ต้องคืนไซต์ default ก่อนตาย
+
+    ไม่งั้นเครื่องจะเหลือ nginx ที่ทั้งไม่มีไซต์ default และไม่มีไซต์ของเรา
+    ซึ่งแย่กว่าตอนก่อนรันคำสั่ง
+    """
+    script = (ROOT / "scripts" / "install_tls.sh").read_text(encoding="utf-8")
+    body = script.split("nginx -t")[1].split("systemctl reload")[0]
+    assert "default_restore" in body
+    assert "ln -sf ../sites-available/default" in body
