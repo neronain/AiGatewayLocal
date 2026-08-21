@@ -7,7 +7,7 @@
 <!-- ?v must be bumped whenever these files change: the HTML
      revalidates on every load, but a browser will happily keep an old
      stylesheet against a new page, which looks like a broken console. -->
-<link rel="stylesheet" href="style.css?v=1.35.12">
+<link rel="stylesheet" href="style.css?v=1.35.13">
 </head>
 <body>
 
@@ -332,6 +332,12 @@
           <div class="field">
             <label for="k-days">Expires in (days)</label>
             <input id="k-days" type="number" value="180">
+          </div>
+          <!-- โควตาที่จะมีผลกับคนที่เลือก · เดิมต้องข้ามไปแท็บ Quota เพื่อดูและตั้ง
+               ผู้ดูแลจึงออก key เสร็จโดยไม่รู้ว่าคนนี้มีเพดานเท่าไรหรือมีหรือยัง -->
+          <div class="field full" id="k-quota-wrap" hidden>
+            <label>โควตาที่จะมีผล</label>
+            <div id="k-quota" class="quotabox"></div>
           </div>
           <div class="issue-foot">
             <button id="issue-key" class="primary">Issue key</button>
@@ -770,6 +776,6 @@
   </p>
 </aside>
 
-<script src="app.js?v=1.35.12"></script>
+<script src="app.js?v=1.35.13"></script>
 </body>
 </html>

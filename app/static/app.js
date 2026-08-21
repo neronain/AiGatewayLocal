@@ -1863,6 +1863,7 @@ async function loadAccess() {
     .join('');
   $('k-user').innerHTML = userOpts;
   $('q-user').innerHTML = userOpts;
+  showQuotaFor($('k-user').value);
   const workspaceOpts = workspaces.data
     .map((c) => `<option value="${esc(c.id)}">${esc(c.code)} — ${esc(c.name)}</option>`).join('');
   $('k-workspace').innerHTML = '<option value="">— none —</option>' + workspaceOpts;
@@ -2289,6 +2290,75 @@ async function loadAccess() {
     };
   }
 }
+
+
+/* โควตาที่จะมีผลกับคนที่กำลังจะออก key ให้
+ *
+ * เดิมการออก key กับการตั้งโควตาอยู่คนละแท็บและไม่มีอะไรเชื่อมกันเลย · ผู้ดูแลออก key
+ * เสร็จโดยไม่รู้ว่าคนนี้มีเพดานเท่าไร หรือมีหรือยัง แล้วต้องจำเองว่ายังมีขั้นที่สองรออยู่
+ * ที่แท็บ Quota → Add a quota policy → scope: user
+ *
+ * โควตายังนับต่อ "คน" เหมือนเดิม ไม่ใช่ต่อ key — คนหนึ่งมี key ได้หลายใบ ถ้าโควตา
+ * ผูกกับ key การออกใบใหม่จะกลายเป็นวิธีขอโควตาเพิ่มด้วยตัวเอง
+ */
+async function showQuotaFor(userId) {
+  const wrap = $('k-quota-wrap');
+  const box = $('k-quota');
+  if (!wrap || !box) return;
+  if (!userId) { wrap.hidden = true; return; }
+  wrap.hidden = false;
+  box.innerHTML = '<span class="hint">กำลังดู…</span>';
+  try {
+    const q = await api(`/admin/users/${encodeURIComponent(userId)}/quota`);
+    const n = (v) => (v ? Number(v).toLocaleString() : 'ไม่จำกัด');
+    const named = q.policy_name ? `“${esc(q.policy_name)}”` : '';
+    const from = {
+      user: `นโยบายเฉพาะคนนี้ ${named}`,
+      workspace: `นโยบายของวิชา ${named}`,
+      global: `นโยบายกลาง ${named}`,
+      default: 'ค่าตั้งต้นของระบบ — ยังไม่มีใครตั้งนโยบายไว้',
+    }[q.source] || q.source;
+    box.innerHTML = `
+      <div class="qline"><b>${esc(from)}</b> · ต่อ ${esc(q.window)}</div>
+      <div class="qline hint">${n(q.limits.max_requests)} ครั้ง ·
+        ${n(q.limits.max_input_tokens)} token เข้า ·
+        ${n(q.limits.max_output_tokens)} token ออก ·
+        ${n(q.limits.max_images)} ภาพ${
+        q.limits.max_requests_per_minute || q.limits.max_tokens_per_minute
+          ? ` · จำกัดต่อนาที ${n(q.limits.max_requests_per_minute)} ครั้ง / ${n(q.limits.max_tokens_per_minute)} token`
+          : ''}</div>
+      <div class="qline">
+        <button id="k-quota-set" class="ghost small">${
+          q.source === 'user' ? 'แก้โควตาของคนนี้' : 'ตั้งโควตาเฉพาะคนนี้'}</button>
+        <span class="hint">โควตานับต่อคน ไม่ใช่ต่อ key — key ทุกใบของคนนี้ใช้กองเดียวกัน</span>
+      </div>`;
+    $('k-quota-set').onclick = () => openQuotaFor(userId, q);
+  } catch (e) {
+    box.innerHTML = `<span class="hint err-text">${esc(e.message)}</span>`;
+  }
+}
+
+/* พาไปตั้งโควตาให้คนนี้โดยไม่ต้องไปหาเอง — เปิดแท็บ Quota แล้วกรอกช่องให้ล่วงหน้า
+ * ทั้งหมด เหลือแค่ปรับตัวเลขกับกดบันทึก · ไม่ได้บันทึกให้เอง เพราะการตั้งเพดานให้คน
+ * เป็นการตัดสินใจ ไม่ใช่ผลข้างเคียงของการกดดูข้อมูล */
+function openQuotaFor(userId, current) {
+  document.querySelector('[data-tab="quota"]').click();
+  const set = (id, v) => { const el = $(id); if (el) el.value = v; };
+  $('q-scope').value = 'user';
+  $('q-scope').dispatchEvent(new Event('change', { bubbles: true }));
+  set('q-user', userId);
+  set('q-window', current.window || 'day');
+  set('q-req', current.limits.max_requests || 0);
+  set('q-in', current.limits.max_input_tokens || 0);
+  set('q-outt', current.limits.max_output_tokens || 0);
+  set('q-img', current.limits.max_images || 0);
+  set('q-rpm', current.limits.max_requests_per_minute || 0);
+  set('q-tpm', current.limits.max_tokens_per_minute || 0);
+  $('q-scope').scrollIntoView({ block: 'center' });
+  $('q-name').focus();
+}
+
+$('k-user').addEventListener('change', (e) => showQuotaFor(e.target.value));
 
 $('issue-key').onclick = async () => {
   try {

@@ -302,6 +302,51 @@ async def update_user(
     return _user_dict(user)
 
 
+@router.get("/users/{user_id}/quota")
+async def user_quota(
+    user_id: str,
+    actor: Principal = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """โควตาที่จะมีผลกับคนนี้ และมาจากกฎข้อไหน
+
+    มีไว้ให้ฟอร์มออก API key ถามได้ตอนเลือกคน · เดิมการออก key กับการตั้งโควตาอยู่
+    คนละแท็บและไม่มีอะไรเชื่อมกัน ผู้ดูแลออก key เสร็จแล้วไม่รู้ว่าคนนี้มีโควตาเท่าไร
+    หรือมีหรือยัง ต้องจำเองว่ายังมีขั้นที่สองรออยู่
+
+    คำนวณด้วย resolve_limits ตัวเดียวกับที่ทางเดินของคำขอจริงใช้ — ถ้าคิดเองซ้ำที่นี่
+    วันหนึ่งตัวเลขบนหน้าจอกับตัวเลขที่บังคับใช้จริงจะไม่ตรงกัน แล้วไม่มีใครรู้ว่าอันไหนถูก
+    """
+    user = await session.get(User, user_id)
+    if user is None:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "User not found.")
+
+    limits = await state.quota.resolve_limits(session, user_id, None, "")
+    snapshot = await state.quota.usage_snapshot(user_id, limits)
+    return {
+        "user_id": user_id,
+        "external_id": user.external_id,
+        "display_name": user.display_name,
+        # `source` บอกระดับของกฎ (user/workspace/global/default) ส่วน policy_name
+        # บอกว่ากฎข้อไหน — ผู้ดูแลที่เห็นแค่ "workspace" ยังต้องไปไล่หาต่ออยู่ดี
+        "source": limits.source,
+        "policy_id": limits.policy_id,
+        "policy_name": limits.policy_name,
+        "window": limits.window,
+        "limits": {
+            "max_requests": limits.max_requests,
+            "max_input_tokens": limits.max_input_tokens,
+            "max_output_tokens": limits.max_output_tokens,
+            "max_images": limits.max_images,
+            "max_requests_per_minute": limits.max_requests_per_minute,
+            "max_tokens_per_minute": limits.max_tokens_per_minute,
+        },
+        "used": snapshot["used"],
+        "window_end": snapshot["window_end"],
+    }
+
+
 @router.post("/users/{user_id}/quota/reset")
 async def reset_user_quota(
     user_id: str,

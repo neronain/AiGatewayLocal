@@ -74,6 +74,10 @@ class ResolvedLimits:
     # refuse somebody mid-lesson for a reason nobody can explain.
     max_requests_per_minute: int = 0
     max_tokens_per_minute: int = 0
+    # ตัวนโยบายที่ชนะ — เพื่อให้หน้าจอบอกได้ว่า "ตัวเลขนี้มาจากกฎข้อไหน" ไม่ใช่แค่
+    # ระดับของมัน · ผู้ดูแลที่เห็นแค่คำว่า "workspace" ยังต้องไปไล่หาต่ออยู่ดีว่าอันไหน
+    policy_id: str = ""
+    policy_name: str = ""
 
     @property
     def rate_limited(self) -> bool:
@@ -472,6 +476,8 @@ class QuotaService:
             source=best.scope,
             max_requests_per_minute=best.max_requests_per_minute or 0,
             max_tokens_per_minute=best.max_tokens_per_minute or 0,
+            policy_id=best.id,
+            policy_name=best.name or "",
         )
 
     async def check(self, user_id: str, limits: ResolvedLimits) -> Consumption:

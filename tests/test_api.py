@@ -637,3 +637,51 @@ def test_disabling_a_model_whose_file_is_gone_does_not_recreate_it(writable_conf
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "MODEL_NOT_FOUND"
     assert not path.exists(), "ไฟล์ที่ลบไปแล้วต้องไม่ถูกเขียนกลับมา"
+
+
+def test_the_key_form_can_ask_what_quota_a_person_gets(client, member_key):
+    """ออก key กับตั้งโควตาเคยอยู่คนละแท็บโดยไม่มีอะไรเชื่อมกัน
+
+    ผู้ดูแลออก key เสร็จแล้วไม่รู้ว่าคนนี้มีเพดานเท่าไร หรือมีหรือยัง
+    """
+    user = client.post(
+        "/admin/users",
+        json={"external_id": "6455555555", "display_name": "Test A", "role": "member"},
+        headers=auth(client.admin_key),
+    ).json()
+
+    before = client.get(
+        f"/admin/users/{user['id']}/quota", headers=auth(client.admin_key)
+    ).json()
+    # ยังไม่มีใครตั้งอะไร — ต้องบอกตรง ๆ ว่าใช้ค่าตั้งต้น ไม่ใช่เงียบ
+    assert before["source"] in {"default", "global"}
+    assert "max_requests" in before["limits"]
+
+    client.post(
+        "/admin/quota-policies",
+        json={"scope": "user", "user_id": user["id"], "name": "ช่วงสอบ",
+              "window": "day", "max_requests": 2000},
+        headers=auth(client.admin_key),
+    )
+
+    after = client.get(
+        f"/admin/users/{user['id']}/quota", headers=auth(client.admin_key)
+    ).json()
+    assert after["source"] == "user"
+    assert after["limits"]["max_requests"] == 2000
+    # ต้องบอกได้ว่ามาจากกฎข้อไหน ไม่ใช่แค่ระดับของกฎ
+    assert after["policy_name"] == "ช่วงสอบ"
+    assert after["policy_id"]
+
+
+def test_the_quota_shown_is_the_one_that_will_be_enforced(client):
+    """ตัวเลขบนหน้าจอต้องมาจาก resolve_limits ตัวเดียวกับทางเดินของคำขอจริง
+
+    ถ้าคำนวณเองซ้ำที่หน้า admin วันหนึ่งเลขบนจอกับเลขที่บังคับใช้จะไม่ตรงกัน
+    แล้วไม่มีใครรู้ว่าอันไหนถูก
+    """
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "app/api/admin.py").read_text()
+    block = source.split('@router.get("/users/{user_id}/quota")')[1][:1400]
+    assert "resolve_limits" in block, "ต้องเรียก resolve_limits ไม่ใช่คิดเอง"
