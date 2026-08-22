@@ -106,7 +106,7 @@ def test_checksums_parse():
 def test_real_registry_loads_both_tools():
     reg = load_tool_registry(REPO_ROOT / "config" / "tools.yaml")
     slugs = {t.slug for t in reg.tools}
-    assert {"cc-switch", "rtk"} <= slugs
+    assert {"cc-switch", "cc-switch-cli", "rtk"} <= slugs
     cc = reg.get("cc-switch")
     assert cc.verify.method == "minisign" and cc.verify.pubkey
     assert any(a.signed for a in cc.assets)
@@ -211,3 +211,20 @@ async def test_sync_minisign_tool_and_promote_blocks_on_failure(tmp_path):
     S._write_json(S.version_dir(tmp_path, "cc", "3.19.2") / "manifest.json", m)
     with pytest.raises(S.SyncError):
         S.promote(tmp_path, "cc", "3.19.2")
+
+
+def test_the_terminal_switcher_pins_versioned_asset_names():
+    """release ปล่อยชื่อซ้ำสองชุด มีเวอร์ชันกับไม่มี — ไบต์เดียวกันเป๊ะ
+
+    มิเรอร์ชื่อที่ไม่มีเวอร์ชันก็ได้ไฟล์ถูก แต่พอลงดิสก์แล้วแยกไม่ออกว่าอันไหน
+    รุ่นไหน ซึ่งพังตอนที่ต้องบอกลูกค้าว่าเขาถืออะไรอยู่
+    """
+    cli = load_tool_registry(REPO_ROOT / "config" / "tools.yaml").get("cc-switch-cli")
+    assert cli is not None
+    assert cli.verify.method == "sha256sums"
+    assert cli.verify.checksums_asset == "checksums.txt"
+    for asset in cli.assets:
+        assert "{version}" in asset.file, f"{asset.file} ไม่มีเวอร์ชันในชื่อ"
+        # ตัวนี้ไม่มีคีย์เซ็นจากต้นทาง ต่างจากรุ่นเดสก์ท็อป — อ้างว่า signed
+        # ไม่ได้ ไม่งั้นหน้าดาวน์โหลดจะบอกลูกค้าว่ามีอะไรที่พิสูจน์ไม่ได้
+        assert asset.signed is False
