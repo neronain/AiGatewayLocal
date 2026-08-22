@@ -228,3 +228,32 @@ def test_the_terminal_switcher_pins_versioned_asset_names():
         # ตัวนี้ไม่มีคีย์เซ็นจากต้นทาง ต่างจากรุ่นเดสก์ท็อป — อ้างว่า signed
         # ไม่ได้ ไม่งั้นหน้าดาวน์โหลดจะบอกลูกค้าว่ามีอะไรที่พิสูจน์ไม่ได้
         assert asset.signed is False
+
+
+def test_the_desktop_switcher_never_claims_proof_it_does_not_have():
+    """ต้นทางเซ็นแค่บางไฟล์ · .deb กับ portable zip ไม่ได้เซ็น
+
+    ปักหมุด `signed: true` ผิดตัวเมื่อไหร่ ตัว sync จะพยายามหา .sig ที่ไม่มีอยู่
+    แล้วรายงานว่า FAILED — หรือแย่กว่านั้นคือหน้าดาวน์โหลดบอกลูกค้าว่าไฟล์นี้
+    พิสูจน์ที่มาได้ ทั้งที่พิสูจน์ไม่ได้
+    """
+    cc = load_tool_registry(REPO_ROOT / "config" / "tools.yaml").get("cc-switch")
+    signed = {a.file for a in cc.assets if a.signed}
+    unsigned = {a.file for a in cc.assets if not a.signed}
+    assert any("AppImage" in f for f in signed), "AppImage ต้นทางเซ็นให้"
+    assert any(".msi" in f for f in signed), ".msi ต้นทางเซ็นให้"
+    for name in (".deb", "Portable.zip", ".dmg"):
+        assert any(name in f for f in unsigned), f"{name} ต้นทางไม่ได้เซ็น"
+        assert not any(name in f for f in signed), f"{name} ห้ามอ้างว่าเซ็นแล้ว"
+
+
+def test_only_release_assets_can_be_mirrored():
+    """ทุกอย่างใน registry ต้องเป็นไฟล์ใน GitHub release
+
+    เขียนไว้เพราะเคยพิจารณาเพิ่มเครื่องมือที่แจกด้วยการ clone แล้ว npm install
+    ซึ่งระบบนี้รับไม่ได้เลย — ไม่มี asset ให้ยืนยัน และไม่มีอะไรให้ pin
+    """
+    reg = load_tool_registry(REPO_ROOT / "config" / "tools.yaml")
+    for tool in reg.tools:
+        assert tool.assets, f"{tool.slug}: ไม่มี asset = mirror ไม่ได้"
+        assert tool.verify.method in {"minisign", "sha256sums"}

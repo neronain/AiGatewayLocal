@@ -32,9 +32,18 @@ tools:
       # signed .tar.gz as the verifiable path, keep .dmg as convenience only.
       - { platform: macos, arch: universal, file: "CC-Switch-v{version}-macOS.tar.gz", kind: archive, signed: true }
       - { platform: macos, arch: universal, file: "CC-Switch-v{version}-macOS.dmg", kind: installer, signed: false }
-      # Linux — AppImage is signed; .deb/.rpm are not.
+      - { platform: windows, arch: arm64,  file: "CC-Switch-v{version}-Windows-arm64-Portable.zip", kind: portable, signed: false }
+      # Linux — AppImage is signed; .deb is not.
       - { platform: linux, arch: x86_64, file: "CC-Switch-v{version}-Linux-x86_64.AppImage", kind: portable, signed: true }
       - { platform: linux, arch: arm64,  file: "CC-Switch-v{version}-Linux-arm64.AppImage", kind: portable, signed: true }
+      # .deb is the format a school's Linux desktops are actually managed with,
+      # so it is worth carrying even though upstream leaves it unsigned — the
+      # signed AppImage stays listed above as the provable path.
+      - { platform: linux, arch: x86_64, file: "CC-Switch-v{version}-Linux-x86_64.deb", kind: installer, signed: false }
+      - { platform: linux, arch: arm64,  file: "CC-Switch-v{version}-Linux-arm64.deb", kind: installer, signed: false }
+      # Deliberately not carried: .rpm (nobody has asked, and an unverifiable
+      # asset nobody wants is still ours to vouch for) and macOS.zip (same bytes
+      # a customer already gets from the signed .tar.gz).
 
   - slug: rtk
     name: RTK (Rust Token Killer)
