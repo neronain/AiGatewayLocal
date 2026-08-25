@@ -126,6 +126,20 @@ function showTab(name) {
 for (const btn of document.querySelectorAll('#tabs button')) {
   btn.onclick = () => { showTab(btn.dataset.tab); setNav(false); };
 }
+// ป้ายบอกว่าหน้าคอนโซลชุดนี้ถูกวางลงเครื่องเมื่อไหร่ · "ทำไปแล้วแต่ไม่เห็น"
+// แยกไม่ออกจาก "ยังไม่ได้ deploy" ถ้าไม่มีอะไรบนจอบอกเวลา
+async function showBuild() {
+  try {
+    const h = await api('/healthz');
+    const el = $('cred-build');
+    if (!h.console_updated) { el.textContent = `v${h.version || '?'}`; return; }
+    const d = stamp(h.console_updated);
+    el.textContent = `v${h.version} · UI ${d.toLocaleDateString()} ${d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}`;
+    el.title = `หน้าคอนโซลถูกวางลงเครื่องนี้เมื่อ ${d.toLocaleString()}`;
+  } catch { /* ท้ายหน้าไม่ใช่ที่สำหรับรายงานว่าดึงเวอร์ชันไม่ได้ */ }
+}
+showBuild();
+
 /* ------------------------------------------------- นำทางบนจอแคบ */
 // เมนูอยู่ซ้ายถาวรบนจอกว้าง · จอแคบเปิดเป็นลิ้นชักทับเนื้อหา แล้วปิดเองเมื่อ
 // เลือกแท็บ เพราะคนกดเมนูเพื่อไปที่อื่น ไม่ใช่เพื่อค้างเมนูไว้ดู

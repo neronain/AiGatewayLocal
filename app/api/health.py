@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import pathlib
 import time
 from typing import Any
 
@@ -35,7 +36,26 @@ async def healthz(state: AppState = Depends(get_state)) -> dict[str, Any]:
         "built_by": config.AUTHOR,
         "author_url": config.AUTHOR_URL,
         "license": config.LICENSE_NOTE,
+        # เมื่อไหร่ที่หน้าคอนโซลถูกวางลงเครื่องนี้ครั้งล่าสุด · version เป็นเลขรุ่น
+        # ของสินค้า ไม่ขยับตอน deploy ไฟล์หน้าเว็บ คนจึงไม่มีทางรู้ว่าที่เห็นอยู่
+        # เป็นของใหม่หรือเบราว์เซอร์หยิบของเก่ามาแสดง
+        "console_updated": _console_mtime(),
     }
+
+
+def _console_mtime() -> str | None:
+    """เวลาที่ไฟล์หน้าคอนโซลถูกแก้ล่าสุด (ISO, UTC) — None ถ้าหาไฟล์ไม่เจอ"""
+    from datetime import datetime, timezone
+
+    here = pathlib.Path(__file__).resolve().parent.parent / "static"
+    stamps = [
+        f.stat().st_mtime
+        for name in ("index.html", "app.js", "style.css")
+        if (f := here / name).exists()
+    ]
+    if not stamps:
+        return None
+    return datetime.fromtimestamp(max(stamps), tz=timezone.utc).isoformat()
 
 
 @router.get("/readyz")
