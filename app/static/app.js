@@ -167,23 +167,38 @@ function applyRole(role) {
 // เอกสารเป็นค่าของตัวเองทุกครั้ง — base URL ของเครื่องนี้ ชื่อ alias ที่ตัวเอง
 // เรียกได้ คีย์ของตัวเอง · สามอย่างนี้ระบบรู้อยู่แล้ว จึงประกอบให้เสร็จเลย
 // ดีกว่าปล่อยให้เดาแล้วมาถามผู้ดูแลทีละคน
+// env ชุดเดียวกันทั้งระดับเครื่องและระดับโปรเจกต์ — ต่างกันแค่ไฟล์ปลายทาง
+const claudeEnv = (o, k, m) => JSON.stringify({
+  env: {
+    ANTHROPIC_BASE_URL: o,
+    ANTHROPIC_AUTH_TOKEN: k,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: m,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: m,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: m,
+    ANTHROPIC_SMALL_FAST_MODEL: m,
+  },
+}, null, 2);
+
 const CT_TOOLS = {
   'claude-code': {
     where: '~/.claude/settings.json',
     // ต้องมีทั้ง 3 tier: Claude Code เรียกรุ่นเล็กทำงานเบื้องหลังเอง ไม่ตั้งไว้
     // มันจะขอชื่อรุ่นที่เกตเวย์ไม่รู้จักแล้วพังเงียบ ๆ กลางทาง
-    build: (o, k, m) => JSON.stringify({
-      env: {
-        ANTHROPIC_BASE_URL: o,
-        ANTHROPIC_AUTH_TOKEN: k,
-        ANTHROPIC_DEFAULT_OPUS_MODEL: m,
-        ANTHROPIC_DEFAULT_SONNET_MODEL: m,
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: m,
-        ANTHROPIC_SMALL_FAST_MODEL: m,
-      },
-    }, null, 2),
+    build: claudeEnv,
     note: 'เครื่องที่ล็อกอินบัญชี Claude อยู่ จะส่งโทเคนของบัญชีแทนคีย์นี้แล้วขึ้น 401 — '
         + 'ออกจากระบบในโปรไฟล์ที่จะต่อเกตเวย์ก่อน (claude /logout)',
+    needs: 'anthropic',
+    agent: true,
+  },
+  'claude-code-project': {
+    where: '.claude/settings.local.json  (ในโฟลเดอร์โปรเจกต์)',
+    build: claudeEnv,
+    // ลำดับของ Claude Code คือ ~/.claude/settings.json → .claude/settings.json
+    // → .claude/settings.local.json · ตัวท้ายสุดชนะ และเป็นตัวเดียวที่ถูก
+    // gitignore ไว้ · settings.json ระดับโปรเจกต์ถูก commit ขึ้น git คีย์จึงห้าม
+    // อยู่ในนั้นเด็ดขาด
+    note: 'ไฟล์ .local ชนะไฟล์อื่นและไม่ถูก commit — คีย์จึงควรอยู่ที่นี่ ไม่ใช่ '
+        + '.claude/settings.json ซึ่งขึ้น git ไปด้วย · เช็คสักครั้งว่า .gitignore ครอบมันจริง',
     needs: 'anthropic',
     agent: true,
   },

@@ -75,7 +75,9 @@ def test_the_claude_code_config_sets_every_tier_it_actually_asks_for():
     ซึ่งโผล่เป็น error ที่ไม่เกี่ยวกับสิ่งที่ผู้ใช้เพิ่งทำ
     """
     js = (STATIC / "app.js").read_text(encoding="utf-8")
-    block = js.split("'claude-code': {", 1)[1].split("\n  kilo: {", 1)[0]
+    # env ย้ายไปอยู่ใน claudeEnv เพราะสองสโคปใช้ชุดเดียวกัน
+    block = js.split("const claudeEnv =", 1)[1].split("const CT_TOOLS", 1)[0]
+    block += js.split("'claude-code': {", 1)[1].split("\n  'claude-code-project'", 1)[0]
     for var in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_DEFAULT_OPUS_MODEL",
                 "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
                 "ANTHROPIC_SMALL_FAST_MODEL"):
@@ -192,3 +194,16 @@ def test_ui_configured_tools_are_not_handed_a_file_that_does_not_exist():
     for tool in ("cline", "cursor"):
         block = js.split(f"  {tool}: {{", 1)[1].split("\n  },", 1)[0]
         assert "ไม่ใช่ไฟล์" in block, f"{tool} ต้องบอกว่าไม่มีไฟล์"
+
+
+def test_a_project_key_goes_in_the_file_git_does_not_take():
+    """Claude Code อ่านสามชั้น: ~/.claude → .claude/settings.json → .local
+
+    ตัวกลางถูก commit ขึ้น git · คีย์อยู่ในนั้นเมื่อไหร่คือหลุดขึ้น remote
+    ตัวท้ายชนะทุกตัวและถูก gitignore จึงเป็นที่เดียวที่ถูกต้อง
+    """
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    block = js.split("'claude-code-project': {", 1)[1].split("\n  },", 1)[0]
+    assert "settings.local.json" in block
+    assert "gitignore" in block.lower(), "ต้องเตือนว่าคีย์ห้ามขึ้น git"
+    assert "settings.json" in block, "ต้องบอกว่าอย่าใส่ในไฟล์ที่ commit"
