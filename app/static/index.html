@@ -62,7 +62,7 @@
         <span data-icon="keys" aria-hidden="true"></span><span class="tab-label">Access &amp; Keys</span></button>
       <button data-tab="quota" aria-label="Quota" role="tab" aria-selected="false" data-staff>
         <span data-icon="quota" aria-hidden="true"></span><span class="tab-label">Quota</span></button>
-      <button data-tab="tools" aria-label="Client tools" role="tab" aria-selected="false" data-staff>
+      <button data-tab="tools" aria-label="Client tools" role="tab" aria-selected="false">
         <span data-icon="download" aria-hidden="true"></span><span class="tab-label">Client tools</span></button>
     </nav>
   </div>
@@ -671,7 +671,42 @@
 
   <!-- ================= Client tools ================= -->
   <section id="tab-tools" class="stack" hidden>
-    <div data-fold-section="client-tools">
+
+    <div data-fold-section="connect" class="card">
+      <h2><span class="hi" data-icon="deploy" data-icon-size="15" aria-hidden="true"></span>Connect your tool</h2>
+      <p class="hint">
+        Point an editor or CLI at this gateway. Pick the tool, paste your API key,
+        and copy what appears — the key stays in this page and is never sent anywhere.
+        <span class="th">เลือกเครื่องมือแล้ววางคีย์ · ค่าที่ได้ก๊อปไปวางได้เลย คีย์ไม่ถูกส่งไปไหน</span>
+      </p>
+      <div class="form-row" style="margin-top:14px">
+        <div class="field">
+          <label for="ct-tool">Tool</label>
+          <select id="ct-tool">
+            <option value="claude-code">Claude Code</option>
+            <option value="kilo">Kilo</option>
+            <option value="openai">Any OpenAI-compatible client</option>
+            <option value="curl">curl (test it works)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="ct-model">Model</label>
+          <select id="ct-model"></select>
+        </div>
+        <div class="field" style="flex:2 1 260px">
+          <label for="ct-key">Your API key</label>
+          <input id="ct-key" placeholder="lg_sk_…" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+      <p id="ct-note" class="hint" style="margin:10px 0 0"></p>
+      <pre id="ct-out" class="mono scroll" style="margin-top:12px"></pre>
+      <div class="bar" style="margin-top:10px">
+        <button id="ct-copy" class="primary">Copy</button>
+        <span id="ct-where" class="hint"></span>
+      </div>
+    </div>
+
+    <div data-fold-section="client-tools" id="ct-downloads">
       <h2><span class="hi" data-icon="download" data-icon-size="15" aria-hidden="true"></span>Client tools</h2>
       <p class="hint" style="margin:2px 0 0">
         โหลดเครื่องมือที่ชี้มาที่ gateway นี้ได้จากที่นี่ ออฟไลน์ — ทุกไฟล์ผ่านการตรวจลายเซ็น/checksum

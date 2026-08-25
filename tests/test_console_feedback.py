@@ -51,3 +51,45 @@ def test_a_block_before_the_gateway_says_so_instead_of_request_failed():
     assert "response.status === 403" in body
     assert "allow list" in body
     assert "litegate.conf" in body, "ต้องบอกไฟล์ที่ต้องไปแก้"
+
+
+def test_a_member_can_get_their_own_client_config_without_asking_anyone():
+    """คนถือคีย์ต้องแปลงเอกสารเป็นค่าของตัวเองทุกครั้ง — base URL, alias, คีย์
+
+    สามอย่างนั้นคอนโซลรู้อยู่แล้ว · ปล่อยให้เดาเองคือให้ผู้ดูแลตอบคำถามเดิม
+    ทีละคน ซึ่งเป็นสิ่งที่เสียเวลาที่สุดตอนเปิดใช้กับห้องเรียนใหม่
+    """
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    for el in ("ct-tool", "ct-model", "ct-key", "ct-out", "ct-copy"):
+        assert f'id="{el}"' in html, f"ขาดช่อง {el}"
+    # แท็บนี้เคยเห็นได้เฉพาะ staff เพราะมีแต่ของโหลด — สมาชิกต้องเข้าถึงส่วนตั้งค่าได้
+    tab = html.split('data-tab="tools"', 1)[1].split(">", 1)[0]
+    assert "data-staff" not in tab and "data-admin" not in tab
+
+
+def test_the_claude_code_config_sets_every_tier_it_actually_asks_for():
+    """Claude Code เรียกรุ่นเล็กทำงานเบื้องหลังเอง คนละตัวกับที่ผู้ใช้เลือก
+
+    ตั้งแต่ ANTHROPIC_MODEL อย่างเดียวจะพังกลางทางตอนมันไปขอรุ่นที่เกตเวย์ไม่รู้จัก
+    ซึ่งโผล่เป็น error ที่ไม่เกี่ยวกับสิ่งที่ผู้ใช้เพิ่งทำ
+    """
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    block = js.split("'claude-code': {", 1)[1].split("\n  kilo: {", 1)[0]
+    for var in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "ANTHROPIC_SMALL_FAST_MODEL"):
+        assert var in block, f"ขาด {var}"
+    # กับดักที่พิสูจน์มาแล้ว: เครื่องที่ล็อกอินบัญชีอยู่จะส่งโทเคน OAuth แทนคีย์นี้
+    assert "logout" in block
+
+
+def test_the_model_list_is_deduplicated_and_matches_the_protocol():
+    """แค็ตตาล็อกจัดกลุ่มตาม purpose · รุ่นเดียวอยู่ได้หลายกลุ่ม
+
+    ไม่ตัดซ้ำแล้วรายการจะขึ้นชื่อเดิมสามสี่รอบ ซึ่งอ่านแล้วเหมือนระบบนับผิด
+    """
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    body = js.split("function ctModels(", 1)[1].split("\n}", 1)[0]
+    assert "seen" in body and "Map()" in body
+    assert "protocols" in body, "ต้องกรองตามโปรโตคอลที่เครื่องมือนั้นพูด"
+    assert "supports_tools" in body, "เอเจนต์ที่เรียกเครื่องมือไม่ได้ พังตอนใช้จริงไม่ใช่ตอนตั้งค่า"

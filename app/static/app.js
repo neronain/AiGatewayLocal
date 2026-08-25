@@ -142,6 +142,114 @@ function applyRole(role) {
   $('usage-wrap').hidden = !staff;
 }
 
+/* ------------------------------------------------- connect your tool */
+// เอกสารบอกวิธีต่อเครื่องมือได้ก็จริง แต่คนที่ถือคีย์อยู่ตรงหน้าจอนี้ต้องแปล
+// เอกสารเป็นค่าของตัวเองทุกครั้ง — base URL ของเครื่องนี้ ชื่อ alias ที่ตัวเอง
+// เรียกได้ คีย์ของตัวเอง · สามอย่างนี้ระบบรู้อยู่แล้ว จึงประกอบให้เสร็จเลย
+// ดีกว่าปล่อยให้เดาแล้วมาถามผู้ดูแลทีละคน
+const CT_TOOLS = {
+  'claude-code': {
+    where: 'วางใน ~/.claude/settings.json',
+    // ต้องมีทั้ง 3 tier: Claude Code เรียกรุ่นเล็กทำงานเบื้องหลังเอง ไม่ตั้งไว้
+    // มันจะขอชื่อรุ่นที่เกตเวย์ไม่รู้จักแล้วพังเงียบ ๆ กลางทาง
+    build: (o, k, m) => JSON.stringify({
+      env: {
+        ANTHROPIC_BASE_URL: o,
+        ANTHROPIC_AUTH_TOKEN: k,
+        ANTHROPIC_DEFAULT_OPUS_MODEL: m,
+        ANTHROPIC_DEFAULT_SONNET_MODEL: m,
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: m,
+        ANTHROPIC_SMALL_FAST_MODEL: m,
+      },
+    }, null, 2),
+    note: 'เครื่องที่ล็อกอินบัญชี Claude อยู่ จะส่งโทเคนของบัญชีแทนคีย์นี้แล้วขึ้น 401 — '
+        + 'ออกจากระบบในโปรไฟล์ที่จะต่อเกตเวย์ก่อน (claude /logout)',
+    needs: 'anthropic',
+    agent: true,
+  },
+  kilo: {
+    where: 'วางใน ~/.config/kilo/kilo.jsonc',
+    build: (o, k, m) => JSON.stringify({
+      $schema: 'https://app.kilo.ai/config.json',
+      provider: {
+        litegate: {
+          name: 'LiteGate',
+          npm: '@ai-sdk/openai-compatible',
+          options: { baseURL: o + '/v1', apiKey: k },
+          models: { [m]: { name: m } },
+        },
+      },
+      model: 'litegate/' + m,
+    }, null, 2),
+    note: 'คีย์ทางซ้ายใน models ต้องตรงกับ alias เป๊ะ ๆ ส่วน name เป็นแค่ป้ายที่โชว์',
+    needs: 'openai',
+    agent: true,
+  },
+  openai: {
+    where: 'ตั้งเป็นตัวแปรแวดล้อม หรือใส่ในช่อง Base URL / API key ของโปรแกรมนั้น',
+    build: (o, k, m) => [
+      'OPENAI_BASE_URL=' + o + '/v1',
+      'OPENAI_API_KEY=' + k,
+      'OPENAI_MODEL=' + m,
+    ].join('\n'),
+    note: 'ใช้ได้กับทุกตัวที่ตั้ง base URL เองได้ — Codex, Cline, Continue, Open WebUI และอื่น ๆ',
+    needs: 'openai',
+  },
+  curl: {
+    where: 'รันใน terminal เพื่อพิสูจน์ว่าคีย์กับ alias ใช้ได้จริง ก่อนไปตั้งในโปรแกรม',
+    build: (o, k, m) => `curl -s ${o}/v1/chat/completions \\\n`
+      + `  -H "Authorization: Bearer ${k}" \\\n`
+      + `  -H 'Content-Type: application/json' \\\n`
+      + `  -d '{"model":"${m}","messages":[{"role":"user","content":"Reply with exactly: OK"}]}'`,
+    note: 'ได้ "OK" กลับมา = เส้นทางใช้ได้ · ถ้าได้ 401 คือคีย์ผิด · 404 คือชื่อ alias ผิด',
+    needs: 'openai',
+  },
+};
+
+function ctModels(needs, wantsTools) {
+  // แค็ตตาล็อกจัดกลุ่มตาม purpose · รุ่นเดียวอยู่ได้หลายกลุ่ม ถ้าไม่ตัดซ้ำ
+  // รายการจะขึ้นชื่อเดิมสามสี่รอบ ซึ่งอ่านแล้วเหมือนระบบนับผิด
+  const seen = new Map();
+  for (const sec of (state.cache.catalog?.sections || [])) {
+    for (const m of sec.models) {
+      if (m.protocols && !m.protocols.includes(needs)) continue;
+      // เอเจนต์เรียกเครื่องมือเป็นหลัก · รุ่นที่ทำ tool call ไม่ได้จะพังตอนใช้จริง
+      // ไม่ใช่ตอนตั้งค่า ซึ่งไล่ปัญหายากกว่ามาก
+      if (wantsTools && m.supports_tools === false) continue;
+      if (!seen.has(m.id)) seen.set(m.id, m);
+    }
+  }
+  return [...seen.values()];
+}
+
+function renderConnect() {
+  const tool = CT_TOOLS[$('ct-tool').value];
+  const models = ctModels(tool.needs, tool.agent);
+  const sel = $('ct-model');
+  const keep = sel.value;
+  sel.innerHTML = models.length
+    ? models.map((m) => `<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('')
+    : '<option value="">— ไม่มีรุ่นที่รองรับ —</option>';
+  if (models.some((m) => m.id === keep)) sel.value = keep;
+
+  const key = $('ct-key').value.trim() || 'lg_sk_ใส่คีย์ของคุณตรงนี้';
+  const model = sel.value || 'alias';
+  $('ct-out').textContent = tool.build(location.origin, key, model);
+  $('ct-note').textContent = tool.note;
+  $('ct-where').textContent = tool.where;
+}
+
+for (const id of ['ct-tool', 'ct-model', 'ct-key']) {
+  $(id).oninput = renderConnect;
+  $(id).onchange = renderConnect;
+}
+$('ct-copy').onclick = async () => {
+  try {
+    await navigator.clipboard.writeText($('ct-out').textContent);
+    banner('error', 'ok', 'ก๊อปแล้ว — ' + CT_TOOLS[$('ct-tool').value].where);
+  } catch { showError('ก๊อปไม่สำเร็จ — เลือกข้อความในกล่องแล้วก๊อปเองได้'); }
+};
+
 /* ------------------------------------------------------------ dashboard */
 // Inline SVG chart primitives — no CDN, so they draw the same on an air-gapped
 // install. Colours are passed in from the --c1..c4 family so a chart belongs to
@@ -793,6 +901,18 @@ function detectOS() {
 }
 
 async function loadTools() {
+  // แค็ตตาล็อกมาจาก My account ตามปกติ · คนที่เปิดแท็บนี้ตรง ๆ ยังไม่เคยโหลด
+  if (!state.cache.catalog) {
+    try { state.cache.catalog = await api('/v1/catalog'); } catch { state.cache.catalog = { sections: [] }; }
+  }
+  renderConnect();
+
+  // ส่วนดาวน์โหลดยังเป็นเรื่องของผู้ดูแล — สมาชิกเห็นได้แค่ส่วนตั้งค่าข้างบน
+  const staff = myRole === 'admin' || myRole === 'manager';
+  $('ct-downloads').hidden = !staff;
+  $('tools').hidden = !staff;
+  if (!staff) return;
+
   const { tools } = await api('/admin/tools');
   if (!tools.length) {
     $('tools').innerHTML = '<div class="empty">No tools in the registry</div>';
