@@ -335,7 +335,33 @@ function renderQuotaInto(target, me) {
       <div class="g-meta"><b>${label}</b><div class="g-q">${num(u)}${lim ? ` / ${num(lim)}` : ' · unlimited'}</div></div></div>`;
   };
   $(target).innerHTML = `<div class="gaugewrap">${rows.map(cell).join('')}</div>
-    <div class="g-foot">Window ${esc(me.quota.window)} · resets ${new Date(me.quota.window_end).toLocaleString()}</div>`;
+    <div class="g-foot">Window ${esc(me.quota.window)} · resets
+      <b data-until="${esc(me.quota.window_end)}">${untilText(me.quota.window_end)}</b>
+      <span class="hint">(${new Date(me.quota.window_end).toLocaleString()})</span></div>`;
+  startCountdowns();
+}
+
+// "resets 25/8/2569 14:00" บังคับให้คนคิดเลขในหัวก่อนจะรู้ว่าต้องรออีกนานแค่ไหน
+// ซึ่งเป็นคำถามเดียวที่คนโดนตัดโควตาอยากรู้ · เวลาสัมบูรณ์ยังอยู่ในวงเล็บสำหรับ
+// คนที่ต้องจดหรือแจ้งต่อ
+function untilText(iso) {
+  const ms = stamp(iso) - new Date();
+  if (!(ms > 0)) return 'ตอนนี้';
+  const m = Math.floor(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  if (d >= 1) return `in ${d}d ${h % 24}h`;
+  if (h >= 1) return `in ${h}h ${m % 60}m`;
+  return `in ${m}m`;
+}
+
+// ตัวจับเวลาตัวเดียวสำหรับทั้งหน้า · เรียก renderQuotaInto ซ้ำได้ไม่สะสม interval
+let countdownTimer = null;
+function startCountdowns() {
+  if (countdownTimer) return;
+  countdownTimer = setInterval(() => {
+    const live = document.querySelectorAll('[data-until]');
+    if (!live.length) { clearInterval(countdownTimer); countdownTimer = null; return; }
+    for (const el of live) el.textContent = untilText(el.dataset.until);
+  }, 30000);
 }
 
 // Inline because a gateway may run air-gapped: no icon font, no CDN, no build.
@@ -1589,15 +1615,55 @@ function editorValues() {
       enabled: true,
     },
   };
+  // หลังบ้านทำ fallback ข้ามรุ่นได้มาตั้งแต่แรก แต่ไม่เคยมีที่ให้ตั้งค่า —
+  // ต้องไปแก้ YAML บนเครื่องเอง ซึ่งลูกค้าที่ใช้แต่หน้าจอทำไม่ได้เลย
+  //
+  // ต่อยอดจาก routing เดิมเสมอ ไม่ประกอบใหม่ · overflow กับ small_prompt
+  // ยังไม่มีช่องบนหน้าจอ ถ้าส่งแต่ fallback ไป การแก้ชื่อรุ่นครั้งเดียวจะลบ
+  // กฎที่คนอื่นตั้งไว้ทิ้งทั้งชุด โดยไม่มีอะไรบนหน้าจอบอกว่าเกิดขึ้น
+  const routing = { ...(state.cache.editingRouting || {}) };
+  routing.fallback = readFallback();
+  const kept = Object.entries(routing).filter(([, v]) =>
+    v !== null && v !== undefined && !(Array.isArray(v) && !v.length));
+  if (kept.length) definition.spec.routing = Object.fromEntries(kept);
   if ($('x-claudecode').checked) {
     definition.spec.agent_clients = { claude_code: { enabled: true, tested: false } };
   }
   return definition;
 }
 
+// รายชื่อรุ่นสำรอง — ติ๊กได้เฉพาะรุ่นอื่น (ชี้หาตัวเองระบบปฏิเสธตอนโหลด)
+// เรียงตามที่ติ๊ก ไม่ใช่ตามตัวอักษร เพราะลำดับคือลำดับที่จะถูกลอง
+function readFallback() {
+  return [...document.querySelectorAll('#m-fallback input:checked')]
+    .sort((a, b) => Number(a.dataset.order || 0) - Number(b.dataset.order || 0))
+    .map((el) => el.value);
+}
+
+function renderFallback(self, chosen = []) {
+  const others = (state.cache.models || []).filter((m) => m.alias !== self);
+  const host = $('m-fallback');
+  if (!others.length) {
+    host.innerHTML = '<span class="hint">ยังไม่มีรุ่นอื่นให้เลือก</span>';
+    return;
+  }
+  host.innerHTML = others.map((m) => {
+    const i = chosen.indexOf(m.alias);
+    return `<label><input type="checkbox" value="${esc(m.alias)}"
+      data-order="${i < 0 ? 999 : i}" ${i < 0 ? '' : 'checked'}> ${esc(m.alias)}</label>`;
+  }).join('');
+  // ติ๊กทีหลัง = ลองทีหลัง · ให้ลำดับตามการกดจริง ไม่ใช่ตามที่วาดบนจอ
+  let next = chosen.length;
+  for (const el of host.querySelectorAll('input')) {
+    el.onchange = () => { if (el.checked) el.dataset.order = String(next++); };
+  }
+}
+
 function openEditor(model) {
   $('editor').hidden = false;
   $('editor-title').textContent = model ? `Edit ${model.alias}` : 'Add AI model';
+  state.cache.editingRouting = model?.routing || {};
+  renderFallback(model?.alias || '', model?.routing?.fallback || []);
   flash('save-status', '', '');
   $('endpoints').innerHTML = '';
   state.cache.editingTags = model?.tags || [];

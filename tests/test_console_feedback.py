@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 STATIC = Path(__file__).resolve().parents[1] / "app" / "static"
+ROOT_APP = Path(__file__).resolve().parents[1] / "app"
 CSS = (STATIC / "style.css").read_text(encoding="utf-8")
 JS = (STATIC / "app.js").read_text(encoding="utf-8")
 
@@ -93,3 +94,36 @@ def test_the_model_list_is_deduplicated_and_matches_the_protocol():
     assert "seen" in body and "Map()" in body
     assert "protocols" in body, "ต้องกรองตามโปรโตคอลที่เครื่องมือนั้นพูด"
     assert "supports_tools" in body, "เอเจนต์ที่เรียกเครื่องมือไม่ได้ พังตอนใช้จริงไม่ใช่ตอนตั้งค่า"
+
+
+def test_editing_a_model_in_the_console_keeps_routing_rules_it_cannot_show():
+    """คอนโซลประกอบ spec ใหม่ทุกครั้งที่กด Save
+
+    ฟิลด์ไหนที่หน้าจอไม่ได้ส่งกลับไปด้วยจะหายทันที · `overflow` กับ
+    `small_prompt` ยังไม่มีช่องบนหน้าจอ การแก้ชื่อรุ่นครั้งเดียวจึงลบกฎที่คนอื่น
+    ตั้งไว้ทิ้งได้ โดยไม่มีอะไรบอกว่าเกิดขึ้น
+    """
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    body = js.split("const routing = {", 1)[1].split("definition.spec.routing", 1)[0]
+    assert "editingRouting" in js, "ต้องเก็บ routing เดิมไว้ตอนเปิดแก้"
+    assert "readFallback()" in body
+    # ส่งกลับเฉพาะที่มีค่า — ไม่งั้น overflow: null จะถูกเขียนลง YAML ทุกครั้ง
+    assert "filter" in body
+
+
+def test_the_admin_model_list_returns_routing_so_the_form_can_round_trip():
+    admin = (ROOT_APP / "api" / "admin.py").read_text(encoding="utf-8")
+    block = admin.split('@router.get("/models")', 1)[1].split("@router.", 1)[0]
+    assert '"routing": model.spec.routing.model_dump()' in block
+
+
+def test_a_quota_window_says_how_long_is_left_not_just_when_it_ends():
+    """คนที่โดนตัดโควตาอยากรู้อย่างเดียวว่าต้องรออีกนานแค่ไหน
+
+    เวลาสัมบูรณ์บังคับให้คิดเลขในหัวก่อน · เก็บไว้ในวงเล็บสำหรับคนที่ต้องจดต่อ
+    """
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "function untilText(" in js
+    assert "data-until" in js
+    # ตัวจับเวลาต้องมีตัวเดียว ไม่งั้นเปิดแท็บกลับไปกลับมาแล้ว interval สะสม
+    assert "if (countdownTimer) return;" in js

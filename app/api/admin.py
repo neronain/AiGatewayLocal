@@ -1751,6 +1751,10 @@ async def admin_models(
                     "output": [m.value for m in model.spec.modalities.output],
                 },
                 "limits": model.spec.limits.model_dump(),
+                # กฎ round-trip เดียวกับข้างบน · ไม่คืน routing มาแล้วคอนโซล
+                # จะประกอบ spec ใหม่โดยไม่มีมัน = ทับ fallback เดิมหายทั้งชุด
+                # โดยที่ผู้ดูแลเห็นแค่ว่าตัวเองแก้ชื่อรุ่น
+                "routing": model.spec.routing.model_dump(),
                 "agent_clients": {
                     k: v.model_dump() for k, v in model.spec.agent_clients.items()
                 },

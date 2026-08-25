@@ -298,6 +298,18 @@
         </p>
       </div>
 
+      <div class="field">
+        <label for="m-fallback">Fallback models</label>
+        <div id="m-fallback" class="checks"></div>
+        <p class="hint">
+          Tried in order when <b>every</b> backend behind this alias is unreachable.
+          Endpoint failover already covers one machine going down; this covers all of
+          them. Switching happens before the first byte, so nobody sees half an answer twice.
+          <span class="th">เลือกรุ่นสำรอง — ใช้เมื่อเครื่องของรุ่นนี้ล่มหมดทุกตัว
+          ไม่ใช่แค่เครื่องเดียว · สลับก่อนเริ่มส่งคำตอบเสมอ</span>
+        </p>
+      </div>
+
       <div class="bar" style="margin-top:16px">
         <button id="preview-yaml" class="ghost">Preview YAML</button>
         <button id="save-model" class="primary">Save to registry</button>
