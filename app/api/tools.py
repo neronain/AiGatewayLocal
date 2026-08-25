@@ -56,7 +56,10 @@ def _tool_view(tool: ToolDefinition, tools_dir: Path) -> dict[str, Any]:
         "repo": tool.repo,
         "homepage": tool.homepage,
         "license": {"spdx": tool.license.spdx},
-        "verify": {"method": tool.verify.method},
+        "verify": {"method": tool.verify.method} if tool.verify else None,
+        # เครื่องมือที่แจกผ่าน npm/Docker ไม่มีไฟล์ให้เรามิเรอร์ — ส่งคำสั่ง
+        # ติดตั้งไปให้แทน หน้าจอจะได้มีอะไรเสนอ ไม่ใช่การ์ดเปล่า
+        "install": tool.install or None,
         "published": None,
         "published_at": None,
         "assets": [],

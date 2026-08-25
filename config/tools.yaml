@@ -92,3 +92,19 @@ tools:
       - { platform: macos, arch: arm64,  file: "cc-switch-cli-v{version}-darwin-arm64.tar.gz", kind: archive, signed: false }
       - { platform: linux, arch: x86_64, file: "cc-switch-cli-v{version}-linux-x64.tar.gz", kind: archive, signed: false }
       - { platform: linux, arch: arm64,  file: "cc-switch-cli-v{version}-linux-arm64.tar.gz", kind: archive, signed: false }
+
+  - slug: 9router
+    name: 9Router
+    summary: >-
+      Local router that puts many providers behind one endpoint, with
+      per-provider quota tracking and automatic fallback between them.
+      Runs on the operator's own machine, not on the gateway.
+    repo: decolua/9router
+    homepage: https://github.com/decolua/9router
+    license:
+      spdx: MIT
+      files: [LICENSE]
+    # ไม่มี release asset ให้มิเรอร์ — แจกผ่าน npm อย่างเดียว จึงลงรายการไว้
+    # พร้อมคำสั่งติดตั้ง แทนที่จะเงียบไปทั้งที่ทีมงานถามถึงบ่อย
+    install:
+      npm: npm install -g 9router

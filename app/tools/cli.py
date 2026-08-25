@@ -45,6 +45,12 @@ async def _sync(settings, slugs, platforms, check):
     rc = 0
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=300.0)) as client:
         for tool in tools:
+            # ตัวที่แจกผ่าน npm/Docker ไม่มีอะไรให้ดึงมาตรวจ · ข้ามไปเงียบ ๆ
+            # ไม่ใช่ error เพราะมันอยู่ในรายการโดยตั้งใจ
+            if not tool.assets:
+                print(f"• {tool.slug}: ไม่มีไฟล์ให้มิเรอร์ (ติดตั้งผ่าน "
+                      f"{', '.join(tool.install or {})}) — ข้าม")
+                continue
             try:
                 manifest = await S.sync_tool(
                     tool,
@@ -84,7 +90,8 @@ def _list(settings):
     for tool in reg.tools:
         pub = S.published_version(settings.tools_dir, tool.slug)
         cands = S.list_candidates(settings.tools_dir, tool.slug)
-        print(f"{tool.slug:12} {tool.license.spdx:11} verify={tool.verify.method:11} "
+        how = tool.verify.method if tool.verify else "ไม่มีไฟล์ให้ตรวจ"
+        print(f"{tool.slug:12} {tool.license.spdx:11} verify={how:11} "
               f"published={pub or '-':10} candidates={','.join(cands) or '-'}")
         print(f"             {tool.name} — {tool.repo}")
     return 0

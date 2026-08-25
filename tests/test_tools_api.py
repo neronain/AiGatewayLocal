@@ -67,7 +67,9 @@ def tools_env(temp_db, monkeypatch, tmp_path):
                 "repo": "acme/tooly",
                 "license": {"spdx": "Apache-2.0"},
                 "verify": {"method": "sha256sums", "checksums_asset": "checksums.txt"},
-                "assets": [],
+                # ประกาศ asset ไว้แต่ยังไม่เคยมิเรอร์ — "ยังไม่ published" มาจาก
+                # สถานะในโฟลเดอร์มิเรอร์ ไม่ใช่จากการไม่ประกาศ asset
+                "assets": [{"platform": "linux", "file": "tooly-{version}.tar.gz"}],
             },
         ],
     }

@@ -85,8 +85,13 @@ class ToolDefinition(BaseModel):
     repo: str  # "owner/name" on GitHub
     homepage: str | None = None
     license: LicenseSpec
-    verify: VerifySpec
+    # ไม่บังคับ เพราะเครื่องมือบางตัวไม่มีไฟล์ให้ตรวจ — แจกผ่าน npm/Docker
+    # ซึ่งมิเรอร์ของเราดึงไม่ได้ (ระบบนี้ดึงจาก release asset เท่านั้น)
+    verify: VerifySpec | None = None
     assets: list[AssetSpec] = Field(default_factory=list)
+    # วิธีติดตั้งสำหรับตัวที่ไม่มีไบนารีให้มิเรอร์ · แสดงเป็นคำสั่งให้ก๊อปแทน
+    # ปุ่มดาวน์โหลด · เช่น {"npm": "npm install -g 9router"}
+    install: dict[str, str] | None = None
     # Optional preset wiring (used in a later phase): how this tool is pointed at
     # our gateway (base URL + a minted scoped key). Kept freeform so adding the
     # injector later needs no schema change.
@@ -96,7 +101,17 @@ class ToolDefinition(BaseModel):
     def _consistency(self) -> ToolDefinition:
         if "/" not in self.repo:
             raise ValueError(f"repo must be 'owner/name', got {self.repo!r}")
-        if self.verify.method == "minisign":
+        if self.assets and self.verify is None:
+            raise ValueError(
+                f"{self.slug}: has assets to mirror but no verify method — "
+                "we do not hand out a binary we cannot prove"
+            )
+        if not self.assets and not self.install:
+            raise ValueError(
+                f"{self.slug}: nothing to mirror and no install instructions — "
+                "the card would have nothing to offer"
+            )
+        if self.verify and self.verify.method == "minisign":
             signed = [a for a in self.assets if a.signed]
             if not signed:
                 raise ValueError(

@@ -1084,18 +1084,19 @@ async function loadTools() {
     $('tools').innerHTML = '<div class="empty">No tools in the registry</div>';
     return;
   }
-  const myOS = detectOS();
   const card = (t) => {
     const look = TOOL_LOOK[t.slug] || { icon: 'bundle', grad: 'var(--g-mix)' };
     const dl = t.assets.filter((a) => a.download);
     const proven = t.assets.filter((a) => a.verified === true).length;
     const platforms = [...new Set(dl.map((a) => a.platform))];
-    const pick = dl.find((a) => a.platform === myOS) || dl[0];
-    const verifyPill = `<span class="pill ok">${icon('shield', 12)} Verified · ${
-      t.verify.method === 'minisign' ? 'minisign' : 'SHA-256'}</span>`;
+    const verifyPill = t.verify
+      ? `<span class="pill ok">${icon('shield', 12)} Verified · ${
+          t.verify.method === 'minisign' ? 'minisign' : 'SHA-256'}</span>`
+      : '';
+    const listingOnly = !t.assets.length && !!t.install;
     const ver = t.published
       ? `<span class="pill mute">v${esc(t.published)}</span>`
-      : '<span class="pill warn">not published</span>';
+      : listingOnly ? '' : '<span class="pill warn">not published</span>';
     return `<div class="card tool">
       <div class="tool-top">
         <div class="tool-logo" style="background:${look.grad}">${icon(look.icon, 22)}</div>
@@ -1107,16 +1108,15 @@ async function loadTools() {
       <div class="meta-row">${t.published ? verifyPill : ''}<span class="pill mute">${esc(t.license.spdx)}</span></div>
       ${platforms.length ? `<div class="meta-row">${platforms.map((p) =>
         `<span class="os">${esc(OS_LABEL[p] || p)}</span>`).join('')}</div>` : ''}
-      <div class="verline">${t.published
-        ? `${icon('shield', 13)} ${proven}/${dl.length} assets verified · published`
-        : `Not mirrored yet — run on the server: <code>python -m app.tools sync ${esc(t.slug)}</code>`}</div>
+      <div class="verline">${listingOnly
+        ? `ติดตั้งเอง: <code>${esc(Object.values(t.install)[0])}</code>`
+        : t.published
+          ? `${icon('shield', 13)} ${proven}/${dl.length} assets verified · published`
+          : `Not mirrored yet — run on the server: <code>python -m app.tools sync ${esc(t.slug)}</code>`}</div>
       <div class="tool-foot">
-        ${pick ? `<a class="tbtn primary" href="${esc(pick.download)}" download>${
-          icon('download', 15)} Download for ${esc(OS_LABEL[pick.platform] || pick.platform)}</a>` : ''}
         ${t.published ? `<button class="tbtn ghost" data-connect="${esc(t.slug)}">${
           icon('plug', 15)} Connect</button>` : ''}
-        <a class="tbtn ghost" href="${esc(t.homepage || `https://github.com/${t.repo}`)}"
-           target="_blank" rel="noopener">Details</a>
+        <button class="tbtn ghost" data-details="${esc(t.slug)}">Details</button>
       </div>
     </div>`;
   };
@@ -1129,6 +1129,45 @@ async function loadTools() {
     const tool = tools.find((x) => x.slug === btn.dataset.connect);
     btn.onclick = () => connectTool(tool).catch((e) => showError(e.message));
   }
+  for (const btn of $('tools').querySelectorAll('[data-details]')) {
+    const tool = tools.find((x) => x.slug === btn.dataset.details);
+    btn.onclick = () => showToolDetails(tool);
+  }
+}
+
+// การ์ดเดิมมีปุ่มโหลดของ OS ตัวเองอยู่หน้าสุด ซึ่งเดาแทนคนอ่านว่าเขาอยู่บนเครื่องไหน
+// และเบียดจนอ่านอย่างอื่นไม่ทัน · ย้ายทุกแพลตฟอร์มมาไว้ในแผงนี้ พร้อมบอกตรง ๆ ว่า
+// ไฟล์ไหนพิสูจน์ที่มาได้และไฟล์ไหนได้แค่ตรวจความครบถ้วน
+function showToolDetails(t) {
+  const rows = (t.assets || []).filter((a) => a.download).map((a) => `
+    <tr>
+      <td>${esc(OS_LABEL[a.platform] || a.platform)}${a.arch ? ` · ${esc(a.arch)}` : ''}</td>
+      <td class="hint">${esc(a.name)}</td>
+      <td>${a.verified === true
+        ? '<span class="pill ok">signature proven</span>'
+        : '<span class="pill warn">checksum only</span>'}</td>
+      <td><a class="tbtn ghost" href="${esc(a.download)}" download>Download</a></td>
+    </tr>`).join('');
+
+  const install = t.install
+    ? `<p class="hint">เครื่องมือนี้ไม่มีไฟล์ให้เรามิเรอร์ — ผู้พัฒนาแจกผ่านช่องทางของเขาเอง</p>
+       ${Object.entries(t.install).map(([k, v]) =>
+         `<pre class="mono scroll">${esc(v)}</pre>`).join('')}`
+    : '';
+
+  modal(t.name, `
+    <p>${esc(t.summary || '')}</p>
+    <div class="meta-row" style="margin:12px 0">
+      <span class="pill mute">${esc(t.license.spdx)}</span>
+      ${t.published ? `<span class="pill mute">v${esc(t.published)}</span>` : ''}
+      ${t.verify ? `<span class="pill ok">${esc(t.verify.method)}</span>` : ''}
+    </div>
+    ${install}
+    ${rows ? `<table class="tbl"><tr><th>Platform</th><th>File</th><th>Verification</th><th></th></tr>${rows}</table>` : ''}
+    <p class="hint" style="margin-top:14px">
+      <a href="${esc(t.homepage || `https://github.com/${t.repo}`)}"
+         target="_blank" rel="noopener">เปิดหน้าโครงการของผู้พัฒนา ↗</a>
+    </p>`);
 }
 
 // The first alias a person may actually call — a real value makes the snippet

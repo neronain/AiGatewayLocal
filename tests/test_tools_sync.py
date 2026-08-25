@@ -255,5 +255,10 @@ def test_only_release_assets_can_be_mirrored():
     """
     reg = load_tool_registry(REPO_ROOT / "config" / "tools.yaml")
     for tool in reg.tools:
-        assert tool.assets, f"{tool.slug}: ไม่มี asset = mirror ไม่ได้"
-        assert tool.verify.method in {"minisign", "sha256sums"}
+        if tool.assets:
+            assert tool.verify is not None, f"{tool.slug}: มีไฟล์แต่ไม่มีวิธีตรวจ"
+            assert tool.verify.method in {"minisign", "sha256sums"}
+        else:
+            # ตัวที่แจกผ่าน npm/Docker ลงรายการได้ แต่ต้องบอกวิธีติดตั้ง
+            # ไม่งั้นการ์ดจะไม่มีอะไรให้คนกดต่อ
+            assert tool.install, f"{tool.slug}: ไม่มีทั้งไฟล์และวิธีติดตั้ง"
