@@ -143,18 +143,34 @@ header {
 }
 .icon-btn:hover:not(:disabled) { color: var(--fg); }
 
+/* ── shell: เมนูซ้าย + เนื้อหา ───────────────────────────────────────────
+   ย้ายจากแถบแนวนอนบนหัวเพราะสองเหตุผลที่วัดได้ · จอ 375px แถบเดิมตัดบรรทัด
+   จน header สูง 230px กินจอไปหนึ่งในสี่ก่อนเห็นเนื้อหา · และแถบแนวนอนแสดง
+   หัวข้อกลุ่มไม่ได้ ทั้งที่เมนูของเราแบ่งตามบทบาทอยู่แล้ว */
+#shell {
+  display: grid; grid-template-columns: 196px minmax(0, 1fr); gap: 22px;
+  max-width: 1180px; margin: 0 auto; align-items: start;
+}
+#side { position: sticky; top: 64px; }
+#navtoggle { display: none; font-size: 1.05rem; line-height: 1; }
+
 /* ── tabs ───────────────────────────────────────────────────────────── */
 nav {
-  display: flex; gap: 2px; margin-top: 12px; flex-wrap: wrap;
-  padding: 3px; border-radius: 11px; background: var(--sunken);
-  border: 1px solid var(--line); width: fit-content; max-width: 100%;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 6px; border-radius: 12px; background: var(--sunken);
+  border: 1px solid var(--line);
 }
+.navgroup {
+  margin: 12px 0 4px; padding: 0 9px; font: 600 0.6562rem/1 var(--sans);
+  letter-spacing: .09em; text-transform: uppercase; color: var(--fg3);
+}
+.navgroup:first-child { margin-top: 4px; }
 /* A display rule on the element beats the browser's [hidden] rule, so an
    element styled with display must opt back out explicitly. Without this the
    nav stays on screen for someone who is not signed in. */
 [hidden] { display: none !important; }
 nav button {
-  display: inline-flex; align-items: center; gap: 7px;
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
   background: none; border: 1px solid transparent; color: var(--fg2);
   padding: 7px 13px; font: 500 0.8438rem/1 var(--sans);
   cursor: pointer; border-radius: 8px;
@@ -169,15 +185,29 @@ nav button[aria-selected="true"] {
 }
 nav button[aria-selected="true"] svg { opacity: 1; color: var(--c2); }
 
-/* Below this the labels stop fitting; the icons carry it, and each button
-   keeps its aria-label. */
+/* จอแคบ: เมนูกลายเป็นลิ้นชัก · เลื่อนออกนอกจอแทนการซ่อน เพื่อให้ยังโฟกัส
+   ด้วยคีย์บอร์ดไปทีละปุ่มได้ตามเดิม */
+@media (max-width: 979px) {
+  #shell { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  #navtoggle { display: inline-grid; }
+  #side {
+    position: fixed; inset: 0 auto 0 0; z-index: 40; width: 232px;
+    padding: 12px; overflow-y: auto; background: var(--bg);
+    border-right: 1px solid var(--line); box-shadow: var(--shadow-lg);
+    transform: translateX(-104%); transition: transform .18s ease;
+  }
+  #side.open { transform: none; }
+  #side::backdrop, .navscrim {
+    position: fixed; inset: 0; z-index: 39; background: rgba(0,0,0,.45);
+  }
+}
+
 @media (max-width: 720px) {
-  nav button span:not([data-icon]) { display: none; }
   .brand { border-right: 0; padding-right: 0; }
   .who-text, .status { display: none; }
 }
 
-main { max-width: 1180px; margin: 0 auto; padding: 18px 0 0; }
+main { min-width: 0; padding: 18px 0 0; }
 section[hidden] { display: none; }
 
 /* ── controls ───────────────────────────────────────────────────────── */

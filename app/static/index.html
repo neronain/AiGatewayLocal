@@ -22,6 +22,9 @@
         </span>
       </h1>
 
+      <button id="navtoggle" class="icon-btn" aria-label="เมนู" aria-expanded="false"
+        title="เมนู">☰</button>
+
       <!-- What the gateway is doing right now. A console for a fleet should say
            so in the frame, not only on the page you happen to have open. -->
       <span class="status" id="fleet" hidden></span>
@@ -49,26 +52,32 @@
         <span data-icon="signout" aria-hidden="true"></span></button>
     </div>
 
+  </div>
+</header>
+
+<div id="shell">
+  <aside id="side">
     <nav id="tabs" role="tablist">
       <button data-tab="dashboard" aria-label="Dashboard" role="tab" aria-selected="true">
         <span data-icon="dashboard" aria-hidden="true"></span><span class="tab-label">Dashboard</span></button>
       <button data-tab="account" aria-label="My account" role="tab" aria-selected="false">
         <span data-icon="account" aria-hidden="true"></span><span class="tab-label">My account</span></button>
+      <button data-tab="tools" aria-label="Client tools" role="tab" aria-selected="false">
+        <span data-icon="download" aria-hidden="true"></span><span class="tab-label">Client tools</span></button>
+      <p class="navgroup" data-staff>People</p>
+      <button data-tab="access" aria-label="Access &amp; Keys" role="tab" aria-selected="false" data-staff>
+        <span data-icon="keys" aria-hidden="true"></span><span class="tab-label">Access &amp; Keys</span></button>
+      <button data-tab="quota" aria-label="Quota" role="tab" aria-selected="false" data-staff>
+        <span data-icon="quota" aria-hidden="true"></span><span class="tab-label">Quota</span></button>
+      <p class="navgroup" data-admin>System</p>
       <button data-tab="models" aria-label="Models" role="tab" aria-selected="false" data-admin>
         <span data-icon="models" aria-hidden="true"></span><span class="tab-label">Models</span></button>
       <button data-tab="assistant" aria-label="Assistant" role="tab" aria-selected="false" data-admin>
         <span data-icon="assistant" aria-hidden="true"></span><span class="tab-label">Assistant</span></button>
-      <button data-tab="access" aria-label="Access & Keys" role="tab" aria-selected="false" data-staff>
-        <span data-icon="keys" aria-hidden="true"></span><span class="tab-label">Access &amp; Keys</span></button>
-      <button data-tab="quota" aria-label="Quota" role="tab" aria-selected="false" data-staff>
-        <span data-icon="quota" aria-hidden="true"></span><span class="tab-label">Quota</span></button>
-      <button data-tab="tools" aria-label="Client tools" role="tab" aria-selected="false">
-        <span data-icon="download" aria-hidden="true"></span><span class="tab-label">Client tools</span></button>
     </nav>
-  </div>
-</header>
+  </aside>
 
-<main>
+  <main>
   <div id="error"></div>
 
   <!-- ================= Sign in / first-run setup ================= -->
@@ -727,7 +736,8 @@
     </div>
     <div id="tools"></div>
   </section>
-</main>
+  </main>
+</div>
 <footer id="lg-credit">
   <span class="cred-name">LiteGate</span>
   <span class="cred-dim">created by <a href="https://www.facebook.com/neronain.minidev"

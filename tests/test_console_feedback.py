@@ -127,3 +127,38 @@ def test_a_quota_window_says_how_long_is_left_not_just_when_it_ends():
     assert "data-until" in js
     # ตัวจับเวลาต้องมีตัวเดียว ไม่งั้นเปิดแท็บกลับไปกลับมาแล้ว interval สะสม
     assert "if (countdownTimer) return;" in js
+
+
+def test_the_menu_is_a_sidebar_not_a_row_that_wraps():
+    """แถบแนวนอนตัดบรรทัดบนจอ 375px จน header สูง 230px
+
+    กินจอไปหนึ่งในสี่ก่อนเห็นเนื้อหาแถวแรก · sidebar ลดเหลือ 136px
+    """
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    css = (STATIC / "style.css").read_text(encoding="utf-8")
+    assert 'id="shell"' in html and 'id="side"' in html
+    # nav ต้องออกจาก header แล้ว ไม่งั้นยังกินความสูงเหมือนเดิม
+    assert "<nav" not in html.split("</header>", 1)[0]
+    assert "grid-template-columns: 196px" in css
+
+
+def test_the_drawer_can_be_closed_three_ways():
+    """คนกดเมนูเพื่อไปที่อื่น ไม่ใช่เพื่อค้างเมนูไว้ดู"""
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "setNav(false)" in js.split("btn.onclick", 1)[1][:120], "เลือกแท็บแล้วต้องปิดเอง"
+    assert "navscrim" in js, "กดพื้นหลังต้องปิด"
+    assert "'Escape'" in js, "Esc ต้องปิด"
+
+
+def test_a_group_heading_never_outlives_the_group():
+    """สมาชิกไม่มีสิทธิ์เห็นเมนูใต้ People/System
+
+    ซ่อนแต่ปุ่มจะเหลือหัวข้อลอยอยู่โดยไม่มีอะไรอยู่ข้างใต้ ซึ่งอ่านแล้วเหมือน
+    ระบบโหลดไม่ครบ
+    """
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert '<p class="navgroup" data-staff>' in html
+    assert '<p class="navgroup" data-admin>' in html
+    # ตัวกรองต้องกวาดลูกทุกตัวของ #tabs ไม่ใช่เฉพาะ button
+    assert "querySelectorAll('#tabs > *')" in js

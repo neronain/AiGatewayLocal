@@ -124,8 +124,28 @@ function showTab(name) {
   if (loaders[name]) loaders[name]().catch((e) => showError(e.message));
 }
 for (const btn of document.querySelectorAll('#tabs button')) {
-  btn.onclick = () => showTab(btn.dataset.tab);
+  btn.onclick = () => { showTab(btn.dataset.tab); setNav(false); };
 }
+/* ------------------------------------------------- นำทางบนจอแคบ */
+// เมนูอยู่ซ้ายถาวรบนจอกว้าง · จอแคบเปิดเป็นลิ้นชักทับเนื้อหา แล้วปิดเองเมื่อ
+// เลือกแท็บ เพราะคนกดเมนูเพื่อไปที่อื่น ไม่ใช่เพื่อค้างเมนูไว้ดู
+function setNav(open) {
+  const side = $('side');
+  side.classList.toggle('open', open);
+  $('navtoggle').setAttribute('aria-expanded', String(open));
+  let scrim = document.querySelector('.navscrim');
+  if (open && !scrim) {
+    scrim = document.createElement('div');
+    scrim.className = 'navscrim';
+    scrim.onclick = () => setNav(false);
+    document.body.appendChild(scrim);
+  } else if (!open && scrim) {
+    scrim.remove();
+  }
+}
+$('navtoggle').onclick = () => setNav(!$('side').classList.contains('open'));
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setNav(false); });
+
 
 // บทบาทของคนที่ล็อกอินอยู่ — ตารางบางอันตัดสินใจวาดปุ่มจากตรงนี้ ไม่ใช่จากการซ่อนแท็บ
 let myRole = '';
@@ -134,9 +154,9 @@ function applyRole(role) {
   myRole = role;
   const admin = role === 'admin';
   const staff = admin || role === 'manager';
-  for (const btn of document.querySelectorAll('#tabs button')) {
-    if (btn.hasAttribute('data-admin')) btn.hidden = !admin;
-    if (btn.hasAttribute('data-staff')) btn.hidden = !staff;
+  for (const el of document.querySelectorAll('#tabs > *')) {
+    if (el.hasAttribute('data-admin')) el.hidden = !admin;
+    if (el.hasAttribute('data-staff')) el.hidden = !staff;
   }
   $('health-wrap').hidden = !admin;
   $('usage-wrap').hidden = !staff;
