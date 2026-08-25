@@ -826,6 +826,22 @@ nav button[aria-selected="true"] .ti { opacity: 1; }
 .g-foot { color: var(--fg3); font-size: 0.72rem; margin-top: 8px; padding-top: 8px;
   border-top: 1px solid var(--line); }
 
+/* คำถามเดียวที่คนโดนตัดโควตาอยากรู้คือ "อีกนานแค่ไหน" — วางไว้เหนือวงกลม
+   ไม่ใช่ใต้การ์ด · เป็นเม็ดยาเหมือน .status เพราะเป็นสถานะ ไม่ใช่คำอธิบาย */
+.q-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 14px;
+}
+.q-window { color: var(--fg2); font-size: 0.8125rem; }
+.q-window b { color: var(--fg); font-weight: 600; }
+.q-reset {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 6px 12px; border-radius: 999px; font-size: 0.8125rem;
+  color: var(--fg2); background: var(--sunken); border: 1px solid var(--line);
+}
+.q-reset b { color: var(--c2); font-weight: 600; font-variant-numeric: tabular-nums; }
+.q-reset svg { opacity: .7; }
+
 /* Framed panel with a header strip (usage chart, model mix) */
 .panel { background: var(--card); border: 1px solid var(--line); border-radius: var(--r-lg);
   box-shadow: var(--shadow); overflow: hidden; }

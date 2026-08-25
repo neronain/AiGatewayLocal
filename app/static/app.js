@@ -354,10 +354,20 @@ function renderQuotaInto(target, me) {
       ${pct != null ? ringSvg(pct, color) : '<div class="ring-none">∞</div>'}
       <div class="g-meta"><b>${label}</b><div class="g-q">${num(u)}${lim ? ` / ${num(lim)}` : ' · unlimited'}</div></div></div>`;
   };
-  $(target).innerHTML = `<div class="gaugewrap">${rows.map(cell).join('')}</div>
-    <div class="g-foot">Window ${esc(me.quota.window)} · resets
-      <b data-until="${esc(me.quota.window_end)}">${untilText(me.quota.window_end)}</b>
-      <span class="hint">(${new Date(me.quota.window_end).toLocaleString()})</span></div>`;
+  // เวลาที่เหลือขึ้นก่อนวงกลม ไม่ใช่เป็นเชิงอรรถใต้การ์ด · รอบแรกวางไว้ท้ายสุด
+  // เป็นตัวเทา 12px แล้วคนที่ขอฟีเจอร์นี้เองยังหาไม่เจอ ซึ่งตอบคำถามเรื่อง
+  // ตำแหน่งได้ชัดกว่าการเถียงว่ามันมีอยู่แล้ว
+  $(target).innerHTML = `
+    <div class="q-head">
+      <span class="q-window">Window <b>${esc(me.quota.window)}</b></span>
+      <span class="q-reset" title="${esc(new Date(me.quota.window_end).toLocaleString())}">
+        <span data-icon="quota" data-icon-size="13" aria-hidden="true"></span>
+        resets <b data-until="${esc(me.quota.window_end)}">${untilText(me.quota.window_end)}</b>
+      </span>
+    </div>
+    <div class="gaugewrap">${rows.map(cell).join('')}</div>
+    <div class="g-foot">รอบนี้จบ ${new Date(me.quota.window_end).toLocaleString()}</div>`;
+  paintIcons($(target));
   startCountdowns();
 }
 
