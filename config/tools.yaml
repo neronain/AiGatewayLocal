@@ -108,3 +108,20 @@ tools:
     # พร้อมคำสั่งติดตั้ง แทนที่จะเงียบไปทั้งที่ทีมงานถามถึงบ่อย
     install:
       npm: npm install -g 9router
+
+  - slug: free-claude-code
+    name: Free Claude Code
+    summary: >-
+      Runs Claude Code, Codex, Cline and others against free and local model
+      providers, with automatic failover between them. Answers some of the
+      agent's own housekeeping calls locally instead of spending tokens on them.
+    repo: Alishahryar1/free-claude-code
+    homepage: https://github.com/Alishahryar1/free-claude-code
+    license:
+      spdx: MIT
+      files: [LICENSE]
+    # ไม่มี release asset — ติดตั้งด้วยสคริปต์จาก raw.githubusercontent
+    # ผู้พัฒนาเองแนะนำให้เปิดอ่านสคริปต์ก่อนรัน ซึ่งเป็นคำแนะนำที่ถูกต้อง
+    install:
+      macos-linux: curl -fsSL "https://raw.githubusercontent.com/Alishahryar1/free-claude-code/main/scripts/install.sh" | sh
+      windows: '& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/Alishahryar1/free-claude-code/main/scripts/install.ps1")))'

@@ -1109,7 +1109,13 @@ async function loadTools() {
       ${platforms.length ? `<div class="meta-row">${platforms.map((p) =>
         `<span class="os">${esc(OS_LABEL[p] || p)}</span>`).join('')}</div>` : ''}
       <div class="verline">${listingOnly
-        ? `ติดตั้งเอง: <code>${esc(Object.values(t.install)[0])}</code>`
+        ? (() => {
+            const cmds = Object.values(t.install);
+            // คำสั่งบางตัวยาวเป็นบรรทัด curl เต็ม ๆ · ยัดลงการ์ดแล้วดันของอื่นจนอ่านไม่ออก
+            return cmds.length === 1 && cmds[0].length <= 46
+              ? `ติดตั้งเอง: <code>${esc(cmds[0])}</code>`
+              : `ติดตั้งเอง — คำสั่งอยู่ใน Details`;
+          })()
         : t.published
           ? `${icon('shield', 13)} ${proven}/${dl.length} assets verified · published`
           : `Not mirrored yet — run on the server: <code>python -m app.tools sync ${esc(t.slug)}</code>`}</div>
@@ -1152,7 +1158,10 @@ function showToolDetails(t) {
   const install = t.install
     ? `<p class="hint">เครื่องมือนี้ไม่มีไฟล์ให้เรามิเรอร์ — ผู้พัฒนาแจกผ่านช่องทางของเขาเอง</p>
        ${Object.entries(t.install).map(([k, v]) =>
-         `<pre class="mono scroll">${esc(v)}</pre>`).join('')}`
+         `<p class="hint" style="margin:10px 0 4px"><b>${esc(k)}</b></p>
+          <pre class="mono scroll">${esc(v)}</pre>`).join('')}
+       <p class="hint">คำสั่งนี้ดึงสคริปต์จากอินเทอร์เน็ตมารัน — ผู้พัฒนาเองแนะนำให้เปิดอ่านก่อน
+       และมันไม่ได้ผ่านการตรวจลายเซ็นแบบไฟล์ที่เรามิเรอร์ไว้</p>`
     : '';
 
   modal(t.name, `
