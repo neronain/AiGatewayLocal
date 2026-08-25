@@ -162,3 +162,33 @@ def test_a_group_heading_never_outlives_the_group():
     assert '<p class="navgroup" data-admin>' in html
     # ตัวกรองต้องกวาดลูกทุกตัวของ #tabs ไม่ใช่เฉพาะ button
     assert "querySelectorAll('#tabs > *')" in js
+
+
+def test_every_tool_says_exactly_where_its_config_goes():
+    """คำถามแรกหลังก๊อปค่าไปคือ "วางตรงไหน"
+
+    เดิมข้อความนี้อยู่ข้างปุ่ม Copy คือหลังจากที่คนเลื่อนผ่านโค้ดไปแล้ว
+    ตอนนี้อยู่เหนือกล่องโค้ด และทุกเครื่องมือต้องมี
+    """
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    block = js.split("const CT_TOOLS = {", 1)[1].split("\nfunction ctModels", 1)[0]
+    picker = html.split('<select id="ct-tool">', 1)[1].split("</select>", 1)[0]
+    tools = [o.split('"')[0] for o in picker.split('<option value="')[1:]]
+    assert len(tools) >= 9, f"เครื่องมือน้อยไป: {tools}"
+    for t in tools:
+        key = f"'{t}':" if "-" in t else f"{t}:"
+        assert key in block, f"{t} ไม่มีใน CT_TOOLS"
+    # จำนวน where ต้องเท่ากับจำนวนเครื่องมือ · ตัวไหนขาดคือคนอ่านต้องไปเดาเอง
+    assert block.count("where:") == len(tools)
+
+
+def test_ui_configured_tools_are_not_handed_a_file_that_does_not_exist():
+    """Cline กับ Cursor เก็บค่าไว้ในที่เก็บของโปรแกรม ไม่มีไฟล์ให้วาง
+
+    ปั้ม JSON ให้แล้วบอกให้ไปวางที่ไหนสักที่ = ส่งคนไปหาไฟล์ที่ไม่มีอยู่จริง
+    """
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    for tool in ("cline", "cursor"):
+        block = js.split(f"  {tool}: {{", 1)[1].split("\n  },", 1)[0]
+        assert "ไม่ใช่ไฟล์" in block, f"{tool} ต้องบอกว่าไม่มีไฟล์"

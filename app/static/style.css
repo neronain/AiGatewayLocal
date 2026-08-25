@@ -1063,3 +1063,14 @@ table tr:not(.alias-row):not(.ep-row):hover > td {
 
 /* ปุ่มย่อ/กางทั้งแท็บ — เป็นตัวอักษร ไม่ใช่ไอคอน SVG จึงต้องคุมขนาดเอง */
 .fold-all-btn { font-size: 15px; font-weight: 600; line-height: 1; }
+
+/* ตำแหน่งไฟล์อยู่เหนือกล่องโค้ด · คำถามแรกของคนที่ก๊อปค่าไปคือ "วางตรงไหน"
+   ซึ่งเดิมอยู่ข้างปุ่ม Copy คือหลังจากที่เขาเลื่อนผ่านโค้ดไปแล้ว */
+.ct-where-line {
+  margin: 12px 0 0; font-size: 0.8125rem; color: var(--fg2);
+}
+.ct-where-line b {
+  font: 600 0.8125rem var(--mono); color: var(--fg);
+  background: var(--sunken); border: 1px solid var(--line);
+  border-radius: 6px; padding: 3px 8px;
+}

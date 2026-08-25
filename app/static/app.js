@@ -169,7 +169,7 @@ function applyRole(role) {
 // ดีกว่าปล่อยให้เดาแล้วมาถามผู้ดูแลทีละคน
 const CT_TOOLS = {
   'claude-code': {
-    where: 'วางใน ~/.claude/settings.json',
+    where: '~/.claude/settings.json',
     // ต้องมีทั้ง 3 tier: Claude Code เรียกรุ่นเล็กทำงานเบื้องหลังเอง ไม่ตั้งไว้
     // มันจะขอชื่อรุ่นที่เกตเวย์ไม่รู้จักแล้วพังเงียบ ๆ กลางทาง
     build: (o, k, m) => JSON.stringify({
@@ -188,7 +188,7 @@ const CT_TOOLS = {
     agent: true,
   },
   kilo: {
-    where: 'วางใน ~/.config/kilo/kilo.jsonc',
+    where: '~/.config/kilo/kilo.jsonc',
     build: (o, k, m) => JSON.stringify({
       $schema: 'https://app.kilo.ai/config.json',
       provider: {
@@ -202,6 +202,87 @@ const CT_TOOLS = {
       model: 'litegate/' + m,
     }, null, 2),
     note: 'คีย์ทางซ้ายใน models ต้องตรงกับ alias เป๊ะ ๆ ส่วน name เป็นแค่ป้ายที่โชว์',
+    needs: 'openai',
+    agent: true,
+  },
+  codex: {
+    where: '~/.codex/config.toml',
+    // wire_api = responses คือโหมดพื้นเมืองของ Codex · ยิงทดสอบ /v1/responses
+    // บนเกตเวย์แล้วตอบ 200 พร้อมข้อความจริง · ถ้าเจอปัญหาให้เปลี่ยนเป็น "chat"
+    // ซึ่งวิ่งผ่าน /v1/chat/completions แทน
+    build: (o, k, m) => [
+      'model_provider = "litegate"',
+      `model = "${m}"`,
+      '',
+      '[model_providers.litegate]',
+      'name = "LiteGate"',
+      `base_url = "${o}/v1"`,
+      `experimental_bearer_token = "${k}"`,
+      'wire_api = "responses"',
+    ].join('\n'),
+    note: 'ถ้าเคยตั้ง provider อื่นไว้ในไฟล์นี้ ให้แก้บรรทัด model_provider ให้ชี้มาที่ litegate ด้วย',
+    needs: 'openai',
+    agent: true,
+  },
+  continue: {
+    where: '~/.continue/config.yaml',
+    build: (o, k, m) => [
+      'name: LiteGate',
+      'version: 0.0.1',
+      'schema: v1',
+      '',
+      'models:',
+      `  - name: ${m}`,
+      '    provider: openai',
+      `    model: ${m}`,
+      `    apiBase: ${o}/v1`,
+      `    apiKey: ${k}`,
+      '    roles:',
+      '      - chat',
+      '      - edit',
+      '      - apply',
+    ].join('\n'),
+    note: 'provider เป็น openai เสมอ แม้เบื้องหลังจะเป็นรุ่นอื่น — เพราะเกตเวย์พูดภาษา OpenAI ให้',
+    needs: 'openai',
+  },
+  cline: {
+    where: 'ตั้งในหน้าต่างของส่วนขยาย ไม่ใช่ไฟล์ — Cline → ⚙ Settings → API Provider',
+    build: (o, k, m) => [
+      'API Provider  :  OpenAI Compatible',
+      `Base URL      :  ${o}/v1`,
+      `API Key       :  ${k}`,
+      `Model ID      :  ${m}`,
+    ].join('\n'),
+    note: 'Cline เก็บค่าไว้ในที่เก็บของ VS Code เอง จึงไม่มีไฟล์ให้วาง — กรอกทีละช่องตามนี้',
+    needs: 'openai',
+    agent: true,
+  },
+  cursor: {
+    where: 'ตั้งในโปรแกรม ไม่ใช่ไฟล์ — Cursor → Settings → Models → OpenAI API Key',
+    build: (o, k, m) => [
+      'Override OpenAI Base URL  :  เปิด',
+      `Base URL                  :  ${o}/v1`,
+      `OpenAI API Key            :  ${k}`,
+      `Model (Add model)         :  ${m}`,
+    ].join('\n'),
+    note: 'ต้องกด Verify ในหน้านั้นให้ผ่านก่อน Cursor ถึงจะยอมใช้ปลายทางนี้',
+    needs: 'openai',
+  },
+  opencode: {
+    where: '~/.config/opencode/opencode.json',
+    build: (o, k, m) => JSON.stringify({
+      $schema: 'https://opencode.ai/config.json',
+      provider: {
+        litegate: {
+          name: 'LiteGate',
+          npm: '@ai-sdk/openai-compatible',
+          options: { baseURL: o + '/v1', apiKey: k },
+          models: { [m]: { name: m } },
+        },
+      },
+      model: 'litegate/' + m,
+    }, null, 2),
+    note: 'โครงเดียวกับ Kilo เพราะ Kilo แยกสายมาจาก OpenCode',
     needs: 'openai',
     agent: true,
   },
