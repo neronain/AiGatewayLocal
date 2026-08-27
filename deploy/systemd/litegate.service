@@ -40,8 +40,22 @@ RestrictSUIDSGID=true
 RestrictRealtime=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
-# The only writable paths the service needs.
-ReadWritePaths=/opt/litegate/data /opt/litegate/logs
+# ProtectSystem=strict makes the whole filesystem read-only to this service, so
+# every path the console writes to has to be listed here.
+#
+# config/ is on this list because the console *is* how models get added: the
+# installer finishes by telling the operator to open Models → Detect, and that
+# writes config/models/<alias>.yaml. Enabling and disabling a model rewrites the
+# same file. Leave config/ out and a fresh install on a real machine shows
+# "the registry is read-only" with the Save button greyed out, which reads as a
+# broken product — nobody sees it during development because the dev boxes run
+# in containers where systemd's sandboxing is disabled.
+#
+# The registry holds no secrets: `api_key_env` is the *name* of an environment
+# variable, never its value. Sites that keep the registry in git and want it
+# read-only should install with REGISTRY_READONLY=1, which drops config/ from
+# this line.
+ReadWritePaths=/opt/litegate/data /opt/litegate/logs /opt/litegate/config
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 # --- Limits ----------------------------------------------------------------
