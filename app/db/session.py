@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from sqlalchemy import inspect, text
+from sqlalchemy import event, inspect, text
 from sqlalchemy.exc import InternalError, OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -33,15 +33,46 @@ def _ensure_sqlite_dir(url: str) -> None:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
 
 
+# SQLite ในโหมดปริยาย (journal_mode=delete) ล็อกทั้งไฟล์ตอนเขียน · เกตเวย์รัน
+# uvicorn หลาย worker บนไฟล์เดียว การเขียนสองที่พร้อมกันจึงชน และคำขอที่แพ้จะได้
+# `database is locked` ซึ่งโผล่ออกไปเป็น HTTP 500 ทั้งที่ backend ไม่ได้ผิดอะไร
+#
+# WAL ให้คนอ่านกับคนเขียนอยู่ร่วมกันได้ และ busy_timeout สั่งให้รอแทนที่จะยอมแพ้ทันที
+# ตั้งที่ระดับ connection เพราะ journal_mode ติดอยู่กับไฟล์ แต่ busy_timeout ติดอยู่กับ
+# connection — ตั้งครั้งเดียวตอนสร้าง engine ไม่พอ
+SQLITE_BUSY_TIMEOUT_MS = 15000
+
+
+def _apply_sqlite_pragmas(engine: AsyncEngine) -> None:
+    """Make SQLite survive more than one worker writing at once."""
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _on_connect(dbapi_connection, _record) -> None:  # pragma: no cover - driver hook
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+        except Exception:  # ไฟล์อ่านอย่างเดียวหรือ :memory: — ปล่อยให้เดินต่อ
+            log.debug("could not apply sqlite pragmas", exc_info=True)
+        finally:
+            cursor.close()
+
+
 def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
         settings = get_settings()
         _ensure_sqlite_dir(settings.database_url)
         kwargs: dict = {"echo": False, "future": True}
-        if not settings.database_url.startswith("sqlite"):
+        is_sqlite = settings.database_url.startswith("sqlite")
+        if is_sqlite:
+            # ให้ไดรเวอร์รอล็อกด้วย ไม่ใช่แค่ตัว SQLite เอง
+            kwargs["connect_args"] = {"timeout": SQLITE_BUSY_TIMEOUT_MS / 1000}
+        else:
             kwargs.update(pool_size=20, max_overflow=10, pool_pre_ping=True)
         _engine = create_async_engine(settings.database_url, **kwargs)
+        if is_sqlite:
+            _apply_sqlite_pragmas(_engine)
     return _engine
 
 
