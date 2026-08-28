@@ -1250,9 +1250,15 @@ async function loadModels() {
   state.cache.writable = status.writable;
 
   if (!status.writable) {
+    // เดิมบอกแค่ว่าใช้ไม่ได้ แล้วชี้ไปทาง git — ผู้ติดตั้งที่ลง systemd ตามคู่มืออ่านแล้ว
+    // สรุปว่าเป็นพฤติกรรมปกติ ทั้งที่สาเหตุคือ ReadWritePaths= ในไฟล์ unit ซึ่งแก้ได้
+    // ในหนึ่งบรรทัด · บอกทางแก้ไปเลย และบอกว่าทาง git ก็เป็นทางเลือกที่ถูกต้องเหมือนกัน
     banner('registry-note', 'warn',
-      `The registry at ${status.config_dir} is read-only, so "Save to registry" is unavailable. ` +
-      'Use Preview YAML and commit the file to git.');
+      `เพิ่ม/แก้โมเดลจากคอนโซลไม่ได้ เพราะ ${status.config_dir} เขียนไม่ได้ · ` +
+      'ติดตั้งแบบ systemd: ใส่ path นี้ใน ReadWritePaths= ของ ' +
+      '/etc/systemd/system/litegate.service แล้ว systemctl daemon-reload && ' +
+      'systemctl restart litegate · ติดตั้งแบบ Docker: compose mount config/ ไว้แบบ :ro · ' +
+      'หรือถ้าตั้งใจให้ทะเบียนอยู่ใน git อยู่แล้ว ใช้ Preview YAML แล้วคอมมิตไฟล์แทนได้เลย');
   } else if (registry.errors?.length) {
     banner('registry-note', 'err', 'Registry errors: ' + registry.errors.join(' | '));
   } else {
@@ -1900,6 +1906,10 @@ $('reload-registry').onclick = async () => {
 };
 
 $('preview-yaml').onclick = async () => {
+  // ตรวจแบบเดียวกับ Save — ทะเบียนที่เป็น read-only ทำให้ปุ่มนี้เป็นทางเดียวที่เหลือ
+  // ผู้ใช้จึงเจอ error ของ server ผ่านปุ่มนี้บ่อยกว่าปุ่ม Save เสียอีก
+  const problems = editorProblems();
+  if (problems.length) { reportProblems(problems); return; }
   try {
     const { yaml, filename } = await post('/admin/models/preview', editorValues());
     modal(`config/models/${filename}`,
@@ -1911,7 +1921,60 @@ $('preview-yaml').onclick = async () => {
   }
 };
 
+/* สิ่งที่กรอกไม่ครบ/ไม่ถูก — ตอบเป็นภาษาคน ก่อนที่ server จะตอบเป็น regex
+ *
+ * เดิมกด Save แล้วส่งเลย · ฟอร์มนี้ยาวกว่าหนึ่งหน้าจอ คำตอบที่ได้กลับมาคือ
+ * "metadata.alias: String should match pattern '^[a-z0-9][a-z0-9._-]{1,62}$'"
+ * ลอยอยู่ใต้ปุ่ม ห่างจากช่องที่ผิดไปหลายร้อยพิกเซล — ผู้ติดตั้งครั้งแรกอ่านแล้วไม่รู้ว่า
+ * ต้องกลับไปแก้ตรงไหน · ตรวจตรงนี้แล้วพาไปที่ช่องนั้นเลย
+ */
+function editorProblems() {
+  const problems = [];
+  const alias = $('m-alias').value.trim();
+  if (!/^[a-z0-9][a-z0-9._-]{1,62}$/.test(alias)) {
+    problems.push({
+      field: 'm-alias',
+      message: alias
+        ? `Alias "${alias}" ใช้ไม่ได้ — พิมพ์เล็ก/ตัวเลข/. _ - เท่านั้น ขึ้นต้นด้วยพิมพ์เล็กหรือตัวเลข ยาวอย่างน้อย 2 ตัว`
+        : 'ยังไม่ได้ใส่ Alias — ชื่อนี้คือสิ่งที่ลูกค้าพิมพ์เรียกโมเดล',
+    });
+  }
+  if (!$('m-upstream').value.trim()) {
+    problems.push({
+      field: 'm-upstream',
+      message: 'ยังไม่ได้ใส่ Upstream model — ต้องตรงกับชื่อที่เครื่องปลายทางเสิร์ฟจริง',
+    });
+  }
+  const endpoints = editorValues().spec.endpoints;
+  if (!endpoints.length) {
+    problems.push({ field: null, message: 'ต้องมีอย่างน้อยหนึ่ง backend — กด "+ Add backend"' });
+  }
+  endpoints.forEach((ep, i) => {
+    const where = ep.name ? `backend "${ep.name}"` : `backend ตัวที่ ${i + 1}`;
+    if (!ep.name.trim()) problems.push({ field: null, message: `${where}: ยังไม่ได้ตั้งชื่อ` });
+    if (!ep.base_url.trim()) {
+      problems.push({ field: null, message: `${where}: ยังไม่ได้ใส่ Base URL` });
+    } else if (!/^https?:\/\//.test(ep.base_url.trim())) {
+      problems.push({ field: null, message: `${where}: Base URL ต้องขึ้นต้นด้วย http:// หรือ https://` });
+    }
+  });
+  return problems;
+}
+
+function reportProblems(problems) {
+  flash('save-status', 'err', problems.map((p) => p.message).join(' · '));
+  const first = problems.find((p) => p.field);
+  if (first) {
+    const el = $(first.field);
+    el.classList.add('bad');
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    el.focus();
+  }
+}
+
 $('save-model').onclick = async () => {
+  const problems = editorProblems();
+  if (problems.length) { reportProblems(problems); return; }
   flash('save-status', '', 'saving…');
   try {
     const result = await post('/admin/models', editorValues());

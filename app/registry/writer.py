@@ -13,6 +13,7 @@ loader would later reject.
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import re
@@ -154,18 +155,43 @@ def _atomic_write(path: Path, content: str, alias: str) -> None:
                 pass
             raise
     except PermissionError as exc:
-        raise GatewayError(
-            ErrorCode.INVALID_REQUEST,
-            "The registry directory is not writable, so the model cannot be saved "
-            "from the console. This is expected when config/ is mounted read-only "
-            "(the hardened Docker default). Use Preview YAML and commit the file "
-            "to git instead.",
-            details={"path": str(path.parent)},
-        ) from exc
+        raise _not_writable(path.parent, read_only_mount=False) from exc
     except OSError as exc:
+        # EROFS is a read-only *mount*, which needs a different fix from a
+        # permission bit: on a systemd install the mount comes from the unit's own
+        # sandbox and no amount of chown will help. Reporting both as "not
+        # writable" sends the operator down the wrong path.
+        if exc.errno == errno.EROFS:
+            raise _not_writable(path.parent, read_only_mount=True) from exc
         raise GatewayError(
             ErrorCode.INTERNAL_ERROR, f"Could not write the model file: {exc}"
         ) from exc
+
+
+def _not_writable(directory: Path, *, read_only_mount: bool) -> GatewayError:
+    """บอกให้ครบว่า *ทำไม* เขียนไม่ได้ และแก้ตรงไหน
+
+    ข้อความเดิมพูดถึงเคส Docker อย่างเดียว แล้วปิดท้ายว่า "ใช้ Preview YAML แล้วคอมมิต
+    ลง git แทน" · ผู้ติดตั้งที่ลง systemd ตามคู่มือจึงอ่านแล้วสรุปว่าเป็นพฤติกรรมปกติ
+    ทั้งที่สาเหตุคือ `ReadWritePaths=` ในไฟล์ unit ที่แก้ได้ในหนึ่งบรรทัด
+    """
+    cause = (
+        "the directory is on a read-only mount"
+        if read_only_mount
+        else "the service user cannot write to the directory"
+    )
+    return GatewayError(
+        ErrorCode.INVALID_REQUEST,
+        f"Cannot save the model: {cause} ({directory}).\n"
+        "· systemd install: add that path to ReadWritePaths= in "
+        "/etc/systemd/system/litegate.service, then "
+        "`systemctl daemon-reload && systemctl restart litegate`\n"
+        "· Docker: the compose file mounts config/ with :ro — drop the flag "
+        "to manage models from the console\n"
+        "· keeping the registry in git is also a valid choice: use Preview "
+        "YAML and commit the file instead.",
+        details={"path": str(directory), "read_only_mount": read_only_mount},
+    )
 
 
 def _key_line(key: str) -> re.Pattern[str]:
@@ -304,12 +330,11 @@ def delete_model(config_dir: Path, alias: str) -> bool:
     try:
         path.unlink()
     except PermissionError as exc:
-        raise GatewayError(
-            ErrorCode.INVALID_REQUEST,
-            "The registry directory is not writable, so the model cannot be removed "
-            "from the console. Delete the file and redeploy instead.",
-            details={"path": str(path)},
-        ) from exc
+        raise _not_writable(path.parent, read_only_mount=False) from exc
+    except OSError as exc:
+        if exc.errno != errno.EROFS:
+            raise
+        raise _not_writable(path.parent, read_only_mount=True) from exc
     log.info("deleted model definition %s", path)
     return True
 

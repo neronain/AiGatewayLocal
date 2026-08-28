@@ -228,6 +228,27 @@ Custom install location:
 sudo INSTALL_DIR=/srv/litegate ./scripts/bootstrap.sh
 ```
 
+**The console writes the registry, so the unit lets it.** `ProtectSystem=strict`
+makes the whole filesystem read-only to the service and opens only what
+`ReadWritePaths=` lists — `data/`, `logs/`, and `config/`. `config/` is on that
+list because adding a model in the console writes
+`config/models/<alias>.yaml`, and the enable/disable switch rewrites the same
+file. Drop it and a fresh install shows *"the registry is read-only"* with the
+Save button greyed out, which is not a security posture anyone chose — it just
+looks like the product is broken. (This never shows up on a dev box: containers
+run with systemd's sandboxing disabled, so the same unit behaves differently
+there than on a real host.)
+
+If you keep the registry in git and want the file tree immutable at runtime,
+say so at install time:
+
+```bash
+sudo REGISTRY_READONLY=1 ./scripts/bootstrap.sh
+```
+
+The console then offers **Preview YAML** instead of Save, and tells the operator
+to commit the file. Everything else about the model editor works the same.
+
 Operating it:
 
 ```bash

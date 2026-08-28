@@ -111,6 +111,16 @@ log "Installing systemd unit"
 sed "s#/opt/litegate#${INSTALL_DIR}#g; s#User=litegate#User=${SERVICE_USER}#; s#Group=litegate#Group=${SERVICE_USER}#" \
     "$REPO_DIR/deploy/systemd/${SERVICE_NAME}.service" > "/etc/systemd/system/${SERVICE_NAME}.service"
 
+# ทะเบียนที่ดูแลด้วย git — คอนโซลจะเสนอ YAML ให้ก็อปไปคอมมิตแทนการเขียนไฟล์เอง
+#
+# ค่าเริ่มต้นคือเขียนได้ เพราะบรรทัดสุดท้ายของสคริปต์นี้บอกให้ไปเพิ่มโมเดลที่คอนโซล ·
+# ถ้าปิดไว้เป็นค่าเริ่มต้น ผู้ติดตั้งคนแรกจะเจอปุ่ม Save ที่กดไม่ได้ทันทีที่ทำตามคำแนะนำ
+if [[ "${REGISTRY_READONLY:-0}" == "1" ]]; then
+    sed -i "s#^ReadWritePaths=.*#ReadWritePaths=${INSTALL_DIR}/data ${INSTALL_DIR}/logs#" \
+        "/etc/systemd/system/${SERVICE_NAME}.service"
+    warn "REGISTRY_READONLY=1 — คอนโซลจะเพิ่ม/แก้โมเดลเองไม่ได้ ใช้ Preview YAML แล้วคอมมิตลง git"
+fi
+
 systemctl daemon-reload
 systemctl enable --now "$SERVICE_NAME"
 
