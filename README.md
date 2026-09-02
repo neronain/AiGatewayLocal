@@ -695,6 +695,19 @@ before calling a tool.
   → ./<controller>.sh restart --jinja
 ```
 
+A backend can also be running the *wrong* parser rather than none, and that
+used to read as "this model has no tool template". It has a tell: the call comes
+back inside the content, in the model's own syntax. When the probe sees that, it
+says so and names the parser that would have read it — a mismatch is worse than
+no tools at all, because the caller receives the raw call as the answer.
+
+```
+[warning] tool_parser_mismatch
+  The backend returned the tool call as plain text instead of tool_calls: a
+  parser is running, but not one that can read this model's syntax.
+  → ./<controller>.sh restart --tool-parser gemma4
+```
+
 If a model file records where its backend came from (`managed_by`), that becomes
 a command you can paste rather than a placeholder — and if the deploy tool is
 **LMDS**, the finding gains an **Apply** button that asks LMDS to restart that

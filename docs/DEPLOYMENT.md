@@ -72,8 +72,23 @@ vllm serve ucbye/Qwen3-Coder-Next-NVFP4-GB10 \
 > silently fails to parse, and the tool call arrives as ordinary text, which the
 > client reads as the model refusing to use tools. Qwen-family models (this one,
 > and Nemotron-3) need `qwen3_coder`; `hermes` expects JSON and will not read
-> their XML. Ask the engine for the names it accepts rather than guessing from
-> filenames — see [LMDS · เลือก parser ตัวไหน][lmds-parsers].
+> their XML. Gemma 4 emits `<|tool_call>call:name{…}` and needs `gemma4` —
+> `hermes` is the default guess and is wrong for it. Ask the engine for the names
+> it accepts rather than guessing from filenames — see
+> [LMDS · เลือก parser ตัวไหน][lmds-parsers]:
+>
+> ```bash
+> # the authoritative list, from the engine that will use it
+> docker exec <container> python3 -c \
+>   "from vllm.tool_parsers import *; import vllm.tool_parsers as p; print(p.__file__)"
+> ls $(dirname <that path>)   # one *_tool_parser.py per supported family
+> ```
+>
+> A mismatch is worse than no tools at all: the caller receives the raw call as
+> the answer. The model test now catches it — when a backend answers 200 with no
+> `tool_calls` but the reply *contains* tool-call syntax, the finding is
+> `tool_parser_mismatch` (warning) and names the parser that would have read it,
+> instead of the older, vaguer "maybe it has no tool template".
 
 [lmds-parsers]: https://github.com/neronain/AutoDeployDGXProject/blob/main/docs/USAGE.md
 

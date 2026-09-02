@@ -611,6 +611,12 @@ _PARSER_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
     # parser (measured against Qwen3.5-122B-A10B). Older Qwen (2.x) used hermes; keep
     # that as the bare-"qwen" fallback below. Coder is matched first (line above).
     (("qwen3", "qwen-3"), "qwen3_xml"),
+    # Gemma 4 emits its own <|tool_call>call:name{...} syntax and only vLLM's
+    # gemma4 parser reads it. Learned the hard way: without this line Gemma fell
+    # through to the hermes default below, and a backend started that way answers
+    # 200, returns the call as plain text, and looks like a model that simply
+    # cannot use tools.
+    (("gemma-4", "gemma4"), "gemma4"),
     (("llama-4", "llama4"), "llama4_pythonic"),
     (("llama-3", "llama3"), "llama3_json"),
     (("mistral", "mixtral"), "mistral"),
@@ -619,6 +625,38 @@ _PARSER_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("kimi", "k2"), "kimi_k2"),
     (("qwen",), "hermes"),
 )
+
+
+# A backend that answers 200 and returns no tool_calls has two very different
+# causes and the fixes do not overlap: the model has no tool template at all, or
+# a parser is running that cannot read the one it has. Only the second is worth
+# a command, and it is visible from outside - the call comes back inside the
+# content, in the model's native syntax. Matching that syntax names the parser
+# that would have read it, which turns "tools do not work" into one flag.
+_LEAKED_SYNTAX: tuple[tuple[str, str, str], ...] = (
+    ("<|tool_call>", "Gemma 4 <|tool_call>", "gemma4"),
+    ("<start_function_call>", "FunctionGemma <start_function_call>", "functiongemma"),
+    ("[TOOL_CALLS]", "Mistral [TOOL_CALLS]", "mistral"),
+    ("<|python_tag|>", "Llama <|python_tag|>", "llama3_json"),
+    ("<tool_call>", "Hermes-style <tool_call>", "hermes"),
+)
+
+# Written into a probe note so the advice builder can read the parser back out
+# without widening ProbeResult (its fields are the API shape callers store).
+PARSER_HINT_PREFIX = "expected parser: "
+
+
+def detect_leaked_tool_syntax(content: str | None) -> tuple[str, str] | None:
+    """Return (label, parser) when `content` carries an unparsed tool call.
+
+    None means the reply held no recognisable call, which is the "no tool
+    template" case - a different problem with a different answer.
+    """
+    text = content or ""
+    for marker, label, parser in _LEAKED_SYNTAX:
+        if marker in text:
+            return label, parser
+    return None
 
 
 def suggest_tool_parser(served_name: str) -> tuple[str, bool]:
@@ -747,17 +785,40 @@ def build_advice(result: ProbeResult) -> list[Advice]:
                 )
             )
         else:
-            advice.append(
-                Advice(
-                    issue="tools_unavailable",
-                    severity="info",
-                    detail="The backend accepted a tool request but returned no "
-                    "tool_calls.",
-                    fix="Either the model has no tool template, or the parser does "
-                    "not match it. Declare tools=false unless you can make it "
-                    "emit tool_calls.",
-                )
+            hinted = next(
+                (n for n in result.notes if PARSER_HINT_PREFIX in n),
+                "",
             )
+            if hinted:
+                # The probe saw the call come back as text, so this is not a model
+                # without tools - it is the right model behind the wrong parser,
+                # and the parser that would have read it is already known.
+                parser = hinted.rsplit(PARSER_HINT_PREFIX, 1)[1].rstrip(") ")
+                advice.append(
+                    Advice(
+                        issue="tool_parser_mismatch",
+                        severity="warning",
+                        detail="The backend returned the tool call as plain text "
+                        "instead of tool_calls: a parser is running, but not one "
+                        "that can read this model's syntax.",
+                        fix=f"Restart with --tool-call-parser {parser}. Leaving it "
+                        "as-is is worse than no tools at all - callers receive the "
+                        "raw call as an answer.",
+                        command=f"./<controller>.sh restart --tool-parser {parser}",
+                    )
+                )
+            else:
+                advice.append(
+                    Advice(
+                        issue="tools_unavailable",
+                        severity="info",
+                        detail="The backend accepted a tool request but returned no "
+                        "tool_calls.",
+                        fix="Either the model has no tool template, or the parser does "
+                        "not match it. Declare tools=false unless you can make it "
+                        "emit tool_calls.",
+                    )
+                )
 
     if "mmproj" in notes:
         advice.append(
@@ -979,6 +1040,7 @@ async def probe_backend(
         )
         tools = False
         if response is not None and response.status_code == 200:
+            message: dict[str, Any] = {}
             try:
                 message = response.json()["choices"][0]["message"]
                 tools = bool(message.get("tool_calls"))
@@ -991,6 +1053,16 @@ async def probe_backend(
                 result.notes.append(
                     "tools: backend accepted the request but returned no tool_calls"
                 )
+                leaked = detect_leaked_tool_syntax(
+                    message.get("content") if isinstance(message, dict) else None
+                )
+                if leaked:
+                    label, parser = leaked
+                    result.notes.append(
+                        f"tools: the reply carried {label} syntax as text, so a "
+                        "parser is running but does not match this model "
+                        f"({PARSER_HINT_PREFIX}{parser})"
+                    )
         elif response is not None:
             # A rejected tools request usually says exactly what the backend is
             # missing - that message is the most actionable thing an admin can

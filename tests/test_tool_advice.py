@@ -8,9 +8,11 @@ The trap this locks down: a llama.cpp backend that emits no tool_calls needs
 from __future__ import annotations
 
 from app.core.modeltest import (
+    PARSER_HINT_PREFIX,
     ProbeResult,
     _normalize_kind,
     build_advice,
+    detect_leaked_tool_syntax,
     suggest_tool_parser,
 )
 
@@ -62,3 +64,62 @@ def test_registry_server_type_wins_over_a_misleading_note():
     assert _normalize_kind("vLLM") == "vllm"
     assert _normalize_kind("sglang") == "sglang"
     assert _normalize_kind("") == ""
+
+
+def test_gemma4_tool_parser_mapping():
+    # Measured on a live gemma-4-31B backend: started with hermes it answers 200
+    # and returns the call as text; with gemma4 it returns real tool_calls. Before
+    # this mapping existed Gemma fell through to the hermes default, so the tool
+    # suggested exactly the setting that was already broken.
+    assert suggest_tool_parser("google/gemma-4-31B-it") == ("gemma4", True)
+    assert suggest_tool_parser("gemma4-26b-uncensored") == ("gemma4", True)
+
+
+def test_leaked_tool_syntax_is_recognised_per_family():
+    assert detect_leaked_tool_syntax(
+        '<|tool_call>call:get_weather{city:<|"|>Bangkok<|"|>}<tool_call|>'
+    ) == ("Gemma 4 <|tool_call>", "gemma4")
+    assert detect_leaked_tool_syntax('<tool_call>{"name": "x"}</tool_call>') == (
+        "Hermes-style <tool_call>",
+        "hermes",
+    )
+    # A plain answer is the "model has no tool template" case, not a mismatch.
+    assert detect_leaked_tool_syntax("It is sunny in Bangkok.") is None
+    assert detect_leaked_tool_syntax(None) is None
+
+
+def test_parser_mismatch_is_a_warning_naming_the_right_parser():
+    # The probe saw the call come back as text: this is the right model behind the
+    # wrong parser, which is worse than no tools at all because callers receive
+    # the raw call as their answer. It must not be filed as informational.
+    result = ProbeResult(
+        reachable=True,
+        capabilities={"tools": False},
+        server_kind="vllm",
+        notes=[
+            "tools: backend accepted the request but returned no tool_calls",
+            "tools: the reply carried Gemma 4 <|tool_call> syntax as text, so a "
+            f"parser is running but does not match this model ({PARSER_HINT_PREFIX}gemma4)",
+        ],
+    )
+    issues = _issues(result)
+    assert "tool_parser_mismatch" in issues
+    assert "tools_unavailable" not in issues
+    found = next(a for a in build_advice(result) if a.issue == "tool_parser_mismatch")
+    assert found.severity == "warning"
+    assert "gemma4" in found.command
+    assert "hermes" not in found.command
+
+
+def test_no_leaked_syntax_stays_informational():
+    # Nothing recognisable came back, so there is no parser to name and no command
+    # to offer - saying "declare tools=false" is still the honest answer.
+    result = ProbeResult(
+        reachable=True,
+        capabilities={"tools": False},
+        server_kind="vllm",
+        notes=["tools: backend accepted the request but returned no tool_calls"],
+    )
+    issues = _issues(result)
+    assert "tools_unavailable" in issues
+    assert "tool_parser_mismatch" not in issues
