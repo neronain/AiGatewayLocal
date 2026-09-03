@@ -9,7 +9,7 @@ Members get an alias and a key; you keep the machines, the limits and the audit 
 
 [![CI](https://github.com/neronain/AiGatewayLocal/actions/workflows/ci.yml/badge.svg)](https://github.com/neronain/AiGatewayLocal/actions/workflows/ci.yml)
 [![version](https://img.shields.io/badge/version-1.4.0-1f5fbf)](pyproject.toml)
-[![tests](https://img.shields.io/badge/tests-537-17703f)](tests/)
+[![tests](https://img.shields.io/badge/tests-652-17703f)](tests/)
 [![python](https://img.shields.io/badge/python-3.11%2B-3776ab)](pyproject.toml)
 [![APIs](https://img.shields.io/badge/API-OpenAI%20%C2%B7%20Anthropic-8b5cf6)](docs/API.md)
 [![license](https://img.shields.io/badge/license-MIT-17703f)](LICENSE)
@@ -796,7 +796,13 @@ Each tool declares **how it is verified**, per asset:
 | Tool | Licence | Verify | Note |
 |---|---|---|---|
 | cc-switch | MIT | **minisign** against a pinned public key | authenticity; only the assets that ship a `.sig` (the `.dmg` is unsigned upstream) |
+| cc-switch-cli | MIT | **SHA-256** against the release `checksums.txt` | the terminal build — same switching over SSH, `cc-switch start claude <id>` for one session |
 | rtk | Apache-2.0 | **SHA-256** against the release `checksums.txt` | integrity; the checksums file is itself unsigned, so the gated promote carries authenticity |
+| 9router | MIT | not mirrored — installs with `npm install -g 9router` | a local multi-provider router with quota tracking and fallback; runs on the operator's machine |
+| Free Claude Code | MIT | not mirrored — upstream install script (macOS/Linux `sh`, Windows PowerShell) | runs Claude Code / Codex / Cline against free and local providers with failover |
+
+Tools without release binaries (9router, Free Claude Code) are listed with their install command
+and the gateway connection values, so the console still hands people one working recipe.
 
 Verification is pure-Python (`cryptography`), so it runs the same inside the
 hardened Docker image — no `minisign` binary needed. The curated registry is
@@ -845,6 +851,7 @@ Together: LMDS deploys a model with a controller; once proved in service, that c
 | [PRD-v1.5-Models.md](docs/PRD-v1.5-Models.md) | Models & endpoints measured against a running LiteLLM: what to adopt, what we already had, what not to copy |
 | [PRD-v1.6-AccessControl.md](docs/PRD-v1.6-AccessControl.md) | Access groups, named quota policies, rate limits and expiry — LiteLLM's flexibility, only as far as it earns its keep |
 | [PRD-v1.2-Addendum.md](docs/PRD-v1.2-Addendum.md) | The original v1.2 addendum, preserved verbatim |
+| [CHANGELOG.md](CHANGELOG.md) | What changed, by date — one line per change, written from the commits |
 
 ---
 
@@ -879,6 +886,8 @@ that still passes with the code removed was never checking anything.
 | v1.4 — Access: membership governs access, manager scoping, workspace status | ✅ done |
 | v1.5 — Models: enable/disable, endpoint priority and failover, comment-safe writes | ✅ done |
 | v1.6 — Access control: access groups, named quota policies, rate limits, expiry | ✅ done |
+| v1.7 — Client tools: on-prem mirror (verify → stage → gated promote), console *เครื่องมือ* tab, install/config hand-off | ✅ done |
+| Ops hardening — tool-parser mismatch detection, SQLite lock under auth load, reinstall + add-model from the console | ✅ done |
 | M5 — image upload, PDF, richer dashboard | planned |
 
 Verified end-to-end against real backends on a live fleet, not only against the
