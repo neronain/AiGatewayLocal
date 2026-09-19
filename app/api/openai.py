@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import auto as auto_mod
 from app.core import usage as usage_mod
 from app.core.auth import (
     Principal,
@@ -27,7 +28,6 @@ from app.core.auth import (
     authenticate,
     permitted_aliases,
 )
-from app.core import auto as auto_mod
 from app.core.capability import (
     compatibility_badges,
     upstream_model_for,
@@ -41,7 +41,7 @@ from app.core.quota import Consumption
 from app.core.routing import RETRYABLE_ERRORS, is_retryable_status
 from app.core.rules import fallback_models, resolve_route
 from app.core.tokens import TokenUsage, estimate_prompt_tokens, resolve_usage
-from app.db.session import get_session
+from app.db.session import get_session, release_connection
 from app.registry.schema import Endpoint, ModelDefinition
 from app.state import AppState, get_state
 from app.upstream import client as upstream
@@ -209,6 +209,14 @@ async def run_chat(
     key_limits = await state.quota.resolve_key_limits(session, principal.api_key_id)
     if key_limits is not None:
         await state.quota.check_key(principal.api_key_id, key_limits)
+
+    # The request's last read. Everything past this point - choosing an
+    # endpoint, the upstream call, the stream itself, and the usage and quota
+    # bookkeeping in ctx.finalize - runs without the request session, so give
+    # the connection back now instead of when FastAPI tears the dependency down,
+    # which for a stream is after the last SSE byte, minutes from here.
+    # See app/db/session.py: release_connection.
+    await release_connection(session)
 
     try:
         endpoint = state.router.select(model, profile, "openai")

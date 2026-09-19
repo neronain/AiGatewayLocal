@@ -42,6 +42,10 @@ def _ensure_sqlite_dir(url: str) -> None:
 # connection — ตั้งครั้งเดียวตอนสร้าง engine ไม่พอ
 SQLITE_BUSY_TIMEOUT_MS = 15000
 
+# ดูเหตุผลของตัวเลขที่ get_engine()
+SQLITE_POOL_SIZE = 5
+SQLITE_MAX_OVERFLOW = 15
+
 
 def _apply_sqlite_pragmas(engine: AsyncEngine) -> None:
     """Make SQLite survive more than one worker writing at once."""
@@ -68,6 +72,24 @@ def get_engine() -> AsyncEngine:
         if is_sqlite:
             # ให้ไดรเวอร์รอล็อกด้วย ไม่ใช่แค่ตัว SQLite เอง
             kwargs["connect_args"] = {"timeout": SQLITE_BUSY_TIMEOUT_MS / 1000}
+            # SQLite used to fall through with no pool settings at all, which is
+            # not the same as choosing the default: it meant the ceiling was
+            # 5+10 by accident, nobody had decided it, and the number did not
+            # appear anywhere you would think to look for it.
+            #
+            # Sized deliberately now, and deliberately small. aiosqlite runs
+            # every connection on its own thread, so the pool is a thread pool
+            # as much as a connection pool, and SQLite serialises writes however
+            # many connections you open - a large pool buys queueing, not
+            # throughput. What makes this enough is that connections are now
+            # held for the read phase of a request rather than its whole
+            # lifetime (see `release_connection`), so each one turns over in
+            # milliseconds instead of minutes.
+            #
+            # No pool_pre_ping: it costs a round trip per checkout to detect
+            # connections dropped by a network or a server restart, and a local
+            # file has neither.
+            kwargs.update(pool_size=SQLITE_POOL_SIZE, max_overflow=SQLITE_MAX_OVERFLOW)
         else:
             kwargs.update(pool_size=20, max_overflow=10, pool_pre_ping=True)
         _engine = create_async_engine(settings.database_url, **kwargs)
@@ -101,6 +123,41 @@ async def get_session() -> AsyncIterator[AsyncSession]:
     """FastAPI dependency."""
     async with get_sessionmaker()() as session:
         yield session
+
+
+async def release_connection(session: AsyncSession) -> None:
+    """Hand this session's pooled connection back, keeping the session usable.
+
+    A request holds a connection from its first `execute()` - SQLAlchemy
+    autobegins a transaction there - until the session is closed. FastAPI closes
+    a `yield` dependency only after the response body has been *sent*
+    (fastapi/routing.py: the body goes out at `await response(scope, receive,
+    send)`, which is inside the stack the session is registered on). For a
+    JSON response that is a rounding error. For a StreamingResponse it is the
+    whole generation: one pooled connection per in-flight stream, held for
+    minutes, doing nothing.
+
+    That is a gateway-wide concurrency ceiling of pool_size + max_overflow per
+    worker, and on SQLite it is worse than a ceiling - an open read transaction
+    pins the WAL, so `-wal` grows without bound for as long as the longest
+    stream runs and checkpointing cannot reclaim it.
+
+    `commit()` ends the transaction, which is what returns the connection to the
+    pool; the session object stays valid and will autobegin a new one if it is
+    used again. Nothing loaded before this point is invalidated, because the
+    sessionmaker sets `expire_on_commit=False` - without that, every ORM
+    attribute read after this call would fire a lazy refresh and silently take a
+    connection straight back out.
+
+    Call it once the request's own reads are done. Work that happens after -
+    usage records, quota counters - must not use this session; it does not,
+    today: `UsageRecorder.submit` only appends to an in-memory buffer that a
+    background task flushes with its own session, and quota counters go through
+    a `CounterStore` that either talks to Redis or opens its own session from
+    the sessionmaker. Both paths are independent of the request session, which
+    is what makes releasing it here safe under either counter store.
+    """
+    await session.commit()
 
 
 async def init_db(attempts: int = 5) -> None:
