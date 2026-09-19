@@ -185,7 +185,7 @@ correct behaviour, not a gateway fault. Check `endpoints_healthy` in the body.
 ### A.1 Production overlay (TLS)
 
 ```bash
-export GATEWAY_DOMAIN=gateway.university.ac.th
+export GATEWAY_DOMAIN=gateway.example.com
 docker compose -f docker/docker-compose.yml -f docker/docker-compose.prod.yml up -d
 ```
 
@@ -367,13 +367,19 @@ Then revoke the bootstrap key with `DELETE /admin/api-keys/{id}`.
 
 ```bash
 python scripts/seed.py \
-  --workspace CS101 --name "Intro to Programming" --term 1/2569 \
+  --workspace ACME-PLATFORM --name "Platform team" --term 2026-H1 \
   --members 6412345678,6412345679,6412345680 \
   --models coding,gemma-vision
 ```
 
 Keys are printed once. Distribute them over a channel members already trust
-(LMS message, not a shared spreadsheet).
+(a direct message, not a shared spreadsheet).
+
+`--term` fills `Workspace.term`, a free-text label on the workspace — a period,
+a cost centre, a contract reference, whatever you sort by. **It is a label and
+nothing more:** no expiry, no access decision and no quota window is derived
+from it. The name is left over from the product's first deployment; see
+[the data-model note](#a-note-on-the-schema-vocabulary).
 
 **Being in a workspace is what decides which models someone may call.** The
 rules, in the order they narrow:
@@ -393,11 +399,11 @@ workspace forever.
 **A manager's admin powers are scoped the same way.** They see the people, keys
 and usage of their own workspaces, and can add members, set models and issue
 keys only there — and only naming models they can use themselves, or enabling a
-model for your own class would be a way of granting it to yourself.
+model for your own workspace would be a way of granting it to yourself.
 
 A manager who is in no workspace manages nothing, which is the opposite default
 from model access and deliberate: promoting somebody should not quietly hand
-them the whole institution. Put them in their classes and they can work.
+them the whole organisation. Put them in their workspaces and they can work.
 
 **Changing what a key may call, after it is in circulation.** The scope was set
 once when the key was issued and could never be revisited, so adding a model
@@ -420,8 +426,9 @@ Send the whole list you want, not a delta. `[]` removes the restriction, which
 `models` travel in the same request and neither disturbs the other. A manager is
 held to the same bar as when issuing: only models they could call themselves.
 
-**Handing the same models to many classes.** Ticking four models into twenty
-courses means eighty clicks, and adding a fifth means visiting all twenty again.
+**Handing the same models to many workspaces.** Ticking four models into
+twenty workspaces means eighty clicks, and adding a fifth means visiting all
+twenty again.
 Name the set once instead:
 
 ```bash
@@ -430,13 +437,13 @@ curl -s -X POST $GW/admin/access-groups -H "Authorization: Bearer $ADMIN_KEY" \
   -d '{"name":"coding-set","models":["coding","coder-next"]}'
 ```
 
-Then give the bundle to a class alongside (or instead of) individual models —
-`POST /admin/workspaces/{id}/models` takes `access_groups` in the same call.
-Editing the bundle reaches every class holding it, which the response counts for
+Then give the bundle to a workspace alongside (or instead of) individual models
+— `POST /admin/workspaces/{id}/models` takes `access_groups` in the same call.
+Editing the bundle reaches every workspace holding it, which the response counts for
 you; disabling it takes its models away everywhere at once, reversibly.
 
 A bundle is a shorter way of *writing* a rule, never a new one: what it expands
-to is added to the models ticked on the class, and then narrowed by everything
+to is added to the models ticked on the workspace, and then narrowed by everything
 that narrowed before. Only an admin can define one, and a manager can only hand
 out bundles whose models they could call themselves — otherwise granting
 yourself a bundle would be the way around every other check.
@@ -449,7 +456,7 @@ every site that installs it:
 | Role | May call | May administer |
 |---|---|---|
 | `member` | whatever their workspaces allow | themselves only — their own keys and password |
-| `manager` | whatever their workspaces allow, *same as a member* | only the workspaces they belong to: add and remove people, set that class's models, issue keys to its members, read its usage. **Cannot hand out a model they cannot call themselves.** |
+| `manager` | whatever their workspaces allow, *same as a member* | only the workspaces they belong to: add and remove people, set that workspace's models, issue keys to its members, read its usage. **Cannot hand out a model they cannot call themselves.** |
 | `admin` | every model in the registry | the whole gateway — registry, bundles, quota, every workspace and person |
 
 There is deliberately no role editor. What you configure is *who is in which
@@ -458,37 +465,38 @@ groups), *how far a key is narrowed* (Issue an API key) and *how much may be
 used* (Quota). Roles decide the shape of someone's authority; those four decide
 its extent.
 
-A manager who is in no workspace administers nothing. Put them in their classes
-first — the opposite default from model access, so that promoting somebody does
-not quietly hand them the institution.
+A manager who is in no workspace administers nothing. Put them in their
+workspaces first — the opposite default from model access, so that promoting
+somebody does not quietly hand them the organisation.
 
-**Defaults for a whole class.** These are a different question from the allowed
-models, and the console keeps them apart: the checkboxes are *what this class
-may call*, the row beneath is *what a key issued to a new member starts as*.
-They can contradict each other — a default naming something the class cannot
-call produces a key whose own list and whose class have nothing in common, so it
+**Defaults for a whole workspace.** These are a different question from the
+allowed models, and the console keeps them apart: the checkboxes are *what this
+workspace may call*, the row beneath is *what a key issued to a new member
+starts as*. They can contradict each other — a default naming something the
+workspace cannot call produces a key whose own list and whose workspace have
+nothing in common, so it
 can call nothing at all and the owner finds out by being refused. The default
-can therefore only name models the class actually reaches, whether ticked
+can therefore only name models the workspace actually reaches, whether ticked
 directly or supplied by a bundle, and the API refuses the rest.
 
-**Defaults for a whole class.** Set `default_member_models`,
+**Setting those defaults.** Set `default_member_models`,
 `default_access_groups` and `default_key_days` on the workspace and a key issued
 to one of its members starts there, instead of thirty keys being typed by hand
 with one of them mistyped. Only blanks are filled: sending `"models": []`
 explicitly means "unrestricted" and is left alone. The issue response reports
-what was filled in and which class it came from, because a default that applies
+what was filled in and which workspace it came from, because a default that applies
 silently is a setting nobody knows they have.
 
 **Marking service keys.** `"kind": "service"` on a key changes no rule; it exists
-so a CI token and a student's laptop key stop looking identical in a list of two
+so a CI token and a developer's laptop key stop looking identical in a list of two
 hundred, which is what turns an audit into an afternoon.
 
-**Putting a class on hold.** `PATCH /admin/workspaces/{id}/status` with
+**Putting a workspace on hold.** `PATCH /admin/workspaces/{id}/status` with
 `suspended` stops it granting any models; `active` brings it back. Nobody's key
-is touched, which is the difference from revoking them — end of term, a course
-between intakes, or a class under investigation should not destroy credentials
-that will be needed again. Somebody who is also in another class keeps that
-one.
+is touched, which is the difference from revoking them — a finished engagement,
+a project between phases, or a team under investigation should not destroy
+credentials that will be needed again. Somebody who is also in another
+workspace keeps that one.
 
 Two consequences worth knowing before you use it:
 
@@ -523,7 +531,7 @@ curl -s -X POST $GW/admin/quota-policies -H "Authorization: Bearer $ADMIN_KEY" \
 #### Handing an allowance back
 
 A limit that was right can still leave the wrong person stuck: one runaway agent
-loop spends a term's quota in an afternoon. Raising the limit to unblock them
+loop spends a month's quota in an afternoon. Raising the limit to unblock them
 changes the rule for everyone, permanently, because of one accident.
 
 ```bash
@@ -539,7 +547,7 @@ a separate ledger and are what the reports read, so what was spent still shows
 in `/admin/usage/summary` afterwards. The reset is written to the audit log with
 the figures it cleared.
 
-Admin only. A manager can already relax a limit for their own class with a dated
+Admin only. A manager can already relax a limit for their own workspace with a dated
 policy; returning an allowance somebody has already spent is a different act and
 belongs at the top.
 
@@ -551,8 +559,8 @@ belongs at the top.
 
 ### 2.3b Stop a burst, not just a spree
 
-A daily quota stops somebody spending a term's worth in a week. It does nothing
-about a class of forty pressing send in the same minute — the machines queue and
+A daily quota stops somebody spending a month's worth in a week. It does nothing
+about a team of forty pressing send in the same minute — the machines queue and
 the last person waits minutes for a first token, while their own daily figure is
 barely touched.
 
@@ -577,7 +585,7 @@ A limit meant for four models was four policies to write and four to remember
 to change; an access group is already a named set, so that is what a policy
 points at. Name one alias or one bundle, not both. Precedence puts a named alias
 above a bundle containing it, for the same reason a rule about one person beats
-a rule about their class.
+a rule about their team.
 
 A policy can also carry `expires_in_days`. Somebody who needs a bigger
 allowance for three days is one policy that removes itself, rather than one
@@ -628,7 +636,7 @@ Results post back automatically; the console shows `READY` / `DEGRADED`.
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="https://gateway.university.ac.th/v1",
+    base_url="https://gateway.example.com/v1",
     api_key="edu_sk_...",
 )
 
@@ -642,7 +650,7 @@ print(response.choices[0].message.content)
 **Claude Code**
 
 ```bash
-export ANTHROPIC_BASE_URL=https://gateway.university.ac.th
+export ANTHROPIC_BASE_URL=https://gateway.example.com
 export ANTHROPIC_AUTH_TOKEN=edu_sk_...
 export ANTHROPIC_MODEL=coding
 claude
@@ -670,7 +678,8 @@ Only aliases whose `agent_clients.claude_code.enabled` is true will work well;
 ### 4.2 Swapping the model behind an alias
 
 Change `upstream_model` and `base_url`, keep the alias. No member changes
-anything. Avoid doing this mid-term while assignments are in flight (PRD §18).
+anything. Avoid doing this mid-project while long-running jobs are in flight
+(PRD §18).
 
 ### 4.3 Health
 
@@ -699,6 +708,87 @@ GW_DATABASE_URL=postgresql+asyncpg://litegate:PASSWORD@localhost:5432/litegate
 Restart. Tables are created automatically. **Existing SQLite data is not
 migrated** — export what you need first (`usage_logs` is the only table worth
 carrying over; users and keys should be re-issued).
+
+---
+
+## 5f. Redis — shared quota counters
+
+```ini
+GW_REDIS_URL=redis://127.0.0.1:6379/0
+```
+
+Empty is still the default, and still correct for a single worker. **Set it on
+any deployment that runs more than one worker**, which is both shipped ones:
+`docker/Dockerfile` and `deploy/systemd/litegate.service` each start uvicorn
+with `--workers 4`.
+
+### Why it matters with four workers
+
+Without Redis, quota and per-minute rate-limit counters live in the
+`quota_counters` table. All four workers do share that table — the problem is
+not that each keeps its own copy — but the increment is a read-modify-write in
+the ORM (`SELECT`, add in Python, `UPDATE` with the new total), not an atomic
+`UPDATE … SET requests = requests + n`. Two workers that read the same row at
+the same moment both write their own total, and one of the two increments is
+lost. The error is always in the member's favour, and it grows with concurrency
+— which is to say it grows exactly when a quota is the thing you are relying on.
+
+On the default SQLite file this is also a contention problem: SQLite takes one
+writer at a time, so every increment from every worker queues behind the others,
+and under load that surfaces as `database is locked` rather than as a slow
+counter.
+
+Redis counts with `HINCRBY` — atomic, server-side, one hash per
+(subject, window) with a TTL that expires when the window does. Concurrent
+workers cannot lose each other's increments.
+
+This does not replace the database. It is not where quota *policy* lives, and
+`usage_logs` — the ledger the reports are built from — is untouched by it.
+Redis holds only the running counts.
+
+### Falling back is automatic, and safe
+
+If `GW_REDIS_URL` is set but Redis does not answer at startup, the gateway logs
+`Redis unavailable (…); using database counters` and serves from the database.
+It does not refuse to boot.
+
+If Redis dies *later*, the counter store fails over per call: the first failure
+marks Redis down for 30 seconds and those requests go straight to the database,
+then it tries again. Requests keep working throughout — losing the cache costs
+latency, not availability.
+
+On recovery, counts written to the database during the outage are not lost. The
+first Redis miss after a fallback reads the database and seeds Redis from it;
+without that, a Redis that restarts empty would hand every member their whole
+quota back.
+
+One honest gap: the reseed fires on a *miss*, so if Redis survives the outage
+holding a partial count, the two ledgers are disjoint and the total is
+under-reported by whatever was spent while Redis was unreachable. That is
+deliberate — merging them safely would need a distributed lock, and
+double-counting blocks a member who has done nothing wrong. The under-count is
+bounded by the length of the outage.
+
+`POST /admin/users/{id}/quota/reset` clears **both** ledgers, and fails loudly
+if Redis is unreachable rather than reporting a success that will be undone by
+the next reseed.
+
+### Watch `litegate_quota_counters_degraded`
+
+```
+litegate_quota_counters_degraded   0 = counting in Redis (or Redis was never configured)
+                                   1 = fell back to the database
+```
+
+This is the only signal that a fallback happened. Nothing errors, nothing in
+the request path logs, and members see no difference — which is how a gateway
+ends up running for a week on a Redis that died on Tuesday. The gauge reads `0`
+on deployments that never set `GW_REDIS_URL`, so alerting on `== 1` does not
+fire on every SQLite install.
+
+Redis needs no other configuration: outbound `6379/tcp` from the gateway host
+([NETWORK.md](NETWORK.md)), and nothing in it needs backing up — every key
+carries a TTL and the database holds the durable copy.
 
 ---
 
@@ -935,7 +1025,7 @@ still reach port 8080 directly.
 
 The app binds `0.0.0.0:8080` so scripts, health checks and LAN clients keep
 working. That port bypasses TLS, the rate limits, and the `/admin` and
-`/metrics` restrictions in the nginx config. On a campus network where members
+`/metrics` restrictions in the nginx config. On a shared corporate network where members
 can route to the gateway host, change the systemd unit to `--host 127.0.0.1`
 and hand out only the HTTPS address. On an isolated rack where the only things
 that can reach it are yours, leaving it open costs nothing and saves an
@@ -992,8 +1082,14 @@ somebody who then has to work out what to do.
 | `litegate_errors_total{code}` | The `code` label usually identifies the cause without opening a log |
 
 Thresholds and `for:` durations are deliberately slack. A gateway in front of
-model servers is bursty — one class starting an assignment moves every rate —
+model servers is bursty — one team starting a batch job moves every rate —
 and an alert that fires on a two-minute spike is one people learn to ignore.
+
+> **Read [§10 Known limitations](#10-known-limitations) before you trust a
+> number here.** In multi-worker mode `/metrics` answers from one worker's
+> registry, the duration histogram measures time to first header rather than
+> request duration, and the in-flight gauge does not count streams that are
+> still sending.
 
 Note what is *not* alerted on: NFR-P1 is about gateway overhead, and the request
 histogram includes the model's own generation time, so a slow model would fire
@@ -1093,9 +1189,13 @@ sudo sqlite3 /opt/litegate/data/gateway.db ".backup '/backup/gateway-$(date +%F)
 | Metric | Meaning |
 |---|---|
 | `litegate_requests_total{path,method,status,model}` | Request counts |
-| `litegate_request_duration_seconds{path,model}` | Latency histogram |
-| `litegate_requests_in_flight` | Concurrency |
+| `litegate_request_duration_seconds{path,model}` | Latency histogram — **time to first header, not request duration** (§10) |
+| `litegate_requests_in_flight` | Concurrency — **excludes streams already sending** (§10) |
 | `litegate_errors_total{code}` | Errors by gateway error code |
+| `litegate_quota_counters_degraded` | `1` when quota counting has fallen back from Redis to the database (§5f) |
+
+With `--workers 4` every absolute number above is one worker's view. See
+[§10 Known limitations](#10-known-limitations).
 
 Alerts worth having from day one:
 
@@ -1104,7 +1204,7 @@ Alerts worth having from day one:
 | Gateway down | `/readyz` != 200 for 2 min |
 | Backend ejected | `endpoints_healthy < endpoints_total` for 5 min |
 | Error surge | `rate(litegate_errors_total{code="UPSTREAM_ERROR"}[5m]) > 0.1` |
-| Quota pressure | `QUOTA_EXCEEDED` rate rising near an assignment deadline |
+| Quota pressure | `QUOTA_EXCEEDED` rate rising as a billing window or deadline approaches |
 | Estimation drift | share of usage rows with `token_accounting='estimated'` > 20% |
 
 ---
@@ -1149,8 +1249,40 @@ sector-neutral. Nothing in a running deployment has to change on upgrade day:
 | systemd unit `edullm-gateway` | `litegate` | Rename at your convenience; the old unit keeps running |
 | Prometheus `edullm_*` metrics | `litegate_*` | **Not aliased** — update dashboards, this is the one thing that changes immediately |
 
+### A note on the schema vocabulary
+
 Database table and column names are unchanged. They are not part of the product
 surface, and renaming them would force a migration for nothing a user can see.
+
+That is a deliberate trade, but it means **the names in the database do not
+match the names in the API, the console or this guide.** Anyone writing a
+report against the database directly, restoring a backup by hand, or reading
+`sqlite3 .schema` needs this table:
+
+| Code / API / docs say | The database actually has |
+|---|---|
+| `Workspace` | table `courses` |
+| `Membership` | table `enrollments` |
+| `WorkspaceModel` | table `course_models` |
+| `workspace_id` | column `course_id` — on `enrollments`, `api_keys`, `course_models`, `quota_policies`, `usage_logs` |
+| `WorkspaceAccessGroup.workspace_id` | column keeps the name `workspace_id`, but its foreign key points at `courses.id` |
+| — | constraints and indexes still read `uq_enrollment`, `uq_course_model`, `ix_usage_ts_workspace (ts, course_id)` |
+
+The ORM maps every one of these, so **nothing that goes through the application
+is affected**: `Workspace.workspace_id` is the attribute, `course_id` is the
+column underneath it. Read through the ORM and the mismatch is invisible.
+Read the tables directly and it is not.
+
+Two more names are historical in the same way:
+
+- **`Workspace.term`** (`--term` in `scripts/seed.py`, `term` in the workspace
+  API) is a free-text label. It expires nothing and grants nothing.
+- **The `term` quota window** is a real multi-month window, not an academic
+  one — it simply defaults to months `(1, 6, 8)`, the calendar this first ran
+  on. See §10 for the configuration caveat before you rely on it.
+
+Renaming any of this is a schema migration with real risk and is not scheduled.
+It is tracked as its own task.
 
 ### Routine upgrade
 
@@ -1268,6 +1400,134 @@ exist on an install that predates it, and systemd refuses to start a unit whose
 An old `.venv/bin/edullm-gateway` may still be lying around — a console script
 for an entry point the package no longer declares. It does nothing; delete it.
 
+---
+
+## 10. Known limitations
+
+Everything below is true of the current release. None of it stops the gateway
+serving traffic; all of it changes what you can conclude from what you are
+looking at. Written down because an operator who does not know these will draw
+the wrong conclusion from a dashboard at exactly the wrong moment.
+
+### Metrics
+
+**`/metrics` reports one arbitrary worker, not the process group.**
+`PROMETHEUS_MULTIPROC_DIR` is not configured anywhere — not in
+`docker/Dockerfile`, not in `deploy/systemd/litegate.service`, not in the code —
+and `/metrics` serves `generate_latest()` against the default in-process
+registry. With `--workers 4` each worker keeps its own counters, and a scrape is
+answered by whichever worker happened to accept the connection. Counters look
+like they go backwards between scrapes, and every absolute number is roughly a
+quarter of the truth. Treat `/metrics` as indicative in multi-worker mode.
+
+The readiness gauges are worse than merely partial, and this one can page you at
+three in the morning for nothing. `litegate_ready`,
+`litegate_endpoints_healthy`, `litegate_endpoints_total` and
+`litegate_models_loaded` are set **inside the `/readyz` handler** and nowhere
+else. A worker that has never answered a `/readyz` probe has never set them, so
+they sit at the client library's default of `0`. A scrape that lands on such a
+worker therefore reports a gateway that is not ready, with no models and no
+backends — while the gateway is serving traffic normally.
+
+Two consequences, in opposite directions:
+
+- `LiteGateNotReady` (`litegate_ready == 0`, `for: 3m`, **severity: page**) in
+  `deploy/prometheus/litegate.rules.yml` can fire on a perfectly healthy
+  gateway, because consecutive scrapes may keep landing on unprobed workers.
+- `LiteGateAllBackendsUnhealthy` is guarded by
+  `litegate_endpoints_total > 0`, and `LiteGateBackendDegraded` compares
+  `healthy < total`. On an unprobed worker both sides are `0`, so neither
+  fires — a real "no backend is healthy" outage can be masked by whichever
+  worker answers the scrape.
+
+Until `PROMETHEUS_MULTIPROC_DIR` is configured, the safe reading is: use
+`/readyz` itself (which is correct, because it computes state on the worker
+answering it) for readiness, and treat the readiness *metrics* as advisory.
+Raising `for:` on `LiteGateNotReady` reduces the false pages but does not
+remove them.
+
+**`litegate_request_duration_seconds` measures time to first header, not request
+duration.** It is observed in the `@app.middleware("http")` block in
+`app/main.py`, which Starlette runs as `BaseHTTPMiddleware`: `call_next` returns
+as soon as the response *starts*, and for a streaming response that is the first
+byte, not the last. Most traffic through this gateway is streaming, so for most
+requests this histogram is closer to TTFT than to latency. It is not a lie about
+short JSON endpoints — `/readyz`, `/admin/*`, `/v1/models` are measured
+correctly — but do not size timeouts or read generation cost from it.
+
+**`litegate_requests_in_flight` decrements before the body drains.** Same block:
+the gauge is decremented in a `finally` around `call_next`, which completes when
+the headers are out. An active stream that has not sent its last token is not
+counted. On a gateway whose whole job is long streams, the gauge is closer to
+"requests currently in their header phase" than to concurrency, and it can read
+near zero while every backend is saturated. The 80%-of-200-streams alert in §5e
+inherits this.
+
+**TTFT is measured but never exported.** `UsageLog.ttft_ms` is populated for
+streaming requests on all three protocol surfaces, and `PerfStore` uses it live
+to rank models for `model: "auto"`. There is no Prometheus metric for it, so the
+number an operator most wants during a slow-model complaint is only reachable by
+querying `usage_logs`.
+
+### Configuration and deployment
+
+**`GW_WORKERS` does nothing in either shipped deployment.** `Settings.workers`
+is read in exactly one place: the `run()` console-script entrypoint
+(`litegate = "app.main:run"`). Neither shipped deployment uses it —
+`docker/Dockerfile` and `deploy/systemd/litegate.service` both call uvicorn
+directly with `--workers 4` hardcoded. Changing `GW_WORKERS` in `.env` and
+restarting produces no change at all, silently. To change the worker count,
+edit `ExecStart=` in the unit file (or the `CMD` in the Dockerfile) and reload
+systemd. Note also that `run()` would clamp to a single worker outside
+production regardless.
+
+**`quota_defaults.term_start_months` in `gateway.yaml` is not wired up.** The
+setting is parsed and validated — `QuotaDefaults.term_start_months`, documented
+there as the way an organisation states its own fiscal or semester calendar —
+but `window_bounds()` is called without it at all nine of its call sites, so the
+`term` window always falls back to the hardcoded `DEFAULT_TERM_START_MONTHS =
+(1, 6, 8)`. Setting `[1, 4, 7, 10]` for fiscal quarters changes nothing, and
+nothing warns. Until that is fixed, a `term` quota window means a period
+starting in January, June or August, whatever the file says. `hour`, `day` and
+`month` windows are unaffected.
+
+**Port 8080 stays bound on `0.0.0.0` behind any TLS proxy.** Both shipped
+deployments pass `--host 0.0.0.0`, and installing nginx or Caddy in front adds
+443 — it does not close 8080. Anything that can reach the host on 8080 bypasses
+the proxy entirely, and with it the per-IP rate limits *and* the
+`allow`/`deny` lists that restrict `/admin/` and `/metrics` to private
+networks. API-key authentication still applies, so this is not an open door;
+it is the loss of every control that lives in the proxy rather than in the
+gateway. If the host has an interface on an untrusted network, firewall 8080
+to the proxy, or set `GW_HOST=127.0.0.1` when the proxy is on the same machine.
+§5c ("One thing to decide once TLS is in front") covers the same decision where
+you first meet it.
+
+**nginx rate limits are per source IP, which is per NAT, not per tenant.**
+`deploy/nginx/litegate.conf` keys both zones on `$binary_remote_addr`
+(lines 16–17), and applies `limit_req … burst=60 nodelay` and
+`limit_conn litegate_conn 20` (lines 44–45). At `rate=120r/m` that is 2
+requests/second sustained and 20 concurrent connections **shared by everyone
+arriving from one address**. A whole office behind one NAT, or a CI runner pool
+on one egress IP, hits a limit that was sized for one person — and because
+streaming connections are long-lived, the connection limit bites first. There
+is no `set_real_ip_from`/`real_ip_header` in the config, so `X-Forwarded-For`
+from a CDN or an upstream proxy does not change the key either. Raise both
+numbers, or key the zones on something tenant-shaped, if any of your callers
+share an egress address. The gateway's own per-member quota and per-minute
+limits are unaffected by this — those are the real policy.
+
+### Access control
+
+**`ApiKey.scopes` is stored but never enforced.** The column exists, the
+`POST /admin/api-keys` body accepts `scopes`, the value is persisted and loaded
+onto the `Principal` on every request — and `Principal.require_scope()` has zero
+call sites. A key issued with narrow scopes is not narrowed by them. What *is*
+enforced on a key is `models` and `access_groups` (see §2.2), plus the role on
+the user behind it. Do not rely on `scopes` as a boundary; if you have issued
+keys assuming it works, re-check them against `models`/`access_groups` instead.
+
+---
 
 ## Reading an issued key back (optional)
 

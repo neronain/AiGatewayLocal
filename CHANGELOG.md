@@ -4,7 +4,36 @@ One line per change, in the words of the commit that made it. Newest first.
 Version badge and `pyproject.toml` are the source of truth for the release number; entries below are
 grouped by the day they landed on `main`.
 
-## 1.4.x — 2026-08-20 → 2026-09-02
+## 1.4.x — 2026-08-20 → 2026-09-20
+
+### 2026-09-20
+
+Documentation only — no behaviour changed. Entries carry no commit hash because
+they landed as a docs pass rather than one commit each.
+
+- Quota counters now run on Redis on the live gateway: `GW_REDIS_URL` was empty
+  and is now `redis://127.0.0.1:6379/0`, which moves counting from
+  `DatabaseCounterStore` to `ResilientCounterStore(Redis, Database)`. Documented
+  in DEPLOYMENT.md §5f and NETWORK.md — **strongly recommended, not optional,
+  on any deployment running more than one worker**, because the database
+  increment is a read-modify-write that loses concurrent updates
+- Say what the product is for without saying "education" — the FastAPI
+  description behind `GET /openapi.json`, and the package description
+- Document the four registry-authoring endpoints the API reference never
+  listed: `POST /admin/models`, `POST /admin/models/preview`,
+  `POST /admin/models/detect`, `DELETE /admin/models/{alias}`
+- DEPLOYMENT.md §10: a known-limitations section an operator has to read before
+  trusting `/metrics` — multi-worker scrapes, what the duration histogram
+  really measures, what the in-flight gauge really counts, `GW_WORKERS`,
+  `quota_defaults.term_start_months`, the nginx per-IP limits, unenforced
+  `ApiKey.scopes`, and port 8080
+- Write down that the tables are still called `courses`, `enrollments` and
+  `course_models` while the code says `Workspace` and `Membership`, instead of
+  letting the next reader find out from a backup
+- Test count in the README was 652 in the badge and 397 in the Development
+  section — two places to keep in step and both stale. The badge now says 675
+  (re-derive it at release time) and the Development section no longer repeats
+  a number
 
 ### 2026-09-02
 

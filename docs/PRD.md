@@ -25,12 +25,14 @@ inference (vLLM / llama.cpp / Ollama / SGLang) behind the standard OpenAI and
 Anthropic APIs, under its own identity, policy and quota — without exposing a
 raw model server to the network.
 
-**Who it is for.** Any group sharing GPUs they control: a small company, a
-school or university department, a research group, an agency serving its own
-clients. Education was the first deployment and remains a first-class use case,
-but nothing in the design is specific to it — the vocabulary is *member*,
-*workspace* and *manager*, which a class, a team and a client project all map
-onto without translation.
+**Who it is for.** Any group sharing GPUs they control: a small company, an
+agency serving its own clients, a research group, a department inside a larger
+organisation. The product is now developed for commercial deployment; education
+was where it first ran, and nothing in the design is specific to either — the
+vocabulary is *member*, *workspace* and *manager*, which a team, a client
+project and a class all map onto without translation. Section 16 below and the
+risk and open-question tables in §18–19 still read in the vocabulary of that
+first deployment; they are kept as the record of decisions taken then.
 
 **The one-sentence architecture:** the gateway owns *identity, permission,
 capability, quota, routing, usage and protocol*; the model server owns
@@ -75,8 +77,8 @@ added.
 
 | Persona | Needs | Success looks like |
 |---|---|---|
-| **Member** — the person doing the work (developer, student, analyst) | Something that "just works" in Python or Claude Code | Pastes a base URL + key, and it runs. Never sees a repository name. |
-| **Manager** — owns a workspace (team lead, instructor, project owner) | Control and visibility for their group | Enables 2 models for the workspace, sets a quota, sees who is near the limit |
+| **Member** — the person doing the work (developer, analyst, researcher) | Something that "just works" in Python or Claude Code | Pastes a base URL + key, and it runs. Never sees a repository name. |
+| **Manager** — owns a workspace (team lead, project owner, account owner) | Control and visibility for their group | Enables 2 models for the workspace, sets a quota, sees who is near the limit |
 | **Administrator / GPU ops** | Add and swap models safely | Adds a model by writing one YAML file, runs the test suite, sees READY |
 | **Power user** (researcher, senior engineer) | Higher limits, agentic workloads | Same API, different quota policy |
 
@@ -85,7 +87,7 @@ added.
 ## 2. Architecture
 
 ```
-                              STUDENTS
+                              MEMBERS 
              ┌──────────────────┼──────────────────┐
              ▼                  ▼                  ▼
       Python / OpenAI SDK   Web / App        Claude Code
@@ -416,8 +418,13 @@ requests · text_input_tokens · visual_input_tokens · output_tokens · images
 user + model  >  user  >  workspace + model  >  workspace  >  global  >  gateway.yaml default
 ```
 
-**Windows:** `day` | `month` | `term`. The `term` window follows the Thai
-academic calendar (Aug–Dec, Jan–May, Jun–Jul summer).
+**Windows:** `hour` | `day` | `month` | `term` (a `minute` window exists too,
+but it is the per-minute rate limiter's, not a policy value). The `term` window
+is a generic multi-month period defined by the months it begins on; it defaults
+to `(1, 6, 8)` — the Thai academic calendar this first ran on.
+`quota_defaults.term_start_months` in `gateway.yaml` is meant to override that
+and **currently does not take effect**: `window_bounds()` is called without it
+everywhere. See DEPLOYMENT.md §10.
 
 ### 8.1 Enforcement model — check-then-record
 
@@ -666,6 +673,19 @@ therefore no-collection.
 ---
 
 ## 12. Data model
+
+> **The SQL below is the logical model. Three physical names differ.** The
+> product vocabulary moved from course to workspace in v1.4 but the tables were
+> deliberately not renamed, so a reader querying the database directly needs the
+> translation: `workspaces` is the table `courses`, `memberships` is
+> `enrollments`, `workspace_models` is `course_models`, and every
+> `workspace_id` column is physically `course_id` (on `enrollments`,
+> `api_keys`, `course_models`, `quota_policies` and `usage_logs`). The
+> exception is `workspace_access_groups`, whose column really is called
+> `workspace_id` while its foreign key points at `courses.id`. The ORM maps all
+> of it, so nothing reaching the database through the application is affected.
+> Renaming them is a migration with real risk and is tracked separately —
+> see [DEPLOYMENT.md](DEPLOYMENT.md#a-note-on-the-schema-vocabulary).
 
 ```sql
 users(id, external_id UNIQUE, email, display_name, role, status, created_at, updated_at)
