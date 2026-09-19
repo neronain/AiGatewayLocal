@@ -73,10 +73,10 @@ def test_a_valid_but_incomplete_certificate_is_reissued():
 
 def test_dotfiles_in_the_config_dir_are_ignored():
     """macOS แถม `._ชื่อไฟล์` มาเวลาแตก zip/tar หรือก๊อปผ่าน USB และมันไม่ใช่ UTF-8"""
-    from app.registry.store import load_snapshot
-
     import shutil
     import tempfile
+
+    from app.registry.store import load_snapshot
 
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "config"

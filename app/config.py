@@ -7,8 +7,6 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
-
 # ── ลายเซ็นผู้สร้าง ────────────────────────────────────────────────────────────
 #
 # รวมไว้ที่เดียวเพราะข้อความที่ก๊อปกระจายหลายไฟล์จะแก้ไม่ทั่ว แล้วบางจุดหายไปเงียบ ๆ

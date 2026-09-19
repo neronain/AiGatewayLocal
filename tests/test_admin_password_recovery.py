@@ -38,7 +38,8 @@ def _strip_password(client):
 
     async def wipe():
         async with session_scope() as session:
-            row = (await session.execute(select(User).where(User.role == "admin"))).scalars().first()
+            result = await session.execute(select(User).where(User.role == "admin"))
+            row = result.scalars().first()
             row.password_hash = ""
             await session.commit()
             return row.external_id
@@ -70,7 +71,8 @@ def test_an_admin_that_already_has_one_is_left_alone(client, chosen_password):
 
     async def hash_now():
         async with session_scope() as session:
-            row = (await session.execute(select(User).where(User.role == "admin"))).scalars().first()
+            result = await session.execute(select(User).where(User.role == "admin"))
+            row = result.scalars().first()
             return row.password_hash
 
     loop = asyncio.get_event_loop_policy().new_event_loop()

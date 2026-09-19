@@ -37,7 +37,10 @@ from app.db.session import init_db, session_scope  # noqa: E402
 async def list_accounts() -> int:
     await init_db()
     async with session_scope() as session:
-        users = (await session.execute(select(User).order_by(User.role, User.external_id))).scalars()
+        result = await session.execute(
+            select(User).order_by(User.role, User.external_id)
+        )
+        users = result.scalars()
         rows = [u for u in users]
     if not rows:
         print("ไม่มีบัญชีในฐานข้อมูลนี้ — ชี้ถูก GW_DATABASE_URL หรือเปล่า")

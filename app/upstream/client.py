@@ -7,7 +7,6 @@ when every request is a long-lived streaming response to the same few hosts.
 from __future__ import annotations
 
 import logging
-import os
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -16,8 +15,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from app.core import providers
 from app.config import get_settings
+from app.core import providers
 from app.core.errors import ErrorCode, GatewayError
 from app.core.secrets import SecretStore
 from app.registry.schema import Endpoint, ServerType

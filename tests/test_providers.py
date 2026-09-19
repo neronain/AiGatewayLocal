@@ -4,10 +4,7 @@ LiteGate เกิดมาเพื่อโมเดลบนเครื่�
 ต้องผสม — ใช้ของตัวเองเป็นหลัก แล้วเรียกคลาวด์เฉพาะงานที่เครื่องตัวเองทำไม่ไหว
 """
 
-import os
 from pathlib import Path
-
-import pytest
 
 from app.core import providers
 from app.registry.schema import Endpoint, Protocols, ServerType

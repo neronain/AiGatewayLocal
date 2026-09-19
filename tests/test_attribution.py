@@ -109,7 +109,9 @@ def test_a_marker_never_sits_on_a_header_row():
     for line in page.splitlines():
         if "data-fold-section" not in line:
             continue
-        assert not re.search(r'data-fold-section="[^"]+"\s+class="(bar|field|row)\b', line), line.strip()
+        assert not re.search(
+            r'data-fold-section="[^"]+"\s+class="(bar|field|row)\b', line
+        ), line.strip()
 
 
 def test_a_whole_tab_can_be_folded_at_once():
