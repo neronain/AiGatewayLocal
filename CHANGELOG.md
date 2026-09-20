@@ -4,6 +4,53 @@ One line per change, in the words of the commit that made it. Newest first.
 Version badge and `pyproject.toml` are the source of truth for the release number; entries below are
 grouped by the day they landed on `main`.
 
+## 1.5.0 — 2026-09-20
+
+Two bugs that were invisible on the day they happened, one lint gate brought back from the dead,
+and the first secret scan this repository has ever had.
+
+- **A model edited in the console stopped being LMDS-managed.** `GET /admin/models` returned every
+  endpoint field except `managed_by`, and the console rebuilds its save payload from that response —
+  so saving from the console silently deleted the record of which machine and which LMDS bundle a
+  backend came from. `grep -c managed_by app/static/app.js` was 0. Nothing on the request path reads
+  the field, so the damage showed up months later as a missing Apply-fix button and a `/advice`
+  command that no longer names the real machine. The listing now returns it, the console carries it
+  through untouched, and the server re-attaches it on a whole-document save that never mentioned it —
+  so an old console, a script, or a `curl` of yesterday's document can no longer unmanage a fleet.
+  An explicit `"managed_by": null` still removes it.
+- **A three-minute stream held a database connection for three minutes.** `get_session` never
+  committed after its last read, and FastAPI does not close the dependency stack until the response
+  body has finished — for a streaming request, the whole life of the stream. The ceiling was a few
+  dozen concurrent requests, and on SQLite the WAL grew without bound behind read snapshots nobody
+  released. Nothing past that point needs the request session: usage buffers in memory, and both
+  quota counter stores open their own. All three protocol surfaces release at the same point.
+  The SQLite pool is sized deliberately now instead of falling through to a default nobody chose.
+  Known limit: this proves the connection is released, not that the ceiling moved — measure under
+  real load before raising the worker count.
+- **`ruff check` had been failing for long enough that nobody read it.** 27 findings, all in the
+  blocking CI step. A lint gate everyone ignores is worse than none: it trains people to skip the
+  whole job summary. Every dead import was checked for indirect use before deletion — an import
+  that registers something is load-bearing, not dead. No new suppressions.
+- **A secret scan, which this repository never had.** It is public and the gateway issues real
+  credentials, so a key committed here is a live key — while the sibling LMDS repository, which
+  issues none, has had a scan for months. The pattern covers this product's own `lg_sk_` and legacy
+  `edu_sk_` formats. It does not skip `tests/`, because nothing there hardcodes a key today and
+  keeping it that way is worth more than the convenience. A second step refuses a tracked
+  environment file.
+- **The product is no longer for education.** The OpenAPI description, the package metadata and
+  most of the documentation still said so — that string is the first thing any integration reads.
+  The database tables are still `courses` / `enrollments` / `course_models` with `course_id` on five
+  of them; renaming those is a migration with real risk, so the mismatch is now documented rather
+  than surprising.
+- `docs/API.md` gains the four admin model endpoints that were real, tested, and mentioned only in
+  prose. `docs/DEPLOYMENT.md` gains a Redis section and an honest known-limitations section covering
+  the metrics that cannot be trusted across workers, the readiness gauges that can page on a healthy
+  gateway and go silent on a real outage, two pieces of dead config, and a rate limit keyed on
+  source IP that caps a whole tenant behind one NAT.
+- Ops, not a code change: `GW_REDIS_URL` is set on the deployed gateway. Quota counters move off
+  SQLite, where `increment` was a read-modify-write through the ORM that lost concurrent updates —
+  always in the member's favour — and serialised every write behind one file lock.
+
 ## 1.4.x — 2026-08-20 → 2026-09-20
 
 ### 2026-09-20

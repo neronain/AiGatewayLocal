@@ -20,9 +20,15 @@ AUTHOR_URL = "https://www.facebook.com/neronain.minidev"
 PRODUCT = "LiteGate"
 LICENSE_NOTE = "MIT — attribution required"
 
-# แหล่งเดียวของเลขเวอร์ชัน · เดิมฝังตายสองที่ใน main.py แล้วลืมอัปทั้งคู่
+# เลขเวอร์ชันที่โค้ดทั้งระบบอ่าน · เดิมฝังตายสองที่ใน main.py แล้วลืมอัปทั้งคู่
 # ตอน bump — `/` จึงประกาศ 1.3.0 อยู่หลายรอบทั้งที่ pyproject ขึ้น 1.4.0 แล้ว
-VERSION = "1.4.0"
+#
+# บรรทัดนี้ยังไม่ใช่ "แหล่งเดียว" จริง — pyproject.toml ถือเลขอีกชุด และสองที่นี้
+# หลุดจากกันได้ · 2026-09-20 หลุดมาแล้วหนึ่งครั้ง: bump pyproject เป็น 1.5.0
+# แล้วลืมบรรทัดนี้ · ตัวที่จับได้คือ test_the_version_has_one_source ซึ่งเทียบสองค่านี้
+# ตรง ๆ — ถ้าจะย้ายไปอ่าน importlib.metadata ให้ย้ายตอนไม่ได้กำลังจะ release
+# เพราะ metadata หายเมื่อรันจาก source tree ที่ยังไม่ได้ pip install แล้วจะ boot ไม่ขึ้น
+VERSION = "1.5.0"
 
 
 class Settings(BaseSettings):
