@@ -217,6 +217,14 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         log.info("shutting down")
+        # finalize ที่ยัง shield ค้างอยู่ต้องได้บันทึกก่อน — ไม่งั้น request รอบสุดท้าย
+        # ก่อนรีสตาร์ต/ดีพลอยจะไม่ถูกหักโควตา ซึ่งคือช่องโหว่เดิมในรูปแบบใหม่
+        # ต้องมาก่อน state.stop() เพราะ quota/usage store ปิดใน stop()
+        from app.api.openai import drain_pending_finalizers
+
+        drained = await drain_pending_finalizers(timeout=5.0)
+        if drained:
+            log.info("บันทึกการใช้งานที่ค้างอยู่ %d รายการก่อนปิด", drained)
         await state.stop()
         from app.upstream.client import close_client
 

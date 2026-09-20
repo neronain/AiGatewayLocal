@@ -9,6 +9,7 @@ The pipeline, in the order the PRD specifies (§15):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -280,6 +281,59 @@ async def run_chat(
 # ---------------------------------------------------------------------------
 # Shared request context + bookkeeping
 # ---------------------------------------------------------------------------
+# ── บันทึกการใช้งานให้รอดแม้ client จะตัดการเชื่อมต่อกลางทาง ──────────────────
+#
+# ช่องโหว่ที่ปิดตรงนี้ (ตรวจพบ 2026-09): ทั้ง codebase ไม่มี `asyncio.shield` เลยสักที่
+# พอ client หลุดกลาง stream Starlette ยกเลิก task ของ request → บล็อก `finally` ที่เรียก
+# `ctx.finalize()` รันใต้ `CancelledError` → **`await` ตัวแรกข้างใน finalize โยนทิ้งทันที**
+# → `usage.submit()` และ `quota.record()` ไม่เคยรัน
+#
+# ผลคือ **ตัดการเชื่อมต่อ = ใช้ฟรี** · กด Ctrl-C ทุกครั้งที่ตอบใกล้จบแล้ว token ที่ backend
+# เผาไปจริงจะไม่ถูกนับเข้าโควตาใครเลย · ผู้ใช้ที่ทำแบบนี้ไม่ต้องตั้งใจโกงด้วยซ้ำ — coding
+# agent ที่ยกเลิก request เมื่อผู้ใช้พิมพ์ต่อ ก็ทำให้เกิดอาการนี้เองตลอดเวลา
+#
+# วิธีแก้: ย้าย finalize ไปเป็น task ของตัวเอง แล้ว `shield` ไว้ · เมื่อผู้เรียกถูกยกเลิก
+# shield ปล่อย CancelledError กลับไปตามเดิม (ผู้เรียกจึงยังจบแบบที่ควรจะเป็น) แต่ task
+# ข้างในวิ่งต่อจนบันทึกเสร็จ
+#
+# ต้องเก็บ strong reference ไว้ใน _PENDING — asyncio เก็บแค่ weak reference กับ task ที่
+# กำลังรัน ถ้าไม่มีใครถือไว้ GC เก็บทิ้งกลางคันได้ และเราจะกลับไปเสียเงินเหมือนเดิม
+# โดยที่เทสยังเขียว เพราะในเทส task สั้นเกินกว่าจะโดน GC
+_PENDING: set[asyncio.Task] = set()
+
+# กันไม่ให้ finalize ที่ค้างสะสมไม่รู้จบตอน backend ล่ม — ทิ้งได้ดีกว่าให้หน่วยความจำบวม
+MAX_PENDING_FINALIZERS = 2048
+
+
+async def finalize_even_if_cancelled(coro) -> None:
+    """รัน coroutine ที่บันทึกการใช้งานให้จบ แม้ผู้เรียกจะถูก cancel ระหว่างทาง"""
+    if len(_PENDING) >= MAX_PENDING_FINALIZERS:
+        log.error("finalizer backlog เต็ม (%d) — ทิ้งการบันทึกรอบนี้", len(_PENDING))
+        coro.close()
+        return
+    task = asyncio.create_task(coro)
+    _PENDING.add(task)
+    task.add_done_callback(_PENDING.discard)
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # client หลุด · task ข้างในยังวิ่งต่อเพราะ shield — ปล่อยให้มันบันทึกจนจบ
+        # แล้วส่ง CancelledError ต่อไปตามสัญญาของ asyncio
+        raise
+
+
+async def drain_pending_finalizers(timeout: float = 5.0) -> int:
+    """รอให้ finalize ที่ค้างอยู่บันทึกจนครบ — เรียกตอนปิดแอป ไม่งั้นรอบสุดท้ายหาย"""
+    pending = set(_PENDING)
+    if not pending:
+        return 0
+    done, still = await asyncio.wait(pending, timeout=timeout)
+    if still:
+        log.error("ปิดแอปโดยยังมี finalizer ค้าง %d ตัว — การใช้งานรอบนั้นไม่ถูกบันทึก",
+                  len(still))
+    return len(done)
+
+
 class _RequestContext:
     def __init__(
         self,
@@ -380,7 +434,42 @@ class _RequestContext:
         http_status: int = 200,
         error_code: str | None = None,
     ) -> None:
-        """Record usage + quota consumption exactly once per request."""
+        """Record usage + quota consumption exactly once per request.
+
+        ห่อด้วย shield เพราะจุดเรียกเกือบทุกจุดอยู่ในบล็อก `finally` ซึ่งรันใต้
+        `CancelledError` เมื่อ client หลุด · ไม่ห่อ = `await` ตัวแรกข้างในโยนทิ้ง
+        แล้วไม่มีใครถูกหักโควตาเลย (ดู finalize_even_if_cancelled ข้างบน)
+
+        ห่อไว้ที่นี่จุดเดียวเพราะทั้งสามโปรโตคอล (openai · anthropic · responses)
+        ใช้คลาสนี้ร่วมกันและเรียก finalize รวมกัน 12 จุด — แก้ทีละจุดคือรอวันที่มีคน
+        เพิ่มจุดที่ 13 แล้วลืม
+        """
+        # "exactly once" ใน docstring เดิมไม่เคยมีอะไรบังคับ · พอมี shield แล้วการ
+        # เรียกซ้ำจะกลายเป็นการคิดเงินซ้ำจริง ๆ จึงต้องกันให้เป็นจริงตามที่เขียนไว้
+        if getattr(self, "_finalized", False):
+            log.warning("finalize ถูกเรียกซ้ำสำหรับ request %s — ข้ามรอบหลัง", self.request_id)
+            return
+        self._finalized = True
+        await finalize_even_if_cancelled(
+            self._record_usage(
+                usage,
+                ttft_ms=ttft_ms,
+                status=status,
+                http_status=http_status,
+                error_code=error_code,
+            )
+        )
+
+    async def _record_usage(
+        self,
+        usage: TokenUsage,
+        *,
+        ttft_ms: int | None = None,
+        status: str = "success",
+        http_status: int = 200,
+        error_code: str | None = None,
+    ) -> None:
+        """งานบันทึกจริง — เรียกผ่าน finalize() เท่านั้น"""
         record = usage_mod.build_record(
             request_id=self.request_id,
             principal=self.principal,

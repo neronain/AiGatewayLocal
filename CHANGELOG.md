@@ -4,6 +4,33 @@ One line per change, in the words of the commit that made it. Newest first.
 Version badge and `pyproject.toml` are the source of truth for the release number; entries below are
 grouped by the day they landed on `main`.
 
+## 1.6.0 — 2026-09-20
+
+### ปิดช่องโหว่รายได้: ตัดการเชื่อมต่อ = ใช้ฟรี
+
+ทั้ง codebase **ไม่มี `asyncio.shield` เลยสักที่** · จุดที่เรียก `ctx.finalize()` เกือบ
+ทุกจุดอยู่ในบล็อก `finally` ซึ่งรันใต้ `CancelledError` เมื่อ client หลุด → **`await`
+ตัวแรกข้างใน finalize โยนทิ้งทันที** → `usage.submit()` และ `quota.record()` ไม่เคยรัน
+
+ผลคือ token ที่ backend เผาไปจริงไม่ถูกนับเข้าโควตาใครเลย · ผู้ใช้ไม่ต้องตั้งใจโกงด้วยซ้ำ —
+coding agent ที่ยกเลิก request เมื่อผู้ใช้พิมพ์ต่อก็ทำให้เกิดอาการนี้ตลอดเวลา และยิ่ง
+ยกเลิกตอนใกล้ตอบจบ ยิ่งเสียเยอะ
+
+- `finalize()` ห่อด้วย shield แล้ว — งานบันทึกย้ายไปเป็น task ของตัวเองที่วิ่งต่อจนจบ
+  ส่วนผู้เรียกยังได้ `CancelledError` ตามสัญญาของ asyncio
+- ห่อไว้ **ในตัว `finalize` จุดเดียว** ไม่ใช่ไล่แก้ทีละจุดเรียก เพราะสามโปรโตคอล
+  (openai · anthropic · responses) ใช้ `_RequestContext` ร่วมกันและเรียกรวม 12 จุด
+- เก็บ strong reference ไว้ใน `_PENDING` — asyncio ถือ task แบบ weak reference
+  ไม่มีใครถือไว้ = GC เก็บทิ้งกลางคันได้ แล้วกลับไปเสียเงินเหมือนเดิมโดยเทสยังเขียว
+- backlog มีเพดาน 2048 ตัว · เต็มแล้วทิ้งพร้อม log error ดีกว่าให้ gateway ตายทั้งตัว
+- drain ตอนปิดแอป (ก่อน `state.stop()`) ไม่งั้น request รอบสุดท้ายก่อนดีพลอยหายไป
+- **`finalize` กันเรียกซ้ำแล้วจริง** — docstring เขียนว่า "exactly once" มาตลอดแต่ไม่เคย
+  มีอะไรบังคับ · พอมี shield การเรียกซ้ำจะกลายเป็นการคิดเงินซ้ำ ไม่ใช่แค่ log ซ้ำ
+
+678 tests (+3) · ruff clean
+
+---
+
 ## 1.5.0 — 2026-09-20
 
 Two bugs that were invisible on the day they happened, one lint gate brought back from the dead,
