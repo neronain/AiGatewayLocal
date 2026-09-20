@@ -4,7 +4,7 @@ One line per change, in the words of the commit that made it. Newest first.
 Version badge and `pyproject.toml` are the source of truth for the release number; entries below are
 grouped by the day they landed on `main`.
 
-## 1.6.0 — 2026-09-20
+## 1.6.1 — 2026-09-20
 
 ### ปิดช่องโหว่รายได้: ตัดการเชื่อมต่อ = ใช้ฟรี
 
