@@ -496,6 +496,11 @@ class _RequestContext:
             ttft_ms=ttft_ms,
             output_tokens=usage.output_tokens,
         )
+        # export ด้วย ไม่ใช่เก็บไว้ดูย้อนหลังใน UsageLog อย่างเดียว (ดู main.TTFT)
+        if ttft_ms is not None:
+            from app.main import TTFT
+
+            TTFT.labels(self.model.alias).observe(ttft_ms / 1000.0)
         await self.state.quota.record(
             self.principal.user_id,
             self.limits_window,

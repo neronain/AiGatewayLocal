@@ -40,6 +40,15 @@ LATENCY = Histogram(
     buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300),
 )
 IN_FLIGHT = Gauge("litegate_requests_in_flight", "Requests currently being served")
+# TTFT = ตัวชี้วัดหลักของ gateway ที่เสิร์ฟ streaming — ผู้ใช้รู้สึกกับ "กี่วินาทีกว่าตัวอักษร
+# แรกจะมา" มากกว่าเวลารวมทั้งคำตอบ · เดิมวัดไว้แล้วเขียนลง UsageLog แต่ **ไม่เคย export**
+# จึงดูย้อนหลังได้ทีละแถวใน DB เท่านั้น ตั้ง alert หรือดู percentile ไม่ได้เลย
+TTFT = Histogram(
+    "litegate_time_to_first_token_seconds",
+    "Time from request arrival to the first token of the response",
+    ["model"],
+    buckets=(0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5, 8, 15, 30, 60),
+)
 ERRORS = Counter("litegate_errors_total", "Gateway errors by code", ["code"])
 
 # Readiness as numbers, not just as a status code. `up` catches a process that
@@ -262,16 +271,50 @@ def create_app() -> FastAPI:
         request.state.request_id = request_id
         started = time.perf_counter()
         IN_FLIGHT.inc()
+        settled = False
+
+        def settle(response, status: str) -> None:
+            """นับจบหนึ่งคำขอ — ครั้งเดียวเสมอ ไม่ว่าจบแบบไหน"""
+            nonlocal settled
+            if settled:
+                return
+            settled = True
+            IN_FLIGHT.dec()
+            path = request.scope.get("route").path if request.scope.get("route") else "unmatched"
+            model = response.headers.get("x-litegate-model", "-") if response else "-"
+            REQUESTS.labels(path, request.method, status, model).inc()
+            LATENCY.labels(path, model).observe(time.perf_counter() - started)
+
         try:
             response = await call_next(request)
-        finally:
-            IN_FLIGHT.dec()
-        duration = time.perf_counter() - started
+        except BaseException:
+            settle(None, "500")
+            raise
 
-        path = request.scope.get("route").path if request.scope.get("route") else "unmatched"
-        model = response.headers.get("x-litegate-model", "-")
-        REQUESTS.labels(path, request.method, str(response.status_code), model).inc()
-        LATENCY.labels(path, model).observe(duration)
+        # `call_next` คืนค่าเมื่อ **header พร้อม** ไม่ใช่เมื่อ body ไหลจบ
+        #
+        # เดิม dec() กับ observe() อยู่ตรงนี้ทั้งคู่ ผลคือสำหรับ streaming:
+        #   · requests_in_flight ลดค่าก่อน body เริ่มไหลด้วยซ้ำ → stream ที่กำลังวิ่งอยู่
+        #     **มองไม่เห็นเลยบน dashboard** ซึ่งตรงข้ามกับสิ่งที่ gauge นี้มีไว้ตอบ
+        #   · request_duration กลายเป็น time-to-first-header ไม่ใช่เวลาที่คำขอใช้จริง
+        #     stream 3 นาทีถูกบันทึกเป็น 40 มิลลิวินาที
+        # ทั้ง gateway นี้มีไว้เสิร์ฟ streaming เป็นหลัก ตัวเลขสองตัวนี้จึงผิดแทบทุกแถว
+        #
+        # ห่อ body_iterator ให้ไปนับจบตอนที่ body ไหลหมดจริง ๆ แทน
+        body_iterator = getattr(response, "body_iterator", None)
+        if body_iterator is None:
+            settle(response, str(response.status_code))
+        else:
+            async def counted_body():
+                try:
+                    async for chunk in body_iterator:
+                        yield chunk
+                finally:
+                    # รวมกรณี client หลุดกลางทาง — ถ้าไม่นับตรงนี้ gauge จะค้างสูงถาวร
+                    settle(response, str(response.status_code))
+
+            response.body_iterator = counted_body()
+
         response.headers["x-request-id"] = request_id
         # ลายเซ็นติดไปกับ *ทุก* response — ที่เดียวจบ ไม่ต้องไล่แก้ทุก endpoint
         # และถอดออกทีเดียวไม่ได้โดยที่ไม่มีใครสังเกต เพราะ client ที่ log header

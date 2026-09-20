@@ -27,7 +27,29 @@ coding agent ที่ยกเลิก request เมื่อผู้ใช�
 - **`finalize` กันเรียกซ้ำแล้วจริง** — docstring เขียนว่า "exactly once" มาตลอดแต่ไม่เคย
   มีอะไรบังคับ · พอมี shield การเรียกซ้ำจะกลายเป็นการคิดเงินซ้ำ ไม่ใช่แค่ log ซ้ำ
 
-678 tests (+3) · ruff clean
+### metrics ที่เคยโกหก
+
+gateway นี้เสิร์ฟ streaming เป็นหลัก แต่ `call_next` ของ Starlette คืนค่าเมื่อ **header
+พร้อม** ไม่ใช่เมื่อ body ไหลจบ · ตัวเลขที่นับตรงนั้นจึงผิดแทบทุกแถว และผิดแบบที่ดูเผิน ๆ
+เหมือนใช้ได้ ซึ่งแย่กว่าไม่มีตัวเลขเลย
+
+- **`requests_in_flight` ลดค่าก่อน body เริ่มไหลด้วยซ้ำ** → stream ที่กำลังวิ่งอยู่
+  มองไม่เห็นเลยบน dashboard ซึ่งตรงข้ามกับสิ่งที่ gauge นี้มีไว้ตอบ
+- **`request_duration` เป็น time-to-first-header** → stream 3 นาทีถูกบันทึกเป็น 40 ms
+- ห่อ `body_iterator` ให้ทั้งคู่ไปนับจบตอน body ไหลหมดจริง · รวมกรณี client หลุดกลางทาง
+  ซึ่งถ้าไม่นับ gauge จะค้างสูงถาวรจนกว่าจะรีสตาร์ต
+- **TTFT export แล้ว** (`litegate_time_to_first_token_seconds`) — เดิมวัดไว้และเขียนลง
+  UsageLog แต่ไม่เคย export จึงดูย้อนหลังได้ทีละแถวใน DB เท่านั้น ตั้ง alert หรือดู
+  percentile ไม่ได้เลย ทั้งที่เป็นตัวชี้วัดหลักของ gateway ที่เสิร์ฟ streaming
+
+### hot path
+
+- **เลิกเขียน DB ทุกคำขอ** — `last_used_at` เคย commit ทุกคำขอ คือ write transaction
+  เต็มตัวต่อหนึ่งคำขอ เพียงเพื่อข้อมูลที่หน้าเว็บแสดงเป็น "ใช้ล่าสุด" · เขียนนาทีละครั้งพอ
+- **health probe เลิกเปิด connection ใหม่ทุกรอบ** — เดิมสร้าง `AsyncClient` ใหม่ทุก probe
+  ทุก endpoint ทุก 15 วินาที คูณจำนวน worker · ใช้ client ตัวเดียวตลอดอายุ router
+
+684 tests (+9) · ruff clean
 
 ---
 
