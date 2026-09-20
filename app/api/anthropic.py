@@ -20,10 +20,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.openai import _read_json, _RequestContext, _resolve_model
+from app.core import jsonio
 from app.core.auth import Principal, assert_model_permitted, authenticate
 from app.core.capability import (
     upstream_model_for,
@@ -32,6 +33,7 @@ from app.core.capability import (
     validate_protocol,
 )
 from app.core.errors import ErrorCode, GatewayError
+from app.core.jsonio import FastJSONResponse
 from app.core.multimodal import profile_anthropic_request
 from app.core.routing import RETRYABLE_ERRORS, is_retryable_status
 from app.core.rules import fallback_models, resolve_route
@@ -200,7 +202,7 @@ class _Attempt:
 BuildAttempt = Callable[[Endpoint], _Attempt]
 
 
-async def _complete_messages(build: BuildAttempt, ctx: _RequestContext) -> JSONResponse:
+async def _complete_messages(build: BuildAttempt, ctx: _RequestContext) -> FastJSONResponse:
     state, alias = ctx.state, ctx.requested_alias
     while True:
         endpoint = ctx.endpoint
@@ -246,7 +248,8 @@ async def _complete_messages(build: BuildAttempt, ctx: _RequestContext) -> JSONR
         break
 
     try:
-        data = response.json()
+        # ไม่ใช้ response.json() เพราะมันเรียก json ของ stdlib ตายตัว · เรามีไบต์อยู่แล้ว
+        data = jsonio.loads(response.content)
     except json.JSONDecodeError as exc:
         raise GatewayError(
             ErrorCode.UPSTREAM_ERROR, "The model server returned a malformed response."
@@ -269,7 +272,7 @@ async def _complete_messages(build: BuildAttempt, ctx: _RequestContext) -> JSONR
     }
     await ctx.finalize(usage)
 
-    return JSONResponse(
+    return FastJSONResponse(
         content=data,
         headers={
             "x-request-id": ctx.request_id,

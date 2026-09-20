@@ -151,6 +151,7 @@ async def me_usage(
 
     from sqlalchemy import func, select
 
+    from app.db.dialect import utc_date
     from app.db.models import UsageLog
 
     await state.usage.flush()
@@ -160,14 +161,14 @@ async def me_usage(
     daily = (
         await session.execute(
             select(
-                func.date(UsageLog.ts),
+                utc_date(UsageLog.ts),
                 func.count(UsageLog.id),
                 func.sum(UsageLog.text_input_tokens + UsageLog.visual_input_tokens),
                 func.sum(UsageLog.output_tokens),
             )
             .where(mine, UsageLog.ts >= since)
-            .group_by(func.date(UsageLog.ts))
-            .order_by(func.date(UsageLog.ts))
+            .group_by(utc_date(UsageLog.ts))
+            .order_by(utc_date(UsageLog.ts))
         )
     ).all()
 

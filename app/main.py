@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import Counter, Gauge, Histogram
 from sqlalchemy import or_, select, update
@@ -22,6 +22,7 @@ from app.api import admin, anthropic, assistant, auth, catalog, health, openai, 
 from app.config import get_settings
 from app.core.auth import generate_api_key
 from app.core.errors import ErrorCode, GatewayError
+from app.core.jsonio import FastJSONResponse
 from app.db.models import ApiKey, User
 from app.db.session import dispose_db, init_db, session_scope
 from app.state import build_state
@@ -253,6 +254,9 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         docs_url="/docs",
         openapi_url="/openapi.json",
+        # ทุก endpoint ที่ `return dict` ใช้ตัวนี้ · เข้ารหัสด้วย orjson เมื่อมี
+        # ได้ไบต์ชุดเดียวกับของ Starlette เป๊ะ ต่างแค่ความเร็ว — ดู app/core/jsonio.py
+        default_response_class=FastJSONResponse,
     )
 
     if settings.cors_origin_list:
@@ -339,7 +343,7 @@ def create_app() -> FastAPI:
             exc.code,
             exc.message,
         )
-        return JSONResponse(status_code=exc.http_status, content=body, headers=headers)
+        return FastJSONResponse(status_code=exc.http_status, content=body, headers=headers)
 
     @app.exception_handler(RequestValidationError)
     async def validation_handler(request: Request, exc: RequestValidationError):
@@ -349,7 +353,7 @@ def create_app() -> FastAPI:
             "Request validation failed.",
             details={"errors": exc.errors()[:10]},
         )
-        return JSONResponse(
+        return FastJSONResponse(
             status_code=400,
             content=error.to_openai(getattr(request.state, "request_id", None)),
         )
@@ -363,7 +367,7 @@ def create_app() -> FastAPI:
             ErrorCode.INTERNAL_ERROR,
             "An internal error occurred. Quote the request id when reporting it.",
         )
-        return JSONResponse(status_code=500, content=error.to_openai(request_id))
+        return FastJSONResponse(status_code=500, content=error.to_openai(request_id))
 
     app.include_router(auth.router)
     app.include_router(health.router)

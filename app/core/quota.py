@@ -25,7 +25,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from prometheus_client import Gauge
-from sqlalchemy import select
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ErrorCode, GatewayError
@@ -176,30 +177,97 @@ class DatabaseCounterStore(CounterStore):
         )
 
     async def increment(self, key: str, window: str, delta: Consumption) -> None:
+        """บวกเข้าไปในตัวนับของ (subject, window) นี้ — ให้ฐานข้อมูลเป็นคนบวก
+
+        เดิมเป็น read-modify-write ในภาษา Python: SELECT แถวออกมา, `+=` ในหน่วยความจำ,
+        แล้ว UPDATE ด้วยยอดรวมใหม่ · สอง worker ที่อ่านแถวเดียวกันในจังหวะเดียวกันจึงต่าง
+        เขียนยอดของตัวเองทับกัน และ **หนึ่งในสองการบวกหายไป** — เสมอในทางที่เป็นคุณกับ
+        ผู้ใช้ และยิ่งคนใช้พร้อมกันเยอะก็ยิ่งหายเยอะ คือหายมากที่สุดตอนที่โควตาเป็นสิ่งที่
+        เรากำลังพึ่งพาอยู่พอดี
+
+        บน SQLite อาการเบากว่าเพราะ SQLite ให้เขียนได้ทีละคนอยู่แล้ว (และ WAL +
+        busy_timeout ทำให้คนที่มาทีหลังรอแทนที่จะแพ้) — แต่ช่วงอ่านของอีกฝั่งเกิดไป
+        ก่อนหน้านั้นแล้ว การบวกก็ยังหายอยู่ดี · **บน Postgres ที่รับการเขียนพร้อมกัน
+        ได้จริง อาการนี้หนักขึ้นตามจำนวน instance** ซึ่งคือเหตุผลเดียวที่ลูกค้าย้ายมา
+
+        `UPDATE ... SET requests = requests + :n` ให้ฐานข้อมูลอ่านและบวกใต้ row lock
+        เดียวกัน การบวกจึงหายไม่ได้บนทั้งสอง dialect · เขียนด้วย Core update() ล้วน
+        ไม่มีไวยากรณ์เฉพาะ dialect (ไม่ใช้ INSERT .. ON CONFLICT ซึ่ง SQLite เก่า
+        ไม่รองรับ และสะกดคนละแบบกับ Postgres)
+
+        Redis ยังเป็นทางที่แนะนำสำหรับ deployment หลาย worker อยู่เหมือนเดิม — อันนี้
+        แก้ให้ทางสำรองถูกต้อง ไม่ได้มาแทนที่
+        """
         start, end = window_bounds(window)
+
         async with self._session_factory() as session:
-            row = await self._fetch(session, key, start)
-            if row is None:
-                # Column defaults are applied at INSERT, so a freshly constructed
-                # row has None counters. Seed them explicitly or the += below
-                # raises and every increment is silently lost.
-                row = QuotaCounter(
+            if await self._add_to_existing(session, key, start, delta):
+                return
+
+        # ยังไม่มีแถวของหน้าต่างนี้ — สร้างพร้อมยอดของรอบนี้ไปเลย
+        async with self._session_factory() as session:
+            session.add(
+                QuotaCounter(
                     subject_key=key,
                     window_start=start,
                     window_end=end,
-                    requests=0,
-                    text_input_tokens=0,
-                    visual_input_tokens=0,
-                    output_tokens=0,
-                    images=0,
+                    requests=delta.requests,
+                    text_input_tokens=delta.text_input_tokens,
+                    visual_input_tokens=delta.visual_input_tokens,
+                    output_tokens=delta.output_tokens,
+                    images=delta.images,
                 )
-                session.add(row)
-            row.requests += delta.requests
-            row.text_input_tokens += delta.text_input_tokens
-            row.visual_input_tokens += delta.visual_input_tokens
-            row.output_tokens += delta.output_tokens
-            row.images += delta.images
+            )
+            try:
+                await session.commit()
+                return
+            except IntegrityError:
+                # อีก worker แทรกแถวเดียวกันเข้ามาระหว่าง UPDATE กับ INSERT ของเรา
+                # (uq_counter_window เป็นตัวจับ) — ไม่ใช่ข้อผิดพลาด แค่แพ้การแข่ง
+                await session.rollback()
+
+        async with self._session_factory() as session:
+            if not await self._add_to_existing(session, key, start, delta):
+                # ถึงตรงนี้แปลว่าแถวหายไปอีกรอบหลังเพิ่งถูกสร้าง — เป็นไปได้ทางเดียวคือ
+                # มีคน reset โควตาพอดี · บันทึกไว้ ไม่โยนต่อ: การนับพลาดหนึ่งครั้งไม่ควร
+                # ทำให้คำขอที่ตอบไปเรียบร้อยแล้วกลายเป็น error
+                log.error("โควตา: บวกตัวนับของ %s ไม่สำเร็จหลังลองใหม่", key)
+
+    @staticmethod
+    async def _add_to_existing(
+        session: AsyncSession, key: str, start: datetime, delta: Consumption
+    ) -> bool:
+        """บวกลงแถวที่มีอยู่ · False = ยังไม่มีแถวนั้น (ไม่ได้เขียนอะไรเลย)
+
+        coalesce ไว้เพราะแถวที่สร้างโดยเวอร์ชันก่อน 1.6 อาจมีตัวนับเป็น NULL และ
+        `NULL + 5` ใน SQL คือ NULL — ตัวนับจะถูกล้างเงียบ ๆ แทนที่จะเพิ่ม
+        """
+        result = await session.execute(
+            update(QuotaCounter)
+            .where(
+                QuotaCounter.subject_key == key,
+                QuotaCounter.window_start == start,
+            )
+            .values(
+                requests=func.coalesce(QuotaCounter.requests, 0) + delta.requests,
+                text_input_tokens=(
+                    func.coalesce(QuotaCounter.text_input_tokens, 0) + delta.text_input_tokens
+                ),
+                visual_input_tokens=(
+                    func.coalesce(QuotaCounter.visual_input_tokens, 0)
+                    + delta.visual_input_tokens
+                ),
+                output_tokens=(
+                    func.coalesce(QuotaCounter.output_tokens, 0) + delta.output_tokens
+                ),
+                images=func.coalesce(QuotaCounter.images, 0) + delta.images,
+            )
+        )
+        if result.rowcount:
             await session.commit()
+            return True
+        await session.rollback()
+        return False
 
     async def reset(self, key: str, window: str) -> None:
         start, _ = window_bounds(window)

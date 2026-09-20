@@ -27,10 +27,11 @@ tenant เป็น **prefix ของ key** ไม่ใช่ตัวกร�
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import time
 from typing import Any
+
+from app.core import jsonio
 
 log = logging.getLogger(__name__)
 
@@ -81,10 +82,10 @@ def build_key(principal, *, alias: str, upstream_model: str, protocol: str,
         return None
     material = {k: v for k, v in payload.items() if k not in _IGNORED_FIELDS}
     digest = hashlib.sha256(
-        json.dumps(
+        jsonio.canonical(
             {"alias": alias, "upstream": upstream_model, "protocol": protocol, "req": material},
-            sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str,
-        ).encode("utf-8")
+            default=str,
+        )
     ).hexdigest()
     return f"rc:{_tenant_prefix(principal)}:{digest}"
 
@@ -103,7 +104,7 @@ class ResponseCache:
                 raw = await self._redis.get(key)
                 if raw is None:
                     return None
-                return json.loads(raw)
+                return jsonio.loads(raw)
             entry = self._local.get(key)
             if entry is None:
                 return None
@@ -111,7 +112,7 @@ class ResponseCache:
             if expires <= time.monotonic():
                 self._local.pop(key, None)
                 return None
-            return json.loads(raw)
+            return jsonio.loads(raw)
         except Exception as exc:
             # แคชอ่านไม่ได้ = ถือว่า miss · ห้ามทำให้คำขอพังเพราะของที่มีไว้เร่งความเร็ว
             log.warning("อ่าน response cache ไม่ได้ (%s) — ถือเป็น miss", exc)
@@ -119,7 +120,7 @@ class ResponseCache:
 
     async def put(self, key: str, value: dict[str, Any]) -> None:
         try:
-            raw = json.dumps(value, ensure_ascii=False)
+            raw = jsonio.dumps(value)
             if self._redis is not None:
                 await self._redis.set(key, raw, ex=TTL_SECONDS)
                 return

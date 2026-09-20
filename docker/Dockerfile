@@ -17,9 +17,16 @@ RUN apt-get update \
 COPY pyproject.toml README.md ./
 COPY app ./app
 
+# อิมเมจลงของเสริมมาให้ทั้งสองตัว ต่างจาก `pip install litegate` เปล่า ๆ โดยตั้งใจ
+#
+# คนที่รันอิมเมจคือคนที่จะสลับ GW_DATABASE_URL ไปหา PostgreSQL แล้วรีสตาร์ต —
+# ถ้าไม่มี asyncpg ติดมาด้วย การสลับนั้นกลายเป็น "ต้อง build อิมเมจใหม่" ซึ่งไม่ใช่
+# สิ่งที่ใครคาดจากการแก้ตัวแปรสภาพแวดล้อมหนึ่งตัว · ทั้งคู่รวมกันโตขึ้นไม่กี่ MB
+#
+# dependency ของตัว *แพ็กเกจ* ยังเป็นของเสริมเหมือนเดิม — ดู pyproject.toml
 RUN python -m venv /opt/venv \
  && /opt/venv/bin/pip install --upgrade pip \
- && /opt/venv/bin/pip install .
+ && /opt/venv/bin/pip install ".[postgres,speed]"
 
 # ---------------------------------------------------------------------------
 # Runtime stage: no compiler, no source of the build tooling, non-root.

@@ -18,11 +18,11 @@ from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import auto as auto_mod
-from app.core import responsecache
+from app.core import jsonio, responsecache
 from app.core import usage as usage_mod
 from app.core.auth import (
     Principal,
@@ -38,6 +38,7 @@ from app.core.capability import (
     validate_protocol,
 )
 from app.core.errors import ErrorCode, GatewayError
+from app.core.jsonio import FastJSONResponse
 from app.core.multimodal import RequestProfile, profile_openai_request
 from app.core.quota import Consumption
 from app.core.routing import RETRYABLE_ERRORS, is_retryable_status
@@ -522,7 +523,7 @@ class _RequestContext:
 # ---------------------------------------------------------------------------
 # Non-streaming
 # ---------------------------------------------------------------------------
-async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> JSONResponse:
+async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> FastJSONResponse:
     """Ask a backend, and if that one is unwell, ask the next one.
 
     Nothing has reached the caller yet at this point, so a retry is invisible to
@@ -555,7 +556,7 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> JSONRespo
                 # **ต้องหักโควตาเหมือนไม่ได้แคช** ไม่งั้นถามซ้ำได้ฟรีไม่จำกัด
                 # ซึ่งเป็นช่องโหว่รายได้แบบเดียวกับที่ปิดไปใน 1.6.0 แค่คนละทาง
                 await ctx.finalize(usage)
-                return JSONResponse(
+                return FastJSONResponse(
                     content=data,
                     headers={
                         "x-request-id": ctx.request_id,
@@ -607,7 +608,8 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> JSONRespo
         break
 
     try:
-        data = response.json()
+        # ไม่ใช้ response.json() เพราะมันเรียก json ของ stdlib ตายตัว · เรามีไบต์อยู่แล้ว
+        data = jsonio.loads(response.content)
     except json.JSONDecodeError as exc:
         raise GatewayError(
             ErrorCode.UPSTREAM_ERROR, "The model server returned a malformed response."
@@ -623,7 +625,7 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> JSONRespo
     if cache is not None and cache_key is not None:
         await cache.put(cache_key, {"data": data})
 
-    return JSONResponse(
+    return FastJSONResponse(
         content=data,
         headers={
             "x-request-id": ctx.request_id,
@@ -707,7 +709,7 @@ async def _stream_chat(build: BuildRequest, ctx: _RequestContext) -> StreamingRe
                                 )
                                 status = "error"
                                 error_code, http_status = error.code, error.http_status
-                                yield format_sse(json.dumps(error.to_openai(ctx.request_id)))
+                                yield format_sse(jsonio.dumpb(error.to_openai(ctx.request_id)))
                                 yield format_sse(DONE)
                                 return
                         else:
@@ -731,7 +733,7 @@ async def _stream_chat(build: BuildRequest, ctx: _RequestContext) -> StreamingRe
 
                                 chunk["model"] = alias
                                 emitted = True
-                                yield format_sse(json.dumps(chunk, ensure_ascii=False))
+                                yield format_sse(jsonio.dumpb(chunk))
 
                             yield format_sse(DONE)
                             return
@@ -742,7 +744,7 @@ async def _stream_chat(build: BuildRequest, ctx: _RequestContext) -> StreamingRe
                         retry = ctx.another_endpoint()
                     if retry is None:
                         status, error_code, http_status = "error", exc.code, exc.http_status
-                        yield format_sse(json.dumps(exc.to_openai(ctx.request_id)))
+                        yield format_sse(jsonio.dumpb(exc.to_openai(ctx.request_id)))
                         yield format_sse(DONE)
                         return
                 except Exception as exc:  # client disconnect, backend reset, ...

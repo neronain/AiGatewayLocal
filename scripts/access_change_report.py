@@ -20,6 +20,7 @@ a model this morning and cannot this afternoon, without having done anything.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import sys
@@ -42,8 +43,29 @@ from app.db.models import ApiKey, Membership, ModelRecord, User, Workspace, Work
 
 
 def sync_url(url: str) -> str:
-    """The app talks async; a report has no reason to."""
-    return url.replace("+aiosqlite", "").replace("+asyncpg", "")
+    """The app talks async; a report has no reason to.
+
+    SQLite ตัด "+aiosqlite" ออกแล้วได้ไดรเวอร์ในตัวของ Python เลย · Postgres ไม่ได้
+    โชคดีแบบนั้น: asyncpg เป็นไดรเวอร์ async อย่างเดียว ใช้กับ create_engine ไม่ได้
+    และตัด "+asyncpg" เฉย ๆ จะได้ URL ที่ SQLAlchemy ไปหา psycopg2 ซึ่งเกตเวย์ไม่ได้ลง
+    ข้อความที่ได้คือ ModuleNotFoundError ดิบ ๆ ที่ไม่บอกว่าต้องทำอะไรต่อ
+
+    เลือกไดรเวอร์ sync ตัวที่ *มีอยู่จริง* บนเครื่องนี้ แล้วถ้าไม่มีสักตัวก็บอกวิธีลง
+    """
+    if "sqlite" in url:
+        return url.replace("+aiosqlite", "")
+    if "+asyncpg" in url or url.startswith(("postgresql://", "postgres://")):
+        base = url.replace("+asyncpg", "")
+        for driver in ("psycopg", "psycopg2"):
+            if importlib.util.find_spec(driver) is not None:
+                scheme, _, rest = base.partition("://")
+                return f"{scheme.split('+')[0]}+{driver}://{rest}"
+        sys.exit(
+            "รายงานนี้อ่านฐานข้อมูลแบบ sync แต่เครื่องนี้ไม่มีไดรเวอร์ Postgres แบบ sync\n"
+            "เกตเวย์ใช้ asyncpg ซึ่งใช้กับสคริปต์นี้ไม่ได้\n"
+            "วิธีแก้:  pip install psycopg[binary]"
+        )
+    return url
 
 
 def load(engine):

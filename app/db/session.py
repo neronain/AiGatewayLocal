@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.config import get_settings
+from app.db.dialect import is_postgresql, is_sqlite
 from app.db.models import Base
 
 log = logging.getLogger(__name__)
@@ -27,10 +28,39 @@ _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 
 
 def _ensure_sqlite_dir(url: str) -> None:
-    if url.startswith("sqlite"):
+    if is_sqlite(url):
         path = url.split("///")[-1]
         if path and path != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
+
+
+# Postgres คนละเรื่องกับไฟล์ในเครื่อง: connection วิ่งข้ามเน็ต และมีของคั่นกลางที่ตัด
+# connection ที่เงียบนานได้ (pgbouncer, NAT, firewall ของโรงพยาบาล/มหาวิทยาลัย)
+#
+# pool_pre_ping จึงคุ้มที่นี่ทั้งที่ไม่คุ้มบน SQLite — ราคาคือ round trip เดียวตอน
+# checkout แลกกับการไม่โยน "connection was closed" ใส่หน้าผู้ใช้หลังกลางคืนที่เงียบ
+#
+# pool_recycle สั้นกว่า idle timeout ที่พบบ่อยของ pgbouncer/HAProxy (ปกติ 600 วินาที)
+# เพื่อให้เราเป็นฝ่ายทิ้ง connection เองก่อนที่อีกฝั่งจะทิ้งให้
+POSTGRES_POOL_SIZE = 20
+POSTGRES_MAX_OVERFLOW = 10
+POSTGRES_POOL_RECYCLE_SECONDS = 300
+
+
+class DatabaseDriverMissing(RuntimeError):
+    """URL ขอไดรเวอร์ที่ยังไม่ได้ติดตั้ง — บอกวิธีแก้ ไม่ใช่แค่ ImportError ดิบ ๆ"""
+
+
+def _driver_hint(url: str, exc: BaseException) -> DatabaseDriverMissing:
+    if is_postgresql(url):
+        how = "pip install 'litegate[postgres]'  (หรือ: pip install asyncpg)"
+    else:
+        how = "ตรวจชื่อไดรเวอร์ใน GW_DATABASE_URL"
+    return DatabaseDriverMissing(
+        f"เปิดฐานข้อมูลไม่ได้เพราะไดรเวอร์ไม่ได้ถูกติดตั้ง ({exc}).\n"
+        f"GW_DATABASE_URL = {url.split('@')[-1]}\n"
+        f"วิธีแก้: {how}"
+    )
 
 
 # SQLite ในโหมดปริยาย (journal_mode=delete) ล็อกทั้งไฟล์ตอนเขียน · เกตเวย์รัน
@@ -68,8 +98,8 @@ def get_engine() -> AsyncEngine:
         settings = get_settings()
         _ensure_sqlite_dir(settings.database_url)
         kwargs: dict = {"echo": False, "future": True}
-        is_sqlite = settings.database_url.startswith("sqlite")
-        if is_sqlite:
+        sqlite = is_sqlite(settings.database_url)
+        if sqlite:
             # ให้ไดรเวอร์รอล็อกด้วย ไม่ใช่แค่ตัว SQLite เอง
             kwargs["connect_args"] = {"timeout": SQLITE_BUSY_TIMEOUT_MS / 1000}
             # SQLite used to fall through with no pool settings at all, which is
@@ -91,9 +121,17 @@ def get_engine() -> AsyncEngine:
             # file has neither.
             kwargs.update(pool_size=SQLITE_POOL_SIZE, max_overflow=SQLITE_MAX_OVERFLOW)
         else:
-            kwargs.update(pool_size=20, max_overflow=10, pool_pre_ping=True)
-        _engine = create_async_engine(settings.database_url, **kwargs)
-        if is_sqlite:
+            kwargs.update(
+                pool_size=POSTGRES_POOL_SIZE,
+                max_overflow=POSTGRES_MAX_OVERFLOW,
+                pool_pre_ping=True,
+                pool_recycle=POSTGRES_POOL_RECYCLE_SECONDS,
+            )
+        try:
+            _engine = create_async_engine(settings.database_url, **kwargs)
+        except (ImportError, ModuleNotFoundError) as exc:
+            raise _driver_hint(settings.database_url, exc) from exc
+        if sqlite:
             _apply_sqlite_pragmas(_engine)
     return _engine
 
@@ -196,7 +234,6 @@ async def init_db(attempts: int = 5) -> None:
     ) from last_error
 
 
-
 async def _add_missing_columns(engine: AsyncEngine) -> None:
     """Add columns the code expects but the database does not have yet.
 
@@ -208,40 +245,85 @@ async def _add_missing_columns(engine: AsyncEngine) -> None:
     Additive only: this never drops, renames or retypes anything, so it cannot
     lose data. Anything beyond adding a column is a real migration and belongs
     in a reviewed script.
-    """
-    def _plan(sync_conn) -> list[str]:  # noqa: ANN001
-        inspector = inspect(sync_conn)
-        existing_tables = set(inspector.get_table_names())
-        statements: list[str] = []
-        for table in Base.metadata.sorted_tables:
-            if table.name not in existing_tables:
-                continue
-            present = {c["name"] for c in inspector.get_columns(table.name)}
-            for column in table.columns:
-                if column.name in present:
-                    continue
-                if not column.nullable and column.default is None:
-                    log.error(
-                        "cannot add required column %s.%s automatically - "
-                        "it needs a migration with a backfill",
-                        table.name, column.name,
-                    )
-                    continue
-                ddl = f"ALTER TABLE {table.name} ADD COLUMN {column.name} "
-                ddl += column.type.compile(sync_conn.dialect)
-                default = getattr(column.default, "arg", None)
-                if default is not None and not callable(default):
-                    literal = f"'{default}'" if isinstance(default, str) else int(default) \
-                        if isinstance(default, bool) else default
-                    ddl += f" DEFAULT {literal}"
-                statements.append(ddl)
-        return statements
 
+    DDL ตรงนี้เคยเขียนด้วยการต่อสตริงเองทั้งหมด ซึ่งใช้ได้เฉพาะบน SQLite:
+
+      * ชื่อตาราง/คอลัมน์ไม่ได้ถูก quote — SQLite ปล่อยผ่านเกือบทุกชื่อ แต่ Postgres
+        พับชื่อที่ไม่ quote เป็นตัวพิมพ์เล็กและปฏิเสธคำสงวน
+      * ค่า default ของ Boolean ถูก render เป็น 0/1 — SQLite ไม่มีชนิด boolean จริง
+        จึงรับได้ แต่ Postgres ตอบ `column ... is of type boolean but default
+        expression is of type integer` แล้ว **การอัปเกรดสคีมาล้มทั้งก้อน**
+        (เช่น `users.must_change_password` ที่ default=False)
+
+    ทั้งสองข้อแก้ด้วยการให้ SQLAlchemy เป็นคนเขียน: identifier_preparer รู้กติกาการ
+    quote ของแต่ละ dialect และ literal_processor ของชนิดคอลัมน์รู้ว่า dialect นี้
+    เขียนค่าคงที่อย่างไร (true/false บน Postgres, 1/0 บน SQLite)
+    """
     async with engine.begin() as conn:
-        statements = await conn.run_sync(_plan)
+        statements = await conn.run_sync(plan_missing_columns)
         for statement in statements:
             log.warning("schema upgrade: %s", statement)
             await conn.execute(text(statement))
+
+
+def plan_missing_columns(sync_conn) -> list[str]:  # noqa: ANN001
+    """DDL ที่ต้องรันเพื่อให้ฐานข้อมูลนี้มีคอลัมน์ครบตามที่โค้ดคาด · ไม่รันอะไรเลย
+
+    แยกออกมาเป็นฟังก์ชันระดับโมดูลเพื่อให้เทสเรียกได้ตรง ๆ ด้วย dialect ไหนก็ได้ —
+    ข้อผิดพลาดที่เคยหลุดไปคือ DDL ที่ถูกบน SQLite แต่ผิดบน Postgres ซึ่งเป็นสิ่งที่
+    ตรวจได้ตั้งแต่ตอน compile โดยไม่ต้องมีเซิร์ฟเวอร์
+    """
+    inspector = inspect(sync_conn)
+    dialect = sync_conn.dialect
+    preparer = dialect.identifier_preparer
+    existing_tables = set(inspector.get_table_names())
+    statements: list[str] = []
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue
+        present = {c["name"] for c in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name in present:
+                continue
+            if not column.nullable and column.default is None:
+                log.error(
+                    "cannot add required column %s.%s automatically - "
+                    "it needs a migration with a backfill",
+                    table.name, column.name,
+                )
+                continue
+            ddl = (
+                f"ALTER TABLE {preparer.format_table(table)} ADD COLUMN "
+                f"{preparer.format_column(column)} "
+                f"{column.type.compile(dialect)}"
+            )
+            literal = _default_literal(column, dialect)
+            if literal is not None:
+                ddl += f" DEFAULT {literal}"
+            statements.append(ddl)
+    return statements
+
+
+def _default_literal(column, dialect) -> str | None:  # noqa: ANN001
+    """ค่า DEFAULT ของคอลัมน์นี้ในภาษาของ dialect นี้ · None = ไม่ต้องใส่ DEFAULT
+
+    default ที่เป็น callable (uuid, utcnow, dict) ข้ามเสมอ — ค่ามันเกิดตอน INSERT
+    ฝั่ง Python ไม่ใช่ตอน DDL และ "เวลาที่รัน migration" ไม่ใช่ค่าที่ถูกสำหรับแถวเก่า
+    """
+    default = getattr(column.default, "arg", None)
+    if default is None or callable(default):
+        return None
+    try:
+        return column.type.literal_processor(dialect)(default)
+    except (NotImplementedError, TypeError, ValueError):
+        # ชนิดที่เขียนเป็นค่าคงที่ไม่ได้ (JSON บางตัว) — เติมคอลัมน์แบบไม่มี DEFAULT
+        # แถวเก่าจึงได้ NULL ซึ่งเป็นสิ่งเดียวกับที่โค้ดเดิมทำกับ default ที่เป็น callable
+        log.warning(
+            "no literal DEFAULT for %s.%s on %s - column added without one",
+            column.table.name, column.name, dialect.name,
+        )
+        return None
+
 
 async def _schema_present(engine: AsyncEngine) -> bool:
     """True when every expected table exists."""

@@ -1,6 +1,6 @@
 [project]
 name = "litegate"
-version = "1.10.0"
+version = "1.11.0"
 description = "LiteGate - capability-aware, multimodal AI gateway for teams running their own model servers"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,8 +14,9 @@ dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.5",
     "sqlalchemy[asyncio]>=2.0.35",
+    # SQLite เป็นค่าเริ่มต้นและเป็น dependency หลัก — ลูกค้าเครื่องเดียวต้องลงแล้วใช้ได้เลย
+    # โดยไม่ต้องมีเซิร์ฟเวอร์ฐานข้อมูล · Postgres อยู่ใน extra ชื่อ [postgres]
     "aiosqlite>=0.20",
-    "asyncpg>=0.29",
     "greenlet>=3.0",
     "pyyaml>=6.0",
     "redis>=5.1",
@@ -28,12 +29,28 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# ── ของเสริม ทั้งสองกลุ่มเลือกได้อิสระ ──────────────────────────────────────────
+#
+# เกตเวย์ต้องลงแล้วใช้งานได้ครบโดยไม่ต้องลงอะไรเพิ่ม · ลูกค้าที่รันใน air-gapped หรือ
+# ที่นโยบายองค์กรให้ลงเฉพาะของที่ผ่านการตรวจ จะได้ไม่ต้องดันของที่ตัวเองไม่ได้ใช้เข้าไป
+
+# ฐานข้อมูล PostgreSQL — จำเป็นเมื่อตั้ง GW_DATABASE_URL=postgresql+asyncpg://...
+# ไม่ลงก็รันได้ตามปกติบน SQLite · ดู docs/DEPLOYMENT.md §5
+postgres = ["asyncpg>=0.29"]
+
+# ตัวเข้ารหัส JSON ที่เร็วกว่า stdlib หลายเท่าสำหรับคำตอบก้อนใหญ่และสตรีม
+# ไม่ลง = ตกกลับไปใช้ json ของ stdlib เอง ผลลัพธ์เหมือนกันทุกประการ · ดู app/core/jsonio.py
+speed = ["orjson>=3.10"]
+
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "respx>=0.21",
     "ruff>=0.7",
     "mypy>=1.13",
+    # เทสต้องเห็นทั้งทางที่ลงของเสริมแล้วและทางที่ยังไม่ได้ลง
+    "asyncpg>=0.29",
+    "orjson>=3.10",
 ]
 
 [project.urls]

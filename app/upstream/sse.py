@@ -6,16 +6,24 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
+from app.core import jsonio
+
 DONE = "[DONE]"
 
 
-def format_sse(data: str, event: str | None = None) -> bytes:
-    prefix = f"event: {event}\n" if event else ""
-    return f"{prefix}data: {data}\n\n".encode()
+def format_sse(data: str | bytes, event: str | None = None) -> bytes:
+    """หนึ่ง SSE frame
+
+    รับ bytes ได้ด้วยเพราะ `jsonio.dumpb()` คืน bytes อยู่แล้ว · สตรีมหนึ่งคำตอบคือ
+    หลักพัน frame การเด้งผ่าน str กลับไปกลับมาคือการ decode/encode ทิ้งเปล่าหลักพันรอบ
+    """
+    prefix = f"event: {event}\n".encode() if event else b""
+    payload = data.encode("utf-8") if isinstance(data, str) else data
+    return prefix + b"data: " + payload + b"\n\n"
 
 
 def format_json_sse(payload: dict[str, Any], event: str | None = None) -> bytes:
-    return format_sse(json.dumps(payload, ensure_ascii=False), event)
+    return format_sse(jsonio.dumpb(payload), event)
 
 
 async def iter_sse_payloads(
@@ -51,7 +59,8 @@ def parse_chunk(data: str) -> dict[str, Any] | None:
     if data.strip() == DONE:
         return None
     try:
-        parsed = json.loads(data)
+        # orjson.JSONDecodeError สืบทอดจาก json.JSONDecodeError — except เดิมยังใช้ได้
+        parsed = jsonio.loads(data)
     except json.JSONDecodeError:
         return None
     return parsed if isinstance(parsed, dict) else None

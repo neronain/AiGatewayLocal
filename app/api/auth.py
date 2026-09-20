@@ -31,11 +31,11 @@ from app.core.passwords import (
     SESSION_COOKIE_INSECURE,
     SESSION_TTL_SECONDS,
     PasswordError,
-    hash_password,
+    hash_password_async,
     issue_session,
     read_session_cookie,
     session_cookie_name,
-    verify_password,
+    verify_password_async,
 )
 from app.db.models import ApiKey, User, utcnow
 from app.db.session import get_session
@@ -128,7 +128,7 @@ async def setup(
             "This instance is already set up. Sign in instead.",
         )
     try:
-        digest = hash_password(payload.password)
+        digest = await hash_password_async(payload.password)
     except PasswordError as exc:
         raise GatewayError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
 
@@ -160,7 +160,9 @@ async def login(
     user = result.scalar_one_or_none()
 
     # One message for every failure: no way to learn which usernames exist.
-    if user is None or not verify_password(payload.password, user.password_hash):
+    if user is None or not await verify_password_async(
+        payload.password, user.password_hash
+    ):
         raise GatewayError(ErrorCode.INVALID_API_KEY, "Incorrect username or password.")
     if user.status != "active":
         raise GatewayError(
@@ -210,11 +212,13 @@ async def change_password(
         raise GatewayError(ErrorCode.INVALID_REQUEST, "Account not found.")
 
     # Skipped only for an account that has never had one (invite flow).
-    if user.password_hash and not verify_password(payload.current_password, user.password_hash):
+    if user.password_hash and not await verify_password_async(
+        payload.current_password, user.password_hash
+    ):
         raise GatewayError(ErrorCode.INVALID_API_KEY, "Current password is incorrect.")
 
     try:
-        user.password_hash = hash_password(payload.new_password)
+        user.password_hash = await hash_password_async(payload.new_password)
     except PasswordError as exc:
         raise GatewayError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
 

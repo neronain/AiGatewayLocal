@@ -58,6 +58,28 @@ a way to overwrite one that already exists.
 
 The gateway does no inference — it is I/O bound. It needs **no GPU**.
 
+### Optional extras
+
+A plain install is complete: everything below is a trade, not a fix for
+something missing. Both are ordinary PyPI extras, so an air-gapped site that
+cannot add packages keeps working exactly as it does today.
+
+| Extra | Install | What it buys | What you give up by skipping it |
+|---|---|---|---|
+| `postgres` | `pip install 'litegate[postgres]'` | The `asyncpg` driver, required by a `postgresql+asyncpg://` `GW_DATABASE_URL` | Nothing, unless you are moving to PostgreSQL (§5) |
+| `speed` | `pip install 'litegate[speed]'` | `orjson`. JSON encoding is most of the CPU the gateway spends per request; measured ~25× faster on a 59 KB completion body and ~5× on a streaming chunk | Some CPU. Responses are **byte-for-byte identical** either way — the test suite asserts that in both modes |
+
+Both together:
+
+```bash
+pip install 'litegate[postgres,speed]'
+```
+
+`orjson` ships as a compiled wheel. On a platform with no wheel it will try to
+build; if that is not something you want on the host, leave it out — the gateway
+falls back to the standard library on its own and logs nothing, because nothing
+is wrong.
+
 **Model servers** must already be running and reachable from the gateway host, e.g.
 
 ```bash
@@ -693,21 +715,115 @@ curl -s -X POST $GW/v1/health/probe -H "Authorization: Bearer $ADMIN_KEY" | jq  
 
 ## 5. Moving from SQLite to PostgreSQL
 
-SQLite is the default for Path B and is adequate for a pilot. Switch when you
-have more than a few hundred active members, or more than one gateway instance.
+SQLite is the default and stays the default. A single-machine deployment needs
+no database server, and nothing about it is deprecated — most installs should
+never read this section.
+
+Switch when one of these is true:
+
+| Reason | Why SQLite cannot do it |
+|---|---|
+| More than one gateway **machine** | SQLite is a file. Two hosts cannot share one, and a network filesystem breaks its locking. |
+| You need **replication or PITR backups** | SQLite has neither. `.backup` is a full copy, taken at whatever moment you run it. |
+| More than a few hundred active members | One writer at a time. Under load this shows up as `database is locked`, not as gradual slowdown. |
+
+Running four uvicorn workers on **one** machine is not on that list — SQLite in
+WAL mode handles it, which is what the gateway already configures. Set
+`GW_REDIS_URL` for that case (§5f); it matters more than the database choice.
+
+### Installing the driver
+
+`asyncpg` is an **optional** dependency. It is deliberately not installed by
+default, so an air-gapped or single-machine customer never has to carry it:
+
+```bash
+pip install 'litegate[postgres]'        # or: pip install asyncpg
+```
+
+Start with a `postgresql+asyncpg://` URL and no driver and the gateway refuses
+to boot with a message naming that command — not a bare `ModuleNotFoundError`.
+
+### Setting it up
 
 ```bash
 sudo -u postgres createuser litegate --pwprompt
-sudo -u postgres createdb litegate --owner litegate
+sudo -u postgres createdb  litegate --owner litegate
 ```
 
 ```ini
 GW_DATABASE_URL=postgresql+asyncpg://litegate:PASSWORD@localhost:5432/litegate
 ```
 
-Restart. Tables are created automatically. **Existing SQLite data is not
-migrated** — export what you need first (`usage_logs` is the only table worth
-carrying over; users and keys should be re-issued).
+Restart. Tables are created automatically, exactly as on SQLite.
+
+### Moving the data across
+
+**Existing SQLite data is not migrated for you.** Decide per table:
+
+| Table | Carry over? |
+|---|---|
+| `usage_logs` | Yes, if you want history in the reports. It is the only large one. |
+| `quota_counters` | No. Counters rebuild themselves within one window. |
+| `users`, `api_keys` | Re-issue. Key material is hashed, so an export is only useful if you copy the rows verbatim — and rotating credentials during a database move is the better habit anyway. |
+| model registry | Nothing to do. It lives in `config/*.yaml`, not in the database. |
+
+A `usage_logs` copy, with the gateway **stopped on both ends**:
+
+```bash
+sqlite3 -header -csv data/gateway.db \
+  "SELECT * FROM usage_logs ORDER BY ts;" > usage_logs.csv
+
+psql "$GW_DATABASE_URL_PSQL" -c "\copy usage_logs FROM 'usage_logs.csv' WITH (FORMAT csv, HEADER true)"
+```
+
+`$GW_DATABASE_URL_PSQL` is the same URL with `+asyncpg` removed — `psql` speaks
+its own protocol and does not know about SQLAlchemy driver names.
+
+Rehearse it on a copy first, and check the row count matches before pointing
+production at it.
+
+### Things that behave differently, and what the gateway does about them
+
+These are the places where the two databases genuinely disagree. They are
+handled in the code; the list is here so that a reviewer can check the claim
+rather than take it on faith.
+
+| Difference | Where it shows up | What we do |
+|---|---|---|
+| `date(ts)` cuts the day in the **session's timezone** on PostgreSQL, but SQLite stores UTC and cuts on UTC | Daily usage charts (`/v1/usage/daily`, `/admin/usage/daily`) | `app/db/dialect.py::utc_date` forces UTC on both, so a report means the same thing everywhere |
+| PostgreSQL rejects `DEFAULT 0` on a `BOOLEAN` column; SQLite accepts it | The additive schema upgrade run at startup | Defaults are rendered by the dialect's own literal processor: `true`/`false` on PostgreSQL, `1`/`0` on SQLite |
+| `WINDOW` is a reserved word in PostgreSQL — `quota_policies.window` | Same schema upgrade | Identifiers are quoted by SQLAlchemy's identifier preparer, per dialect |
+| PostgreSQL really does accept concurrent writers, so a read-modify-write counter loses increments | `quota_counters` when Redis is not configured | The increment is now one `UPDATE … SET requests = requests + n` (§5f) |
+| Connections cross a network and can be closed by a pooler or firewall while idle | Every query | `pool_pre_ping` and a 300 s `pool_recycle` are enabled for PostgreSQL only |
+
+### Things to watch after the switch
+
+* **Timezone of the server does not matter** for reports (see the table above),
+  but it does matter for anything you query by hand. `SET TIME ZONE 'UTC';`
+  before running ad-hoc SQL, or your day boundaries will not match the console.
+* **`scripts/access_change_report.py` reads the database synchronously** and
+  therefore cannot use `asyncpg`. It picks up `psycopg` or `psycopg2` if either
+  is installed and tells you to install one if neither is:
+  `pip install 'psycopg[binary]'`.
+* **Behind pgbouncer**, use session pooling. Transaction pooling breaks
+  asyncpg's prepared-statement cache; if you must use it, the gateway needs
+  `statement_cache_size=0` passed through the URL query string.
+* **Back up before the first start**, not after. The startup schema upgrade
+  adds columns; it never drops or retypes anything, but "never" is easier to
+  believe with a dump on disk.
+
+### Testing against a real PostgreSQL
+
+The test suite does **not** require PostgreSQL. Most of the portability checks
+compare compiled SQL and run on any machine. To also exercise a real server:
+
+```bash
+GW_TEST_POSTGRES_URL=postgresql+asyncpg://litegate:PASSWORD@localhost:5432/litegate_test \
+  .venv/bin/python -m pytest tests/test_postgres_support.py
+```
+
+Without that variable those tests skip with a reason. They never fail for the
+absence of a database. **Use a throwaway database — they drop every table.**
 
 ---
 
@@ -725,18 +841,19 @@ with `--workers 4`.
 ### Why it matters with four workers
 
 Without Redis, quota and per-minute rate-limit counters live in the
-`quota_counters` table. All four workers do share that table — the problem is
-not that each keeps its own copy — but the increment is a read-modify-write in
-the ORM (`SELECT`, add in Python, `UPDATE` with the new total), not an atomic
-`UPDATE … SET requests = requests + n`. Two workers that read the same row at
-the same moment both write their own total, and one of the two increments is
-lost. The error is always in the member's favour, and it grows with concurrency
-— which is to say it grows exactly when a quota is the thing you are relying on.
+`quota_counters` table. All four workers do share that table, and the increment
+is a single atomic `UPDATE … SET requests = requests + n` — so no worker can
+lose another's count. (It used to be a read-modify-write in the ORM: `SELECT`,
+add in Python, `UPDATE` with the new total. Two workers reading the same row at
+the same moment each wrote their own total and one increment vanished, always
+in the member's favour, and worse the busier it got. That is fixed.)
 
-On the default SQLite file this is also a contention problem: SQLite takes one
-writer at a time, so every increment from every worker queues behind the others,
-and under load that surfaces as `database is locked` rather than as a slow
-counter.
+What database counters still cost you is **contention**. On the default SQLite
+file, SQLite takes one writer at a time, so every increment from every worker
+queues behind the others; under load that surfaces as `database is locked`
+rather than as a slow counter. On PostgreSQL it is a round trip and a row lock
+per request instead of a file lock — better, but still a database write on the
+path of every completed request.
 
 Redis counts with `HINCRBY` — atomic, server-side, one hash per
 (subject, window) with a TTL that expires when the window does. Concurrent

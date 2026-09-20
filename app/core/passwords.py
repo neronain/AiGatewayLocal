@@ -13,6 +13,7 @@ randomness and do not need stretching.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -117,6 +118,37 @@ def verify_password(password: str, stored: str) -> bool:
     except (ValueError, TypeError):
         return False
     return hmac.compare_digest(derived, _unb64(digest_b64))
+
+
+# ── ฝั่ง async: scrypt ต้องไม่รันบน event loop ────────────────────────────────
+#
+# วัดบนเครื่องพัฒนา (Apple M-series, OpenSSL ของระบบ) ด้วยค่าที่ตั้งไว้ข้างบน:
+# **scrypt หนึ่งครั้ง = ~41 ms** และคอมเมนต์ข้างบนตั้งใจให้เป็น ~100 ms บนเซิร์ฟเวอร์เล็ก
+# ซึ่งเป็นค่าที่ *ถูกต้อง* สำหรับการ hash รหัสผ่าน — ไม่ใช่สิ่งที่ควรลดลง
+#
+# ปัญหาคือมันรันอยู่บน event loop เดียวกับสตรีมทุกเส้นใน worker นั้น · ใครสักคน
+# กดเข้าสู่ระบบในคอนโซล = ทุกสตรีมที่กำลังไหลอยู่หยุดนิ่ง 41-100 ms พร้อมกันหมด
+# ผู้ใช้เห็นเป็นคำตอบสะดุดเป็นช่วง ๆ โดยไม่มีอะไรใน log บอกว่าทำไม
+#
+# ย้ายเข้า thread แล้วได้ผลจริงเพราะ `hashlib.scrypt` **ปล่อย GIL** (เรียก OpenSSL)
+# — วัดแล้ว: 4 ครั้งเรียงกัน 158 ms · 4 ครั้งพร้อมกันใน thread 53 ms
+#
+# นี่คือเงื่อนไขที่ทำให้การย้ายคุ้ม และเป็นเหตุผลที่ของอย่างอื่นในเกตเวย์ไม่ถูกย้ายตาม:
+# งานที่ถือ GIL ไว้ (base64 decode, parse YAML) ย้ายไป thread แล้ว event loop ก็ยัง
+# ไม่ได้รัน ได้แต่ค่า overhead ของการสลับ thread เพิ่มมาเปล่า ๆ
+async def hash_password_async(password: str) -> str:
+    """เหมือน hash_password ทุกประการ แต่ไม่หยุด event loop"""
+    # ตรวจนโยบายก่อนแบบ inline — ราคาเท่ากับ len() และรหัสผ่านที่สั้นเกินจะได้ไม่ต้อง
+    # เสีย thread ไปหนึ่งตัวเพื่อไปโดนปฏิเสธข้างใน
+    check_password_policy(password)
+    return await asyncio.to_thread(hash_password, password)
+
+
+async def verify_password_async(password: str, stored: str) -> bool:
+    """เหมือน verify_password ทุกประการ แต่ไม่หยุด event loop"""
+    if not stored:
+        return False
+    return await asyncio.to_thread(verify_password, password, stored)
 
 
 # ---------------------------------------------------------------------------

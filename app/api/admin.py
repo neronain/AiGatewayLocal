@@ -35,6 +35,7 @@ from app.core.modeltest import (
 )
 from app.core.passwords import read_session_cookie
 from app.core.secrets import SecretStoreError
+from app.db.dialect import utc_date
 from app.db.models import (
     ASSISTANT_MODEL_KEY,
     AccessGroup,
@@ -3201,7 +3202,7 @@ async def usage_daily(
     start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
         days=days - 1
     )
-    day = func.date(UsageLog.ts)
+    day = utc_date(UsageLog.ts)
     stmt = (
         select(
             day,
