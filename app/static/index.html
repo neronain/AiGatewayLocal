@@ -107,18 +107,18 @@
   </section>
 
   <!-- ================= My account ================= -->
-  <section id="tab-account" class="stack" hidden>
-    <div data-fold-section="acct-quota">
+  <section id="tab-account" class="stack" hidden data-subtabs="account">
+    <div data-fold-section="acct-quota" data-subtab="quota" data-subtab-label="My quota">
       <h2><span class="hi" data-icon="quota" data-icon-size="15" aria-hidden="true"></span>My quota</h2>
       <div class="card"><div id="my-quota"></div></div>
     </div>
 
-    <div data-fold-section="acct-models">
+    <div data-fold-section="acct-models" data-subtab="models" data-subtab-label="Models I can use">
       <h2><span class="hi" data-icon="models" data-icon-size="15" aria-hidden="true"></span>Models I can use</h2>
       <div id="my-models"></div>
     </div>
 
-    <div data-fold-section="acct-keys">
+    <div data-fold-section="acct-keys" data-subtab="keys" data-subtab-label="My keys">
       <div class="bar" style="margin-bottom:12px">
         <h2 style="margin:0;flex:1"><span class="hi" data-icon="keys" data-icon-size="15" aria-hidden="true"></span>My API keys</h2>
         <span class="sub" id="key-count"></span>
@@ -132,7 +132,7 @@
       <div class="scroll"><table id="my-keys"></table></div>
     </div>
 
-    <div class="card">
+    <div class="card" data-subtab="password" data-subtab-label="Password">
       <h3>Change password</h3>
       <p class="hint">Changing it signs out every other session.</p>
       <div class="row" style="margin-top:12px">

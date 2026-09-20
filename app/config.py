@@ -28,7 +28,7 @@ LICENSE_NOTE = "MIT — attribution required"
 # แล้วลืมบรรทัดนี้ · ตัวที่จับได้คือ test_the_version_has_one_source ซึ่งเทียบสองค่านี้
 # ตรง ๆ — ถ้าจะย้ายไปอ่าน importlib.metadata ให้ย้ายตอนไม่ได้กำลังจะ release
 # เพราะ metadata หายเมื่อรันจาก source tree ที่ยังไม่ได้ pip install แล้วจะ boot ไม่ขึ้น
-VERSION = "1.9.0"
+VERSION = "1.9.1"
 
 
 class Settings(BaseSettings):
