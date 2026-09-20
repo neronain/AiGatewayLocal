@@ -63,6 +63,7 @@ class EndpointState:
 
 class Router:
     def __init__(self, registry: RegistryStore) -> None:
+        self._probe_client: httpx.AsyncClient | None = None
         self._registry = registry
         self._state = EndpointState()
         self._rr: dict[str, itertools.count] = {}
@@ -198,6 +199,14 @@ class Router:
 
     # -- active probing ----------------------------------------------------
     async def start_health_checks(self) -> None:
+        # client ตัวเดียวใช้ยาวตลอดอายุ router — เดิมสร้าง AsyncClient ใหม่ "ทุก probe
+        # ทุก endpoint ทุกรอบ" คือ TCP handshake (+ TLS ถ้า https) ใหม่หมดทุก 15 วินาที
+        # ต่อทุกปลายทาง · กับ 4 worker ยิ่งคูณสี่ · ไม่มีอะไรได้ประโยชน์จากการทิ้ง
+        # connection ทุกครั้ง เพราะปลายทางชุดเดิมถูกถามซ้ำตลอด
+        self._probe_client = httpx.AsyncClient(
+            timeout=self._registry.snapshot.gateway.health_check_timeout_seconds,
+            limits=httpx.Limits(max_keepalive_connections=32, max_connections=64),
+        )
         self._health_task = asyncio.create_task(self._health_loop(), name="health-check")
 
     async def stop_health_checks(self) -> None:
@@ -208,6 +217,9 @@ class Router:
             except asyncio.CancelledError:
                 pass
             self._health_task = None
+        if self._probe_client is not None:
+            await self._probe_client.aclose()
+            self._probe_client = None
 
     async def _health_loop(self) -> None:
         while True:
@@ -240,8 +252,14 @@ class Router:
     async def _probe(self, alias: str, endpoint: Endpoint, timeout: float) -> None:
         url = endpoint.normalized_base_url + endpoint.health_path
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.get(url)
+            client = self._probe_client
+            if client is None:
+                # probe_all() ถูกเรียกตรง ๆ ได้ (เทส · หน้า admin) โดยยังไม่ได้ start
+                # ทางนี้จึงต้องยังทำงานได้ แค่ไม่ได้ประโยชน์จาก pool
+                async with httpx.AsyncClient(timeout=timeout) as throwaway:
+                    response = await throwaway.get(url)
+            else:
+                response = await client.get(url, timeout=timeout)
             if response.status_code < 500:
                 self.report_success(alias, endpoint)
             else:

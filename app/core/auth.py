@@ -19,7 +19,7 @@ import hmac
 import logging
 import secrets
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import Depends, Request
 from sqlalchemy import select
@@ -40,6 +40,9 @@ from app.db.models import (
 from app.db.session import get_session
 
 log = logging.getLogger(__name__)
+
+# ถี่แค่ไหนถึงจะเขียน last_used_at ลง DB จริง — ดูเหตุผลในจุดที่ใช้
+LAST_USED_STAMP_INTERVAL = timedelta(seconds=60)
 
 KEY_PREFIX = "lg_sk_"
 
@@ -152,12 +155,22 @@ async def authenticate(
         )
 
     # Best-effort last-used stamp; never fail a request over telemetry.
-    try:
-        api_key.last_used_at = now
-        await session.commit()
-    except Exception:
-        await session.rollback()
-        log.warning("could not update last_used_at for key %s", api_key.id)
+    #
+    # ประทับเวลาแบบหยาบ ๆ พอ — เดิมเขียน + commit **ทุก request** ซึ่งเป็น write
+    # transaction เต็มตัวหนึ่งรายการต่อหนึ่งคำขอ เพียงเพื่อข้อมูลที่หน้าเว็บแสดงเป็น
+    # "ใช้ล่าสุด <วันเวลา>" · บน SQLite ที่ทุก write ต้องรอคิวกัน นี่คือคอขวดตรง ๆ
+    # และมันอยู่บน hot path ของทุกคำขอที่ผ่าน gateway
+    #
+    # ความละเอียดระดับนาทีเกินพอสำหรับสิ่งที่ค่านี้ถูกใช้ทำ · คีย์ที่ถูกยิงถี่ ๆ จึงเขียน
+    # จริงแค่นาทีละครั้ง ส่วนคีย์ที่นาน ๆ ใช้ทีก็ยังได้เวลาที่ตรงเหมือนเดิม
+    previous = _aware(api_key.last_used_at) if api_key.last_used_at else None
+    if previous is None or (now - previous) >= LAST_USED_STAMP_INTERVAL:
+        try:
+            api_key.last_used_at = now
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            log.warning("could not update last_used_at for key %s", api_key.id)
 
     return Principal(
         user_id=user.id,
