@@ -151,8 +151,8 @@
   </section>
 
   <!-- ================= Dashboard ================= -->
-  <section id="tab-dashboard" class="stack">
-    <div data-fold-section="dash-quota">
+  <section id="tab-dashboard" class="stack" data-subtabs="dashboard">
+    <div data-fold-section="dash-quota" data-subtab="quota" data-subtab-label="My quota">
       <h2><span class="hi" data-icon="quota" data-icon-size="15" aria-hidden="true"></span>My quota</h2>
       <div class="card"><div id="quota"></div></div>
     </div>
@@ -180,7 +180,7 @@
       </div>
     </div>
 
-    <div data-fold-section="dash-models">
+    <div data-fold-section="dash-models" data-subtab="models" data-subtab-label="Available models">
       <h2><span class="hi" data-icon="models" data-icon-size="15" aria-hidden="true"></span>Available AI models</h2>
       <div class="panel" id="auto-panel" hidden>
         <div class="panel-hd">
@@ -193,7 +193,7 @@
       </div>
       <div id="catalog"></div>
     </div>
-    <div data-fold-section="dash-health" id="health-wrap" hidden>
+    <div data-fold-section="dash-health" id="health-wrap" hidden data-subtab="health" data-subtab-label="Backend health">
       <h2><span class="hi" data-icon="health" data-icon-size="15" aria-hidden="true"></span>Backend health</h2>
       <div class="scroll"><table id="health"></table></div>
     </div>

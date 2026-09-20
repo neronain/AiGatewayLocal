@@ -173,6 +173,8 @@ function applyRole(role) {
     if (el.hasAttribute('data-staff')) el.hidden = !staff;
   }
   $('health-wrap').hidden = !admin;
+  // สิทธิ์เพิ่งรู้ตอนนี้ — สร้างเมนูย่อยใหม่ให้ตรงกับหมวดที่คนนี้เห็นได้จริง
+  if (typeof buildSubtabs === 'function') buildSubtabs();
   $('usage-wrap').hidden = !staff;
 }
 
@@ -857,13 +859,23 @@ function rememberSubtab(group, key) {
   } catch { /* โหมดส่วนตัว — ไม่จำข้ามรอบ แต่ยังใช้งานได้ */ }
 }
 
+// หมวดที่ "มีให้เลือก" — ไม่ใช่ทุกหมวดที่ทุกคนเห็นได้
+//
+// แอปซ่อนบางหมวดด้วย `hidden` ตามสิทธิ์ เช่น `$('health-wrap').hidden = !admin`
+// เมนูย่อยจึงต้อง **ไม่แตะ `hidden`** เลย ไม่งั้นการกดปุ่มจะไปเปิดแผงที่แอปตั้งใจซ่อน
+// ให้คนที่ไม่มีสิทธิ์เห็น · ใช้คลาสของตัวเองแยกกันคนละชั้น: `hidden` = สิทธิ์
+// `.subtab-off` = ผู้ใช้เลือกดูหมวดอื่นอยู่
+function availableSubtabs(section) {
+  return [...section.querySelectorAll(':scope > [data-subtab]')].filter(p => !p.hidden);
+}
+
 function showSubtab(section, key) {
   const group = section.dataset.subtabs;
-  const panes = [...section.querySelectorAll(':scope > [data-subtab]')];
+  const panes = availableSubtabs(section);
   if (!panes.length) return;
-  // คีย์ที่จำไว้อาจหายไปแล้วถ้าหมวดถูกลบ — ตกกลับมาที่หมวดแรกเสมอ
+  // คีย์ที่จำไว้อาจหายไปแล้ว (หมวดถูกลบ หรือผู้ใช้คนนี้ไม่มีสิทธิ์เห็น) — ตกกลับหมวดแรก
   const target = panes.some(x => x.dataset.subtab === key) ? key : panes[0].dataset.subtab;
-  for (const pane of panes) pane.hidden = pane.dataset.subtab !== target;
+  for (const pane of panes) pane.classList.toggle('subtab-off', pane.dataset.subtab !== target);
   for (const btn of section.querySelectorAll(':scope > .subnav > button')) {
     const on = btn.dataset.goSubtab === target;
     btn.classList.toggle('on', on);
@@ -872,11 +884,24 @@ function showSubtab(section, key) {
   rememberSubtab(group, target);
 }
 
+// เรียกซ้ำได้ และ **ต้องเรียกซ้ำ** หลังรู้สิทธิ์ของผู้ใช้แล้ว
+// เพราะหมวดที่ขึ้นกับสิทธิ์ (เช่น Backend health) ยังถูกซ่อนอยู่ตอน init
 function buildSubtabs() {
   for (const section of document.querySelectorAll('[data-subtabs]')) {
-    if (section.querySelector(':scope > .subnav')) continue;   // สร้างไว้แล้ว
-    const panes = [...section.querySelectorAll(':scope > [data-subtab]')];
-    if (panes.length < 2) continue;
+    const panes = availableSubtabs(section);
+    const existing = section.querySelector(':scope > .subnav');
+    if (existing) {
+      // รายการหมวดเปลี่ยนได้เมื่อสิทธิ์เปลี่ยน — สร้างแถบใหม่แทนที่จะปะผุทีละปุ่ม
+      const same = [...existing.querySelectorAll('button')].map(b => b.dataset.goSubtab).join()
+                   === panes.map(p => p.dataset.subtab).join();
+      if (same) { showSubtab(section, chosenSubtabs()[section.dataset.subtabs]); continue; }
+      existing.remove();
+    }
+    if (panes.length < 2) {
+      // เหลือหมวดเดียว (หรือไม่เหลือเลย) ไม่ต้องมีเมนู — แต่ต้องคืนหมวดที่เคยซ่อนไว้
+      for (const pane of panes) pane.classList.remove('subtab-off');
+      continue;
+    }
     const nav = document.createElement('div');
     nav.className = 'subnav';
     nav.setAttribute('role', 'tablist');

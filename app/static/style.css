@@ -1105,3 +1105,8 @@ table tr:not(.alias-row):not(.ep-row):hover > td {
   color: var(--accent, #7c93ff);
   border-color: var(--accent, #7c93ff);
 }
+
+/* หมวดที่ผู้ใช้ไม่ได้เลือกดูอยู่ — คนละชั้นกับ `hidden` ซึ่งแอปใช้ควบคุมตามสิทธิ์
+   แยกกันเพราะถ้าใช้ตัวเดียวกัน การกดปุ่มเมนูย่อยจะไปเปิดแผงที่แอปตั้งใจซ่อน
+   ให้คนที่ไม่มีสิทธิ์เห็น (เช่น Backend health ที่เปิดเฉพาะ admin) */
+.subtab-off { display: none !important; }
