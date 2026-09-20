@@ -332,8 +332,8 @@
   </section>
 
   <!-- ================= Access & keys ================= -->
-  <section id="tab-access" class="stack" hidden>
-    <div class="card">
+  <section id="tab-access" class="stack" hidden data-subtabs="access">
+    <div class="card" data-subtab="issue" data-subtab-label="Issue a key">
       <h3>Issue an API key</h3>
       <p class="hint">The key is shown once and stored only as a hash. A lost key must be re-issued.</p>
       <div class="issue">
@@ -406,7 +406,7 @@
       <div id="key-out"></div>
     </div>
 
-    <div data-fold-section="people">
+    <div data-fold-section="people" data-subtab="people" data-subtab-label="People">
       <div class="bar" style="margin-bottom:4px">
         <h2 style="margin:0;flex:1"><span class="hi" data-icon="people" data-icon-size="15"
           aria-hidden="true"></span>People</h2>
@@ -456,7 +456,7 @@
       <div class="scroll"><table id="user-table"></table></div>
     </div>
 
-    <div data-fold-section="apikeys">
+    <div data-fold-section="apikeys" data-subtab="keys" data-subtab-label="API keys">
       <h2><span class="hi" data-icon="keys" data-icon-size="15" aria-hidden="true"></span>API keys</h2>
       <!-- ขึ้นเฉพาะเมื่อมีคีย์ที่เพิกถอนแล้วจริง — ปุ่มลบที่ไม่มีอะไรให้ลบคือปุ่มที่ชวนให้กดผิด -->
       <div class="row"><button id="purge-revoked" class="small" hidden></button></div>
@@ -505,7 +505,7 @@
       <button id="create-workspace">Create workspace</button>
     </div>
 
-    <div data-fold-section="groups">
+    <div data-fold-section="groups" data-subtab="groups" data-subtab-label="Access groups">
       <div class="bar" style="margin-bottom:12px">
         <h2 style="margin:0;flex:1"><span class="hi" data-icon="bundle" data-icon-size="15"
           aria-hidden="true"></span>Access groups</h2>
@@ -518,7 +518,7 @@
       <div class="scroll"><table id="access-group-table"></table></div>
     </div>
 
-    <div data-fold-section="wsmodels">
+    <div data-fold-section="wsmodels" data-subtab="workspaces" data-subtab-label="Workspaces">
       <h2><span class="hi" data-icon="workspace" data-icon-size="15" aria-hidden="true"></span>Workspaces — allowed models</h2>
       <p class="hint" style="margin:-6px 0 10px">
         ช่องติ๊กด้านบนคือ <strong>วิชานี้เรียกโมเดลอะไรได้</strong> · แถวเส้นประด้านล่างคือ
@@ -584,8 +584,8 @@
   </section>
 
   <!-- ================= Quota ================= -->
-  <section id="tab-quota" class="stack" hidden>
-    <div class="card">
+  <section id="tab-quota" class="stack" hidden data-subtabs="quota">
+    <div class="card" data-subtab="add" data-subtab-label="Add a policy">
       <h3>Add a quota policy</h3>
       <p class="hint">
         The most specific match wins: user + model &gt; user + bundle &gt; user &gt; workspace + model &gt; workspace + bundle &gt; workspace &gt; global.
@@ -679,12 +679,12 @@
       <button id="create-quota" class="primary">Add policy</button>
     </div>
 
-    <div data-fold-section="quota-policies">
+    <div data-fold-section="quota-policies" data-subtab="policies" data-subtab-label="Active policies">
       <h2><span class="hi" data-icon="quota" data-icon-size="15" aria-hidden="true"></span>Active policies</h2>
       <div class="scroll"><table id="quota-table"></table></div>
     </div>
 
-    <div data-fold-section="quota-top">
+    <div data-fold-section="quota-top" data-subtab="top" data-subtab-label="Heaviest users">
       <h2><span class="hi" data-icon="trending" data-icon-size="15" aria-hidden="true"></span>Heaviest users (7 days)</h2>
       <div class="scroll"><table id="top-users"></table></div>
     </div>

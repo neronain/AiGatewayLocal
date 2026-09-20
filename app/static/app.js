@@ -830,6 +830,79 @@ async function loadAutoPreview() {
 }
 
 
+// ── เมนูย่อยในแท็บ ──────────────────────────────────────────────────────────
+//
+// แท็บ Access & keys กับ Quota มีหลายหมวดยาว ๆ ต่อกันในหน้าเดียว · พอมีคนเป็นสิบและ
+// key เป็นสิบใบ หน้าเดียวยาวหลายจอ แล้วหมวดที่อยากดูจริงมักอยู่ล่างสุดเสมอ — การพับ
+// (data-fold-section) ช่วยได้ระดับหนึ่งแต่ยังต้องเลื่อนผ่านหัวข้อที่พับไว้อยู่ดี
+//
+// เมนูย่อยตัดปัญหานั้นทิ้ง: เห็นทีละหมวด ไม่มีอะไรให้เลื่อนผ่าน
+//
+// เป็นกลไกกลางแบบเดียวกับการพับ — แท็บไหนอยากมีเมนูย่อยก็ใส่ data-subtabs="<คีย์>"
+// ที่ <section> แล้วใส่ data-subtab="<คีย์>" + data-subtab-label="<ชื่อ>" ที่บล็อกลูก
+// ที่เหลือทำงานเอง · **ไม่ย้าย DOM** แค่ซ่อน/แสดง เพราะการยกบล็อกไปมาทำให้ตัว handler
+// ที่ผูกไว้กับ element เดิมหลุด และ renderer ที่หา element ด้วย id จะหาไม่เจอ
+const SUBTAB_KEY = 'litegate:subtab';
+
+function chosenSubtabs() {
+  try { return JSON.parse(localStorage.getItem(SUBTAB_KEY) || '{}'); }
+  catch { return {}; }
+}
+
+function rememberSubtab(group, key) {
+  try {
+    const all = chosenSubtabs();
+    all[group] = key;
+    localStorage.setItem(SUBTAB_KEY, JSON.stringify(all));
+  } catch { /* โหมดส่วนตัว — ไม่จำข้ามรอบ แต่ยังใช้งานได้ */ }
+}
+
+function showSubtab(section, key) {
+  const group = section.dataset.subtabs;
+  const panes = [...section.querySelectorAll(':scope > [data-subtab]')];
+  if (!panes.length) return;
+  // คีย์ที่จำไว้อาจหายไปแล้วถ้าหมวดถูกลบ — ตกกลับมาที่หมวดแรกเสมอ
+  const target = panes.some(x => x.dataset.subtab === key) ? key : panes[0].dataset.subtab;
+  for (const pane of panes) pane.hidden = pane.dataset.subtab !== target;
+  for (const btn of section.querySelectorAll(':scope > .subnav > button')) {
+    const on = btn.dataset.goSubtab === target;
+    btn.classList.toggle('on', on);
+    btn.setAttribute('aria-selected', on ? 'true' : 'false');
+  }
+  rememberSubtab(group, target);
+}
+
+function buildSubtabs() {
+  for (const section of document.querySelectorAll('[data-subtabs]')) {
+    if (section.querySelector(':scope > .subnav')) continue;   // สร้างไว้แล้ว
+    const panes = [...section.querySelectorAll(':scope > [data-subtab]')];
+    if (panes.length < 2) continue;
+    const nav = document.createElement('div');
+    nav.className = 'subnav';
+    nav.setAttribute('role', 'tablist');
+    for (const pane of panes) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ghost';
+      btn.dataset.goSubtab = pane.dataset.subtab;
+      btn.setAttribute('role', 'tab');
+      btn.textContent = pane.dataset.subtabLabel || pane.dataset.subtab;
+      btn.addEventListener('click', () => showSubtab(section, pane.dataset.subtab));
+      nav.appendChild(btn);
+    }
+    section.prepend(nav);
+    showSubtab(section, chosenSubtabs()[section.dataset.subtabs]);
+  }
+}
+
+// พาไปหมวดที่ต้องการจากที่อื่น เช่นปุ่ม "ตั้งโควตาให้คนนี้" ที่อยู่คนละแท็บ —
+// ถ้าไม่มีตัวนี้ ผู้ใช้จะถูกพาไปแท็บถูกแต่หมวดผิด แล้วงงว่าฟอร์มหายไปไหน
+function gotoSubtab(sectionId, key) {
+  const section = document.getElementById(sectionId);
+  if (section && section.dataset.subtabs) showSubtab(section, key);
+}
+
+
 // ── พับหมวดในหน้า ────────────────────────────────────────────────────────────
 //
 // แท็บ Access & keys มีสี่ส่วนยาว ๆ ต่อกัน (People, API keys, Access groups,
@@ -2815,6 +2888,9 @@ async function showQuotaFor(userId) {
  * เป็นการตัดสินใจ ไม่ใช่ผลข้างเคียงของการกดดูข้อมูล */
 function openQuotaFor(userId, current) {
   document.querySelector('[data-tab="quota"]').click();
+  // พาไปหมวด "Add a policy" ด้วย ไม่งั้นข้ามแท็บมาแล้วเจอหมวดอื่นที่จำไว้จากรอบก่อน
+  // แล้วฟอร์มที่เพิ่งกรอกค่าให้ล่วงหน้าถูกซ่อนอยู่ — ผู้ใช้จะไม่รู้ว่ามันไปไหน
+  gotoSubtab('tab-quota', 'add');
   const set = (id, v) => { const el = $(id); if (el) el.value = v; };
   $('q-scope').value = 'user';
   $('q-scope').dispatchEvent(new Event('change', { bubbles: true }));
@@ -3571,6 +3647,9 @@ function setupAliasCheck() {
   // เคยวางไว้ในทางเดิน sign-in อย่างเดียว (สตริงที่ใช้ยึดมีสองที่ในไฟล์นี้ แล้วแก้โดน
   // อันแรก) ผลคือคนที่เปิดหน้าด้วย session เดิม — ซึ่งคือเกือบทุกครั้ง — ไม่เคยเห็นปุ่มเลย
   setupFoldSections();
+  // เมนูย่อยต้องสร้างหลัง DOM ของแท็บพร้อมแล้ว · ไม่ย้าย DOM จึงไม่กระทบ handler
+  // ที่ setupFoldSections ผูกไว้ก่อนหน้า
+  buildSubtabs();
   loadProviders().then(() => fillProviderOptions());
   loadSecrets();
   $('fold-all').onclick = () => foldAllInTab(true);

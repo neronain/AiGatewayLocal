@@ -1074,3 +1074,34 @@ table tr:not(.alias-row):not(.ep-row):hover > td {
   background: var(--sunken); border: 1px solid var(--line);
   border-radius: 6px; padding: 3px 8px;
 }
+
+/* ── เมนูย่อยในแท็บ ──────────────────────────────────────────────────────────
+   แท็บ Access & keys กับ Quota เคยวางทุกหมวดต่อกันในหน้าเดียวจนยาวหลายจอ
+   หมวดที่อยากดูมักอยู่ล่างสุดเสมอ · เมนูนี้ทำให้เห็นทีละหมวด (ดู buildSubtabs)
+
+   sticky เพราะหมวดเดียวก็ยังยาวเกินหนึ่งจอได้ — เลื่อนลงไปแล้วต้องยังสลับหมวดได้
+   โดยไม่ต้องเลื่อนกลับขึ้นมา */
+.subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line, #262c36);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--bg, #0d1117);
+}
+.subnav button {
+  font-size: 13px;
+  padding: 6px 13px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+/* หมวดที่เปิดอยู่ต้องเห็นชัดจากระยะสายตา ไม่ใช่ต้องเพ่ง */
+.subnav button.on {
+  background: var(--accent-bg, #1d2333);
+  color: var(--accent, #7c93ff);
+  border-color: var(--accent, #7c93ff);
+}

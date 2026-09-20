@@ -1,6 +1,6 @@
 [project]
 name = "litegate"
-version = "1.8.1"
+version = "1.9.0"
 description = "LiteGate - capability-aware, multimodal AI gateway for teams running their own model servers"
 readme = "README.md"
 requires-python = ">=3.11"
