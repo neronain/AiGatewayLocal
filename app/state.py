@@ -41,6 +41,8 @@ class AppState:
             self.counter_store, self.registry.snapshot.gateway.quota_defaults
         )
         self.started_at: float = 0.0
+        # None = ปิดอยู่ · เส้นทางคำขอเช็ค `is not None` ก่อนใช้เสมอ
+        self.response_cache = None
 
     async def start(self) -> None:
         await self.registry.start()
@@ -84,6 +86,16 @@ class AppState:
                 # own - slower and single-writer, but correct.
                 log.error("Redis unavailable (%s); using database counters", exc)
                 self.redis = None
+
+        if self.settings.response_cache:
+            from app.core.responsecache import ResponseCache
+
+            # แชร์ผ่าน Redis เมื่อมี ไม่งั้นแคชในเครื่อง (hit เฉพาะ worker ที่เคยตอบ)
+            self.response_cache = ResponseCache(self.redis)
+            log.info(
+                "response cache เปิดอยู่ (%s · TTL 300 วิ · เฉพาะ temperature=0 ไม่มี tools)",
+                "Redis" if self.redis else "ในเครื่อง",
+            )
 
         await self.usage.start()
         await self.router.start_health_checks()

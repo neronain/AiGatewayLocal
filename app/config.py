@@ -28,7 +28,7 @@ LICENSE_NOTE = "MIT — attribution required"
 # แล้วลืมบรรทัดนี้ · ตัวที่จับได้คือ test_the_version_has_one_source ซึ่งเทียบสองค่านี้
 # ตรง ๆ — ถ้าจะย้ายไปอ่าน importlib.metadata ให้ย้ายตอนไม่ได้กำลังจะ release
 # เพราะ metadata หายเมื่อรันจาก source tree ที่ยังไม่ได้ pip install แล้วจะ boot ไม่ขึ้น
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 
 
 class Settings(BaseSettings):
@@ -73,6 +73,16 @@ class Settings(BaseSettings):
     # Storage
     database_url: str = "sqlite+aiosqlite:///./data/gateway.db"
     redis_url: str = ""
+
+    # แคชคำตอบแบบตรงตัวเป๊ะ — **ปิดเป็นค่าเริ่มต้นโดยตั้งใจ**
+    #
+    # มันเปลี่ยนสิ่งที่ผู้ใช้ได้รับ: คำตอบที่โมเดลเคยตอบไว้เมื่อไม่เกิน 5 นาทีก่อน แทนที่จะ
+    # เรียก backend ใหม่ · ถึงจะจำกัดไว้แค่ temperature=0 (ซึ่งแปลว่า "ขอคำตอบที่แน่นอน")
+    # แต่ inference จริงที่ temp=0 ก็ไม่ได้ให้ผลเหมือนเดิมเป๊ะทุกครั้งอยู่ดี — batching,
+    # floating point และการเลือก expert ของ MoE ทำให้ต่างกันได้
+    #
+    # เปิดเมื่อพร้อมรับข้อแลกเปลี่ยนนั้น: GW_RESPONSE_CACHE=true
+    response_cache: bool = False
 
     # Registry
     config_dir: Path = Path("./config")

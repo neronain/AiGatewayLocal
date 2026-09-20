@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import auto as auto_mod
+from app.core import responsecache
 from app.core import usage as usage_mod
 from app.core.auth import (
     Principal,
@@ -529,6 +530,36 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> JSONRespo
     conversation breaking.
     """
     state, alias = ctx.state, ctx.requested_alias
+
+    # แคชคำตอบแบบตรงตัวเป๊ะ — เข้าเงื่อนไขน้อยมากโดยตั้งใจ (ดู core/responsecache.py)
+    cache = getattr(state, "response_cache", None)
+    cache_key = None
+    if cache is not None:
+        probe_payload, _ = build(ctx.endpoint)
+        cache_key = responsecache.build_key(
+            ctx.principal, alias=alias, upstream_model=ctx.model.alias,
+            protocol=ctx.protocol, payload=probe_payload,
+        )
+        if cache_key is not None:
+            hit = await cache.get(cache_key)
+            if hit is not None:
+                data = hit["data"]
+                usage = resolve_usage(ctx.profile, data.get("usage"))
+                # **ต้องหักโควตาเหมือนไม่ได้แคช** ไม่งั้นถามซ้ำได้ฟรีไม่จำกัด
+                # ซึ่งเป็นช่องโหว่รายได้แบบเดียวกับที่ปิดไปใน 1.6.0 แค่คนละทาง
+                await ctx.finalize(usage)
+                return JSONResponse(
+                    content=data,
+                    headers={
+                        "x-request-id": ctx.request_id,
+                        "x-litegate-model": alias,
+                        "x-litegate-served-by": ctx.model.alias,
+                        # บอกให้เห็นว่าคำตอบนี้มาจากแคช ไม่ใช่เพิ่งคิดมา — ไล่ปัญหาได้
+                        # และผู้ใช้ที่เจอคำตอบเดิมซ้ำจะรู้ว่าทำไม
+                        "x-litegate-cache": "hit",
+                    },
+                )
+
     while True:
         endpoint = ctx.endpoint
         payload, headers = build(endpoint)
@@ -581,11 +612,16 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> JSONRespo
     _augment_usage_payload(data, usage)
     await ctx.finalize(usage)
 
+    # เก็บเฉพาะคำตอบที่สำเร็จจริง — error ไม่แคช (ตรวจแล้วข้างบน: ถึงตรงนี้คือ 200 + JSON)
+    if cache is not None and cache_key is not None:
+        await cache.put(cache_key, {"data": data})
+
     return JSONResponse(
         content=data,
         headers={
             "x-request-id": ctx.request_id,
             "x-litegate-model": alias,
+            "x-litegate-cache": "miss",
             # ตัวที่ *รันจริง* — ต่างจาก x-litegate-model เมื่อกฎ routing เปลี่ยนเส้นทาง
             # (coding -> coding-long เพราะคำขอยาวเกิน) · สัญญากับสมาชิกยังเหมือนเดิม
             # คือขอ alias ไหนได้ alias นั้น แต่เวลาไล่ปัญหาต้องรู้ว่าใครตอบ ไม่งั้นตัวเลข
