@@ -206,7 +206,7 @@ async def _complete_messages(build: BuildAttempt, ctx: _RequestContext) -> JSONR
         endpoint = ctx.endpoint
         attempt = build(endpoint)
         translate = attempt.translate
-        state.router.acquire(alias, endpoint)
+        await state.router.acquire(alias, endpoint, ctx.request_id)
         try:
             response = await upstream.post_json(
                 endpoint, attempt.path, attempt.payload, attempt.headers
@@ -224,7 +224,7 @@ async def _complete_messages(build: BuildAttempt, ctx: _RequestContext) -> JSONR
             )
             raise
         finally:
-            state.router.release(alias, endpoint)
+            await state.router.release(alias, endpoint, ctx.request_id)
 
         if response.status_code >= 400:
             state.router.report_failure(alias, endpoint, f"HTTP {response.status_code}")
@@ -304,7 +304,7 @@ async def _stream_messages(build: BuildAttempt, ctx: _RequestContext) -> Streami
                 adapter = AnthropicStreamAdapter(alias) if translate else None
 
                 retry: Endpoint | None = None
-                state.router.acquire(alias, endpoint)
+                await state.router.acquire(alias, endpoint, ctx.request_id)
                 try:
                     async with upstream.stream_json(
                         endpoint, attempt.path, attempt.payload, attempt.headers
@@ -378,7 +378,7 @@ async def _stream_messages(build: BuildAttempt, ctx: _RequestContext) -> Streami
                     status, error_code, http_status = "aborted", ErrorCode.UPSTREAM_ERROR, 502
                     return
                 finally:
-                    state.router.release(alias, endpoint)
+                    await state.router.release(alias, endpoint, ctx.request_id)
 
                 ctx.retarget(retry)
         finally:

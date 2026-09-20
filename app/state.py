@@ -64,7 +64,21 @@ class AppState:
                 self.quota = QuotaService(
                     self.counter_store, self.registry.snapshot.gateway.quota_defaults
                 )
-                log.info("quota counters backed by Redis, with database fallback")
+                # ตัวนับคำขอที่กำลังวิ่งต้องแชร์ข้าม worker ด้วย ไม่งั้น max_concurrency
+                # แปลว่า "N ต่อ worker" ซึ่งกับ 4 worker คือ 4N ตัวพร้อมกันที่ backend
+                from app.core.inflight import (
+                    LocalInFlightLimiter,
+                    RedisInFlightLimiter,
+                    ResilientInFlightLimiter,
+                )
+
+                self.router.set_limiter(
+                    ResilientInFlightLimiter(
+                        RedisInFlightLimiter(self.redis), LocalInFlightLimiter()
+                    )
+                )
+                log.info("quota counters และ in-flight limit backed by Redis, "
+                         "with database/local fallback")
             except Exception as exc:
                 # Redis is already down. The database store is correct on its
                 # own - slower and single-writer, but correct.

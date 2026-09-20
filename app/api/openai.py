@@ -532,7 +532,7 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> JSONRespo
     while True:
         endpoint = ctx.endpoint
         payload, headers = build(endpoint)
-        state.router.acquire(alias, endpoint)
+        await state.router.acquire(alias, endpoint, ctx.request_id)
         try:
             response = await upstream.post_json(endpoint, CHAT_PATH, payload, headers)
         except GatewayError as exc:
@@ -548,7 +548,7 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> JSONRespo
             )
             raise
         finally:
-            state.router.release(alias, endpoint)
+            await state.router.release(alias, endpoint, ctx.request_id)
 
         if response.status_code >= 400:
             body = response.text[:2000]
@@ -646,7 +646,7 @@ async def _stream_chat(build: BuildRequest, ctx: _RequestContext) -> StreamingRe
                 }
 
                 retry: Endpoint | None = None
-                state.router.acquire(alias, endpoint)
+                await state.router.acquire(alias, endpoint, ctx.request_id)
                 try:
                     async with upstream.stream_json(
                         endpoint, CHAT_PATH, payload, headers
@@ -708,7 +708,7 @@ async def _stream_chat(build: BuildRequest, ctx: _RequestContext) -> StreamingRe
                     status, error_code, http_status = "aborted", ErrorCode.UPSTREAM_ERROR, 502
                     return
                 finally:
-                    state.router.release(alias, endpoint)
+                    await state.router.release(alias, endpoint, ctx.request_id)
 
                 ctx.retarget(retry)
         finally:

@@ -21,6 +21,7 @@ import httpx
 
 from app.core.capability import endpoint_supports
 from app.core.errors import ErrorCode, GatewayError
+from app.core.inflight import InFlightLimiter, LocalInFlightLimiter
 from app.core.multimodal import RequestProfile
 from app.registry.schema import Endpoint, ModelDefinition
 from app.registry.store import RegistryStore, endpoint_key
@@ -64,6 +65,8 @@ class EndpointState:
 class Router:
     def __init__(self, registry: RegistryStore) -> None:
         self._probe_client: httpx.AsyncClient | None = None
+        # ค่าเริ่มต้นนับในเครื่อง — state.start() สลับเป็นตัวที่แชร์ข้าม worker ถ้ามี Redis
+        self._limiter: InFlightLimiter = LocalInFlightLimiter()
         self._registry = registry
         self._state = EndpointState()
         self._rr: dict[str, itertools.count] = {}
@@ -141,13 +144,35 @@ class Router:
         return random.choice(population)
 
     # -- outcome reporting -------------------------------------------------
-    def acquire(self, alias: str, endpoint: Endpoint) -> None:
-        state = self._state.get(endpoint_key(alias, endpoint))
+    def set_limiter(self, limiter: InFlightLimiter) -> None:
+        """สลับไปใช้ตัวนับที่แชร์ข้าม worker — เรียกตอน start ถ้าตั้ง Redis ไว้"""
+        self._limiter = limiter
+
+    async def acquire(self, alias: str, endpoint: Endpoint, lease: str) -> None:
+        """จองช่องหนึ่งช่องบน endpoint นี้ — โยน CONCURRENCY_LIMIT_EXCEEDED เมื่อเต็ม
+
+        **นี่คือด่านจริง** ส่วนการกรองใน select() เป็นแค่คำใบ้ตอนเลือกทาง
+        เพราะระหว่าง select() กับตรงนี้มี `await` คั่นหลายจุด (อ่าน body · resolve
+        โมเดล · สร้าง payload) coroutine หลายตัวจึงผ่านด่านของ select() พร้อมกันได้
+        ก่อนที่ใครจะเพิ่มค่าเป็นตัวแรก · เช็คกับจองต้องเป็นก้อนเดียวที่แบ่งไม่ได้
+        และก้อนนั้นต้องอยู่ตรงจุดที่กำลังจะยิง upstream จริง ๆ
+        """
+        key = endpoint_key(alias, endpoint)
+        if not await self._limiter.acquire(key, endpoint.max_concurrency, lease):
+            raise GatewayError(
+                ErrorCode.CONCURRENCY_LIMIT_EXCEEDED,
+                f"All backends for '{alias}' are at capacity. Please retry shortly.",
+                retry_after=5,
+                details={"model": alias},
+            )
+        state = self._state.get(key)
         state.in_flight += 1
         state.total_requests += 1
 
-    def release(self, alias: str, endpoint: Endpoint) -> None:
-        state = self._state.get(endpoint_key(alias, endpoint))
+    async def release(self, alias: str, endpoint: Endpoint, lease: str) -> None:
+        key = endpoint_key(alias, endpoint)
+        await self._limiter.release(key, lease)
+        state = self._state.get(key)
         state.in_flight = max(state.in_flight - 1, 0)
 
     def report_success(self, alias: str, endpoint: Endpoint) -> None:
