@@ -17,6 +17,7 @@ the database otherwise, which is correct for a single-worker deployment.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -26,7 +27,7 @@ from datetime import UTC, datetime, timedelta
 
 from prometheus_client import Gauge
 from sqlalchemy import func, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ErrorCode, GatewayError
@@ -158,6 +159,12 @@ class CounterStore(ABC):
         """
 
 
+# รอบลองใหม่เมื่อ SQLite บอกว่าไฟล์ถูกล็อก — สั้น ๆ พอให้คนเขียนที่คิวหน้าเขียนจบ
+# ไม่ยาวจนคำขอของผู้ใช้ค้าง · Postgres ไม่เคยเข้าเส้นนี้ (ล็อกระดับแถว ไม่ใช่ทั้งไฟล์)
+_LOCK_RETRIES = 4
+_LOCK_BACKOFF_S = 0.05
+
+
 class DatabaseCounterStore(CounterStore):
     def __init__(self, session_factory) -> None:
         self._session_factory = session_factory
@@ -200,9 +207,20 @@ class DatabaseCounterStore(CounterStore):
         """
         start, end = window_bounds(window)
 
-        async with self._session_factory() as session:
-            if await self._add_to_existing(session, key, start, delta):
-                return
+        # SQLite ให้เขียนได้ทีละคน · WAL + busy_timeout ทำให้คนที่มาทีหลัง *รอ* แทนที่จะแพ้
+        # แต่รอจนหมดเวลาก็ยังเป็นไปได้เมื่อคนเขียนเยอะพร้อมกันบนดิสก์ช้า (เจอบน CI runner:
+        # 60 การบวกพร้อมกัน → "database is locked") · ยอมแพ้ตรงนี้ = การบวกหายจริง
+        # ซึ่งคือสิ่งเดียวกับที่เมธอดนี้ถูกเขียนขึ้นมาแก้ · ลองใหม่แบบถอยเพิ่มทีละรอบ
+        for attempt in range(_LOCK_RETRIES):
+            try:
+                async with self._session_factory() as session:
+                    if await self._add_to_existing(session, key, start, delta):
+                        return
+                break
+            except OperationalError as exc:
+                if "locked" not in str(exc).lower() or attempt == _LOCK_RETRIES - 1:
+                    raise
+                await asyncio.sleep(_LOCK_BACKOFF_S * (attempt + 1))
 
         # ยังไม่มีแถวของหน้าต่างนี้ — สร้างพร้อมยอดของรอบนี้ไปเลย
         async with self._session_factory() as session:

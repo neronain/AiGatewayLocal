@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 
+import pytest
 from sqlalchemy.dialects import postgresql, sqlite
 
 from app.core.quota import Consumption, DatabaseCounterStore
@@ -130,3 +131,57 @@ async def test_losing_the_insert_race_does_not_lose_the_count(temp_db, monkeypat
 
     assert calls["n"] == 2, "ต้องลอง UPDATE ใหม่หลัง INSERT ชน unique constraint"
     assert (await store.get("u:x", "day")).requests == 11
+
+
+async def test_a_locked_sqlite_file_is_waited_out_not_given_up_on(temp_db, monkeypatch):
+    """ยอมแพ้ตอนไฟล์ถูกล็อก = การบวกหายจริง ซึ่งคือสิ่งเดียวกับที่เมธอดนี้ถูกเขียนมาแก้
+
+    WAL + busy_timeout ทำให้คนเขียนที่มาทีหลัง *รอ* แทนที่จะแพ้ แต่รอจนหมดเวลาก็ยัง
+    เป็นไปได้เมื่อคนเขียนเยอะพร้อมกันบนดิสก์ช้า — เจอจริงบน CI runner (60 การบวก
+    พร้อมกัน → "database is locked") ทั้งที่บนเครื่องพัฒนาผ่านตลอด
+    """
+    from sqlalchemy.exc import OperationalError
+
+    from app.core import quota as quota_mod
+    from app.db.session import get_sessionmaker, init_db
+
+    await init_db()
+    store = DatabaseCounterStore(get_sessionmaker())
+    real = store._add_to_existing
+    calls = {"n": 0}
+
+    async def flaky(session, key, start, delta):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise OperationalError("UPDATE quota_counters", {}, Exception("database is locked"))
+        return await real(session, key, start, delta)
+
+    monkeypatch.setattr(store, "_add_to_existing", flaky)
+    monkeypatch.setattr(quota_mod, "_LOCK_BACKOFF_S", 0)
+
+    await store.increment("u:locked", "day", Consumption(requests=1, output_tokens=3))
+    await store.increment("u:locked", "day", Consumption(requests=1, output_tokens=3))
+
+    got = await store.get("u:locked", "day")
+    assert got.requests == 2 and got.output_tokens == 6, "การบวกหายระหว่างรอล็อก"
+    assert calls["n"] >= 3, "ต้องลองใหม่จริง ไม่ใช่ผ่านเพราะไม่เคยล็อก"
+
+
+async def test_an_error_that_is_not_a_lock_is_raised_immediately(temp_db, monkeypatch):
+    """ลองใหม่กับทุก OperationalError = กลืนบั๊กจริง (สคีมาผิด/ดิสก์เต็ม) แล้วช้าลงสี่เท่า"""
+    from sqlalchemy.exc import OperationalError
+
+    from app.db.session import get_sessionmaker, init_db
+
+    await init_db()
+    store = DatabaseCounterStore(get_sessionmaker())
+    calls = {"n": 0}
+
+    async def broken(session, key, start, delta):
+        calls["n"] += 1
+        raise OperationalError("UPDATE quota_counters", {}, Exception("no such column: requests"))
+
+    monkeypatch.setattr(store, "_add_to_existing", broken)
+    with pytest.raises(OperationalError):
+        await store.increment("u:broken", "day", Consumption(requests=1))
+    assert calls["n"] == 1, "ต้องเด้งทันที ไม่ลองใหม่"
