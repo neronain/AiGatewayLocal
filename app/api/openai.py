@@ -540,6 +540,13 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> JSONRespo
             ctx.principal, alias=alias, upstream_model=ctx.model.alias,
             protocol=ctx.protocol, payload=probe_payload,
         )
+        if cache_key is None:
+            # "เปิดแคชแล้วทำไมไม่ hit สักที" เป็นคำถามแรกที่ทุกคนถาม และเดิมตอบไม่ได้เลย
+            # เพราะเงื่อนไขแคบมากโดยตั้งใจ · บอกเหตุผลไปตรง ๆ จะได้ไม่ต้องเดา
+            log.debug(
+                "ไม่แคชคำขอ %s: %s",
+                ctx.request_id, responsecache.cacheable_reason(probe_payload),
+            )
         if cache_key is not None:
             hit = await cache.get(cache_key)
             if hit is not None:
