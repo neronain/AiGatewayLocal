@@ -26,7 +26,16 @@ async def test_concurrent_increments_all_land(temp_db):
     await init_db()
     store = DatabaseCounterStore(get_sessionmaker())
 
-    rounds = 60
+    # 12 ไม่ใช่ 60 โดยตั้งใจ · read-modify-write เสียหายตั้งแต่สองตัวที่สลับกันทำงาน
+    # การยิง 60 writer ใส่ SQLite เพิ่มแค่ "และ SQLite ต้องรอดจากการแย่งเขียน" ซึ่งไม่ใช่
+    # คุณสมบัติที่เทสนี้ทดสอบ และขึ้นกับความเร็วดิสก์ของเครื่องที่รัน — แดงบน CI runner
+    # (database is locked) ทั้งที่เครื่องพัฒนาผ่านตลอด
+    #
+    # ความเป็น atomic ตัวจริงถูกพิสูจน์แบบไม่ต้องแย่งกันที่
+    # test_the_increment_is_a_self_referencing_update_on_both_dialects (ตรวจ SQL ที่ compile
+    # ออกมาว่าเป็น SET x = x + n) และการเขียนพร้อมกันจริงถูกพิสูจน์บน Postgres
+    # ที่ tests/test_postgres_support.py ซึ่งรับ writer พร้อมกันได้จริง
+    rounds = 12
     await asyncio.gather(*[
         store.increment("u:somchai", "day", Consumption(requests=1, output_tokens=7))
         for _ in range(rounds)
