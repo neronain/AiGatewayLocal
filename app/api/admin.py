@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -35,6 +34,7 @@ from app.core.modeltest import (
     suggest_tool_parser,
 )
 from app.core.passwords import read_session_cookie
+from app.core.secrets import SecretStoreError
 from app.db.models import (
     ASSISTANT_MODEL_KEY,
     AccessGroup,
@@ -54,6 +54,7 @@ from app.db.models import (
     utcnow,
 )
 from app.db.session import get_session, session_scope
+from app.registry.schema import ModelDefinition
 from app.registry.writer import (
     delete_model,
     model_path,
@@ -64,7 +65,6 @@ from app.registry.writer import (
     validate_definition,
     write_model,
 )
-from app.core.secrets import SecretStoreError
 from app.state import AppState, get_state
 
 log = logging.getLogger(__name__)
@@ -1449,7 +1449,9 @@ async def update_quota_policy(
     if "window" in payload:
         window = payload["window"]
         if window not in {"hour", "day", "month", "term"}:
-            raise GatewayError(ErrorCode.INVALID_REQUEST, "window must be hour, day, month or term.")
+            raise GatewayError(
+                ErrorCode.INVALID_REQUEST, "window must be hour, day, month or term."
+            )
         policy.window = window
         changed["window"] = window
 
@@ -1773,6 +1775,15 @@ async def admin_models(
                         "health_path": e.health_path,
                         "protocols": e.protocols.model_dump(),
                         "modalities": e.modalities.model_dump(),
+                        # กฎ round-trip เดียวกับ description/routing ข้างบน · ช่องนี้คือสิ่งเดียว
+                        # ที่บอกว่า backend ตัวนี้มาจากเครื่องไหนและ bundle ไหนของ LMDS และไม่มี
+                        # อะไรในเส้นทาง request อ่านมันเลย — หายแล้วจึงไม่มีอะไรพัง *ให้เห็น*
+                        # มีแค่ปุ่ม Apply fix ที่เงียบหายไปหลังจากมีคนกด Save ไปนานแล้ว
+                        # (admin-only endpoint: `node` เป็น ssh target ส่วน `controller`
+                        #  เป็น path บนเครื่องนั้น — ทั้งคู่เป็นรายละเอียดของโครงสร้างพื้นฐาน)
+                        "managed_by": (
+                            e.managed_by.model_dump() if e.managed_by else None
+                        ),
                         "enabled": e.enabled,
                         "health": health.get(f"{alias}:{e.name}", {}),
                     }
@@ -2258,6 +2269,43 @@ async def preview_model(
     }
 
 
+def _keep_managed_by(document: dict[str, Any], previous: ModelDefinition | None) -> None:
+    """Carry `managed_by` across a whole-document save that never mentioned it.
+
+    Saving a model is an upsert of the entire document, so anything the caller
+    leaves out is deleted. For most fields that is the contract working: the
+    console shows them, so an absent one was a deliberate clearing.
+
+    `managed_by` is different in kind. Nothing in the request path reads it -
+    only the Apply-fix button does - so removing it breaks nothing anybody can
+    see, on the day it happens. Months later the button is simply not there,
+    and the only record of what was lost is a git history of the model file.
+    A cost that asymmetric is worth one defensive merge: any client that has
+    never heard of the field (the console before this change, a script, a
+    `curl` of yesterday's document) cannot quietly unmanage a fleet.
+
+    Saying nothing is therefore not the same as asking for it to go. An
+    explicit `"managed_by": null` still removes it - a backend really can stop
+    being LMDS-managed - and the key is matched per endpoint *name*, because a
+    gateway commonly has one managed backend and three nobody manages.
+    """
+    if previous is None:
+        return
+    known = {e.name: e.managed_by for e in previous.spec.endpoints if e.managed_by}
+    if not known:
+        return
+    spec = document.get("spec")
+    if not isinstance(spec, dict):
+        return
+    for endpoint in spec.get("endpoints") or []:
+        # `in` rather than a truth test: `null` is the caller speaking.
+        if not isinstance(endpoint, dict) or "managed_by" in endpoint:
+            continue
+        kept = known.get(endpoint.get("name"))
+        if kept is not None:
+            endpoint["managed_by"] = kept.model_dump()
+
+
 @router.post("/models", status_code=201)
 async def save_model(
     payload: ModelDefinitionIn,
@@ -2267,7 +2315,13 @@ async def save_model(
     state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
     """Validate and write the definition into the registry (mode B)."""
-    definition = validate_definition(payload.model_dump())
+    document = payload.model_dump()
+    alias_in = (payload.metadata or {}).get("alias")
+    _keep_managed_by(
+        document,
+        state.registry.snapshot.models.get(alias_in) if isinstance(alias_in, str) else None,
+    )
+    definition = validate_definition(document)
     existing = definition.alias in state.registry.snapshot.models
 
     path = write_model(state.settings.config_dir, definition)

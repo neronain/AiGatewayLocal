@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 def auth(key: str) -> dict:
     return {"Authorization": f"Bearer {key}"}

@@ -7,6 +7,7 @@ import logging
 from fastapi import Request
 
 from app.config import Settings, get_settings
+from app.core.perf import PerfStore
 from app.core.quota import (
     CounterStore,
     DatabaseCounterStore,
@@ -14,11 +15,10 @@ from app.core.quota import (
     RedisCounterStore,
     ResilientCounterStore,
 )
-from app.core.perf import PerfStore
 from app.core.routing import Router
+from app.core.secrets import SecretStore
 from app.core.usage import UsageRecorder
 from app.db.session import get_sessionmaker
-from app.core.secrets import SecretStore
 from app.registry.store import RegistryStore
 
 log = logging.getLogger(__name__)

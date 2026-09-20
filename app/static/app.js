@@ -1511,6 +1511,14 @@ function addEndpointRow(data = {}) {
   q('ep-image').checked = !!data.modalities?.image;
   q('ep-enabled').checked = data.enabled !== false;
 
+  // ติดไว้กับแถว ไม่มีช่องให้แก้ · เครื่องที่ LMDS deploy มาจะมีบล็อกนี้บอกว่ามาจาก node ไหน
+  // bundle ไหน — ฟอร์มไม่เคยแสดง ฟอร์มจึงไม่เคยส่งกลับ แล้ว Save ที่เขียนทับทั้งเอกสารก็ลบมัน
+  // ทิ้งทุกครั้งที่มีคนแก้แค่ชื่อรุ่น · ไม่มีอะไรในเส้นทาง request อ่านค่านี้เลย ความเสียหายจึง
+  // เงียบสนิท: ปุ่ม Apply fix หายไปเฉย ๆ ตอนที่ไม่มีใครเชื่อมโยงกับการกด Save เมื่อเดือนก่อน
+  //
+  // พาผ่านไปทั้งก้อน ไม่ต้องรู้ว่าข้างในมีอะไร — ฟิลด์ที่ LMDS เพิ่มทีหลังจะได้ไม่ต้องมาแก้ตรงนี้
+  node.managedBy = data.managed_by ?? null;
+
   const retitle = () => {
     q('ep-title').textContent = q('ep-name').value.trim() || q('ep-url').value.trim() || 'Backend';
   };
@@ -1755,7 +1763,7 @@ function readEndpoints() {
     const q = (cls) => node.querySelector('.' + cls);
     const url = q('ep-url').value.trim();
     const fallback = url.replace(/^https?:\/\//, '').replace(/[^\w.-]/g, '-').slice(0, 40);
-    return {
+    const row = {
       name: q('ep-name').value.trim() || fallback || `backend-${index + 1}`,
       server_type: q('ep-server').value,
       base_url: url,
@@ -1771,6 +1779,10 @@ function readEndpoints() {
       },
       enabled: q('ep-enabled').checked,
     };
+    // ส่งกลับเฉพาะตอนที่แถวนี้เคยมีมาจริง · แถวใหม่ที่คนเพิ่งกด "+ Add backend" ไม่มีอะไรจะเก็บ
+    // และการส่ง null ไปจะกลายเป็น "ขอให้ลบ" ตามกติกาฝั่งเซิร์ฟเวอร์
+    if (node.managedBy) row.managed_by = node.managedBy;
+    return row;
   });
 }
 

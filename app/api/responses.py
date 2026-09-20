@@ -40,7 +40,7 @@ from app.core.multimodal import profile_responses_request
 from app.core.routing import RETRYABLE_ERRORS, is_retryable_status
 from app.core.rules import fallback_models, resolve_route
 from app.core.tokens import resolve_usage
-from app.db.session import get_session
+from app.db.session import get_session, release_connection
 from app.registry.schema import Endpoint
 from app.state import AppState, get_state
 from app.upstream import client as upstream
@@ -118,6 +118,14 @@ async def create_response(
     key_limits = await state.quota.resolve_key_limits(session, principal.api_key_id)
     if key_limits is not None:
         await state.quota.check_key(principal.api_key_id, key_limits)
+
+    # The request's last read. Everything past this point - choosing an
+    # endpoint, the upstream call, the stream itself, and the usage and quota
+    # bookkeeping in ctx.finalize - runs without the request session, so give
+    # the connection back now instead of when FastAPI tears the dependency down,
+    # which for a stream is after the last SSE byte, minutes from here.
+    # See app/db/session.py: release_connection.
+    await release_connection(session)
 
     def _select(target):
         want_native = any(

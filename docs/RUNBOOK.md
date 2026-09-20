@@ -240,7 +240,10 @@ Thirty people rarely hit a limit at the same moment. Check, in this order:
 2. Is one client looping? `/admin/usage/top-users` — a single member with
    thousands of requests is a script, not a person.
 3. Is the window shorter than intended? A `day` policy meant as `term` will
-   look exactly like this every afternoon.
+   look exactly like this every afternoon. Note that `term` currently resolves
+   against the hardcoded default months `(1, 6, 8)` —
+   `quota_defaults.term_start_months` is not wired up (DEPLOYMENT.md §10) — so a
+   `term` window may also be shorter than whoever wrote the policy expected.
 
 Once the cause is understood, deal with the person and the rule separately. If
 one runaway loop spent somebody's allowance, hand it back rather than raising

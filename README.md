@@ -8,8 +8,8 @@ Put your model servers behind the standard **OpenAI** and **Anthropic** APIs.
 Members get an alias and a key; you keep the machines, the limits and the audit trail.
 
 [![CI](https://github.com/neronain/AiGatewayLocal/actions/workflows/ci.yml/badge.svg)](https://github.com/neronain/AiGatewayLocal/actions/workflows/ci.yml)
-[![version](https://img.shields.io/badge/version-1.4.0-1f5fbf)](pyproject.toml)
-[![tests](https://img.shields.io/badge/tests-652-17703f)](tests/)
+[![version](https://img.shields.io/badge/version-1.5.0-1f5fbf)](pyproject.toml)
+[![tests](https://img.shields.io/badge/tests-675-17703f)](tests/)
 [![python](https://img.shields.io/badge/python-3.11%2B-3776ab)](pyproject.toml)
 [![APIs](https://img.shields.io/badge/API-OpenAI%20%C2%B7%20Anthropic-8b5cf6)](docs/API.md)
 [![license](https://img.shields.io/badge/license-MIT-17703f)](LICENSE)
@@ -51,7 +51,7 @@ notice stays. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 ```
 
 For the case where a handful of people share a handful of GPUs — a small
-company, a university department, a research group, an agency. Nothing in it
+company, an agency, a research group, a university department. Nothing in it
 assumes a particular sector.
 
 | You have | LiteGate gives you |
@@ -409,9 +409,9 @@ Three tools that compose, rather than three ways to do the same thing:
 
 | | What it is | Use it for |
 |---|---|---|
-| **Workspace** | A group of people with allowed models, defaults and a status | A class, a team, a client project |
+| **Workspace** | A group of people with allowed models, defaults and a status | A team, a client project, a class |
 | **Access group** | A named bundle of models (`vision-set`, `coding-set`) | Granting several models at once, and quota-ing them together |
-| **Quota policy** | A named limit, optionally scoped and dated | "Exam period", "urgent, 3 days" |
+| **Quota policy** | A named limit, optionally scoped and dated | "Launch week", "urgent, 3 days" |
 
 Permission **narrows** through every rule it passes — key, workspace, group —
 so no layer can widen what an earlier one withheld. Quota does the opposite and
@@ -429,7 +429,7 @@ Consequences that are easy to get wrong, and are tested:
 - **An expired key is kept, not deleted** — extend it with a button, counting
   days from today, so something that lapsed last month gets a full period.
   Quota policies expire too: a limit nobody removes is a limit still in force
-  next term.
+  next quarter.
 - **A key's models can be changed after it is issued.** Both directions, from
   the same button, on a credential already in circulation. Without it, adding
   one model meant revoking something that worked and chasing down everywhere it
@@ -438,7 +438,7 @@ Consequences that are easy to get wrong, and are tested:
   before you save, because that is the one change that widens rather than
   narrows.
 - **A spent allowance can be handed back** without raising anyone's limit. One
-  runaway loop can burn a term's quota on a Tuesday afternoon; the limit was not
+  runaway loop can burn a month's quota on a Tuesday afternoon; the limit was not
   wrong and the person is blocked now. Admin only, written to the audit log with
   what was cleared, and the usage records are untouched — the reports still show
   what was spent. A reset that erased its own evidence would be a quiet way to
@@ -840,7 +840,7 @@ Together: LMDS deploys a model with a controller; once proved in service, that c
 
 | | |
 |---|---|
-| **[DEPLOYMENT.md](docs/DEPLOYMENT.md)** | Docker / systemd / staging, Postgres + Redis, TLS, backup and restore, monitoring, troubleshooting |
+| **[DEPLOYMENT.md](docs/DEPLOYMENT.md)** | Docker / systemd / staging, Postgres + Redis, TLS, backup and restore, monitoring, troubleshooting — and [§10 Known limitations](docs/DEPLOYMENT.md#10-known-limitations), which an operator should read before trusting a metric |
 | **[API.md](docs/API.md)** | Full endpoint reference with examples |
 | **[NETWORK.md](docs/NETWORK.md)** | Every port and protocol the gateway speaks, who talks to whom, and what changes behind a reverse proxy or a forwarded port |
 | **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Pipeline, modules, design decisions and their costs |
@@ -859,7 +859,7 @@ Together: LMDS deploys a model with a controller; once proved in service, that c
 
 ```bash
 make dev      # install with dev dependencies
-make test     # 397 tests
+make test     # the whole suite
 make lint
 make check    # what CI runs
 make run      # reload server on :8080

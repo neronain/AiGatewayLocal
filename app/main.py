@@ -230,8 +230,8 @@ def create_app() -> FastAPI:
         title="LiteGate",
         version=config.VERSION,
         description=(
-            "Capability-aware, multimodal AI gateway for education. "
-            "OpenAI-compatible and Anthropic-compatible."
+            "Capability-aware, multimodal AI gateway for teams running their "
+            "own model servers. OpenAI-compatible and Anthropic-compatible."
         ),
         lifespan=lifespan,
         docs_url="/docs",

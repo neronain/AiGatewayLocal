@@ -4,7 +4,11 @@
 ครบอยู่แล้ว ขาดแค่ตารางราคา
 """
 
+import httpx
+import respx
+
 from app.core import pricing
+from tests.test_api import OPENAI_REPLY, UPSTREAM_CHAT, auth
 
 
 def test_prices_are_static_so_the_report_works_offline():
@@ -52,11 +56,6 @@ def test_the_report_says_how_old_the_prices_are():
 
 
 # ── endpoint ────────────────────────────────────────────────────────────────
-import httpx
-import respx
-
-from tests.test_api import OPENAI_REPLY, UPSTREAM_CHAT, auth
-
 
 @respx.mock
 def test_the_report_prices_real_traffic(client, member_key):

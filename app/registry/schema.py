@@ -10,10 +10,9 @@ routed when BOTH the model and the endpoint satisfy the required capability
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Literal
-
-import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 

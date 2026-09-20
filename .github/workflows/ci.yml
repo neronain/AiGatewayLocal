@@ -48,6 +48,40 @@ jobs:
       - name: Test
         run: pytest tests/ -v --tb=short
 
+  secret-scan:
+    name: secret leak scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # This repository is public and the gateway issues real credentials, so a key
+      # leaked here is a live key. Unlike the sibling LMDS repository this scan does
+      # NOT skip tests/ - nothing under tests/ hardcodes a key today (they are minted
+      # at runtime with token_urlsafe) and keeping it that way is worth more than the
+      # convenience of a realistic-looking fixture. If a test needs a fake key, make
+      # it obviously fake rather than widening this scan.
+      - name: Scan for committed API keys
+        run: |
+          if grep -rInE '(lg_sk_[A-Za-z0-9_-]{20,}|edu_sk_[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{30,}|hf_[A-Za-z0-9]{30,}|ghp_[A-Za-z0-9]{30,})' \
+              --exclude-dir=.git --exclude-dir=.github --exclude-dir=.venv \
+              --exclude-dir=bundles --exclude-dir=node_modules . ; then
+            echo "::error::Found a string shaped like a real API key. If it is a fixture, make it obviously fake."
+            exit 1
+          fi
+          echo "no key-shaped strings found"
+
+      # .gitignore already covers these. This is the check that catches the day
+      # somebody force-adds one.
+      - name: Refuse a tracked environment file
+        run: |
+          tracked=$(git ls-files '.env' '.env.*' | grep -v '^\.env\.example$' || true)
+          if [ -n "$tracked" ]; then
+            echo "::error::An environment file is tracked. Secrets belong outside the repository."
+            echo "$tracked"
+            exit 1
+          fi
+          echo "no tracked environment files"
+
   docker:
     runs-on: ubuntu-latest
     steps:

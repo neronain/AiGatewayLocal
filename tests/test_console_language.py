@@ -39,7 +39,9 @@ def test_no_thai_in_labels_the_script_builds():
     """
     js = (ROOT / "app.js").read_text(encoding="utf-8")
     body = re.sub(r"/\*.*?\*/", "", js, flags=re.S)
-    body = "\n".join(l for l in body.splitlines() if not l.strip().startswith("//"))
+    body = "\n".join(
+        line for line in body.splitlines() if not line.strip().startswith("//")
+    )
 
     bad = []
     for m in re.finditer(r"<(button|label|th|h3)\b.*?>(.*?)</\1>", body, re.S):

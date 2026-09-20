@@ -30,3 +30,6 @@ logs/
 .DS_Store
 .idea/
 .vscode/
+
+# bundle ที่ generate ออกมา เป็น build output ไม่ใช่ซอร์ส (LMDS ignore มาตั้งนานแล้ว)
+bundles/

@@ -85,7 +85,7 @@ User ──< Membership >── Workspace ──< WorkspaceModel
 | จำกัดโมเดลต่อ key | ✅ | `ApiKey.models` (v1.5) |
 | สืบสิทธิ์จากกลุ่มของเจ้าของ | ✅ | `permitted_aliases()` (v1.5) |
 | ขอบเขตของ manager | ✅ | `managed_workspaces()` (v1.5) |
-| โควตาตามช่วงเวลา | ✅ | `QuotaPolicy` · day/month/term · requests/tokens/images |
+| โควตาตามช่วงเวลา | ✅ | `QuotaPolicy` · hour/day/month/term · requests/tokens/images · (`term` ใช้เดือนตั้งต้นที่ hardcode ไว้ `(1, 6, 8)` — `term_start_months` ยังไม่ถูกต่อสาย ดู DEPLOYMENT.md §10) |
 | โควตาแยกรายโมเดล | ✅ | `QuotaPolicy.model_alias` |
 | ลำดับความสำคัญของโควตา | ✅ | user+model > user > workspace+model > workspace > global |
 | หมดอายุ key | ✅ | `ApiKey.expires_at` |
