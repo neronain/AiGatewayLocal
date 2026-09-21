@@ -132,6 +132,17 @@ DGX03_API_KEY=
 EOF
 else
     warn ".env already exists, leaving it untouched"
+    # ข้อยกเว้นเดียวของ "ไม่แตะ .env เดิม" — `GW_WORKERS` ที่ว่างหรือไม่ใช่ตัวเลข
+    #
+    # unit ส่งค่านี้ต่อเป็น `--workers ${GW_WORKERS}` · ค่าว่างจะกลายเป็นอาร์กิวเมนต์
+    # เปล่า ๆ แล้ว uvicorn ไม่ขึ้นเลย · ปล่อยไว้ = อัปเกรดแล้วบริการตาย ซึ่งแย่กว่าการ
+    # แก้ค่าเดียวที่ผู้ดูแลตั้งไว้ผิดรูปอยู่แล้ว · บรรทัดที่ไม่มีเลยไม่ต้องทำอะไร
+    # (unit มี Environment=GW_WORKERS=1 เป็นค่าตั้งต้นให้)
+    if grep -qE '^GW_WORKERS=' "$INSTALL_DIR/.env" \
+       && ! grep -qE '^GW_WORKERS=[1-9][0-9]*[[:space:]]*$' "$INSTALL_DIR/.env"; then
+        warn "GW_WORKERS in .env is empty or not a number — setting it to 1"
+        sed -i 's/^GW_WORKERS=.*/GW_WORKERS=1/' "$INSTALL_DIR/.env"
+    fi
 fi
 
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"

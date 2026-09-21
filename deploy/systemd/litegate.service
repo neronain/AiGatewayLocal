@@ -10,13 +10,30 @@ User=litegate
 Group=litegate
 WorkingDirectory=/opt/litegate
 
+# ค่าตั้งต้นของจำนวน worker — ต้องอยู่ **ก่อน** EnvironmentFile เสมอ เพราะ systemd ให้
+# บรรทัดที่มาทีหลังชนะ · .env จึงทับค่านี้ได้ ส่วนเครื่องที่ติดตั้งไว้ก่อนหน้าและ .env
+# ยังไม่มีบรรทัด GW_WORKERS จะได้ 1 ซึ่งเป็นค่าที่ถูกสำหรับการติดตั้งแบบไม่มี Redis
+Environment=GW_WORKERS=1
+
 # Secrets live here, readable only by the service user (chmod 600).
 EnvironmentFile=/opt/litegate/.env
 
+# --workers ต้องมาจาก GW_WORKERS ไม่ใช่ตัวเลขตายตัว
+#
+# เดิม unit นี้เขียน `--workers 4` ไว้ตรง ๆ · `GW_WORKERS` ถูกอ่านโดย `app.main:run`
+# เท่านั้น ซึ่งเป็น console script ที่ unit นี้ไม่ได้เรียก (มันเรียก uvicorn ตรง ๆ) ·
+# ผลคือ `scripts/bootstrap.sh` เขียน `GW_WORKERS=1` ลง .env แล้วเครื่องก็ยังรัน 4 worker
+# อยู่ดี — ซึ่งคือบั๊กที่ 1.12.1 ประกาศว่าแก้แล้วแต่แก้ไม่ถึงตรงนี้
+#
+# ซ้ำร้ายกว่านั้น: `app/state.py` ตัดสินว่าจะเตือนหรือไม่จาก `settings.workers` (= 1)
+# **คำเตือนจึงไม่ขึ้นบนเครื่องที่ต้องการมันที่สุด** — เครื่องที่รัน 4 worker โดยไม่มี Redis
+# แล้ว max_concurrency: 1 ของทุก endpoint กลายเป็น 4 คำขอพร้อมกันจริงที่ backend
+#
+# พอ unit อ่านค่าเดียวกับที่แอปอ่าน ทั้งจำนวน worker จริงและคำเตือนก็ตรงกันเองทั้งคู่
 ExecStart=/opt/litegate/.venv/bin/uvicorn app.main:app \
     --host 0.0.0.0 \
     --port 8080 \
-    --workers 4 \
+    --workers ${GW_WORKERS} \
     --proxy-headers \
     --forwarded-allow-ips '*'
 

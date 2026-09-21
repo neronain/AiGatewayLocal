@@ -61,3 +61,63 @@ def test_the_hardened_registry_is_a_deliberate_choice_not_the_default():
 def test_the_rest_of_the_hardening_stays(key):
     """เปิด config ให้เขียนได้ ไม่ใช่ข้ออ้างให้ถอด sandbox ทั้งชุด"""
     assert _unit_value(key) == "true"
+
+
+# ── จำนวน worker ต้องมาจากที่เดียวกับที่แอปอ่าน ──────────────────────────────────
+
+def test_the_unit_does_not_hardcode_a_worker_count():
+    """เคสจริง (2026-09-21): `scripts/bootstrap.sh` เขียน `GW_WORKERS=1` ลง .env ตาม
+    ที่ 1.12.1 ประกาศว่าแก้แล้ว แต่ unit ยังเขียน `--workers 4` ไว้ตรง ๆ ·
+    `GW_WORKERS` ถูกอ่านโดย `app.main:run` เท่านั้น ซึ่งเป็น console script ที่ unit นี้
+    ไม่ได้เรียก (มันเรียก uvicorn ตรง ๆ) — **เครื่องที่ติดตั้งแบบ native จึงยังรัน
+    4 worker โดยไม่มี Redis อยู่ดี** และ `max_concurrency: 1` ของทุก endpoint กลายเป็น
+    4 คำขอพร้อมกันจริงที่ backend
+
+    `docker/docker-compose.prod.yml` เจอบั๊กเดียวกันและแก้ไปแล้วพร้อมคอมเมนต์อธิบาย —
+    ไม่มีใครย้อนกลับมาแก้ unit
+    """
+    exec_start = " ".join(
+        line.strip().rstrip("\\").strip()
+        for line in UNIT.read_text(encoding="utf-8").splitlines()
+        if line.startswith("ExecStart=") or line.startswith("    --")
+    )
+    assert "--workers ${GW_WORKERS}" in exec_start, exec_start
+    assert not re.search(r"--workers\s+\d", exec_start), "ตัวเลขตายตัวกลับมาแล้ว"
+
+
+def test_the_default_worker_count_cannot_be_shadowed_by_the_env_file():
+    """systemd ให้บรรทัดที่มาทีหลังชนะ · `Environment=GW_WORKERS=1` จึงต้องอยู่ **ก่อน**
+    `EnvironmentFile=` ไม่งั้นค่าที่ผู้ดูแลตั้งไว้ใน .env จะถูกค่าตั้งต้นทับ
+
+    และต้องมีค่าตั้งต้นจริง ๆ เพราะ .env ของเครื่องที่ติดตั้งก่อนหน้านี้ไม่มีบรรทัดนั้นเลย —
+    ไม่มีค่าตั้งต้น = `--workers` ว่าง = บริการไม่ขึ้นหลังอัปเกรด
+    """
+    lines = UNIT.read_text(encoding="utf-8").splitlines()
+    default_at = next(i for i, x in enumerate(lines) if x.strip() == "Environment=GW_WORKERS=1")
+    envfile_at = next(i for i, x in enumerate(lines) if x.startswith("EnvironmentFile="))
+    assert default_at < envfile_at, "ค่าตั้งต้นต้องมาก่อน .env ไม่งั้นมันทับค่าของผู้ดูแล"
+
+
+def test_bootstrap_repairs_a_worker_value_that_would_stop_the_service():
+    """`.env` เดิมไม่เคยถูกเขียนทับโดยตั้งใจ — ข้อยกเว้นเดียวคือค่าที่ทำให้บริการไม่ขึ้น
+
+    `--workers ${GW_WORKERS}` ที่ค่าว่างกลายเป็นอาร์กิวเมนต์เปล่า แล้ว uvicorn ตายทันที ·
+    ปล่อยไว้ = อัปเกรดแล้วเกตเวย์ดับ ซึ่งแย่กว่าการแก้ค่าเดียวที่ผิดรูปอยู่แล้ว
+    """
+    text = BOOTSTRAP.read_text(encoding="utf-8")
+    assert "GW_WORKERS=1" in text
+    assert "^GW_WORKERS=[1-9][0-9]*" in text, "ต้องตรวจว่าเป็นตัวเลขบวก ไม่ใช่แค่ว่าไม่ว่าง"
+    assert "sed -i 's/^GW_WORKERS=.*/GW_WORKERS=1/'" in text
+
+
+def test_the_warning_reads_the_same_value_the_unit_uses():
+    """`app/state.py` ตัดสินว่าจะเตือนจาก `settings.workers` ซึ่งมาจาก `GW_WORKERS` ·
+    ตราบใดที่ unit ก็ใช้ค่าเดียวกัน จำนวน worker จริงกับคำเตือนจะตรงกันเสมอ
+
+    ก่อนแก้: unit รัน 4, `settings.workers` = 1 → **คำเตือนไม่ขึ้นบนเครื่องที่ต้องการมัน
+    ที่สุด** ซึ่งเป็นอาการที่มองไม่เห็นจนกว่าจะมีคนไปงงว่าทำไม backend โดนยิงพร้อมกันสี่คำขอ
+    """
+    from app.state import unshared_limit_warning
+
+    assert unshared_limit_warning(redis=None, workers=4, is_production=True)
+    assert not unshared_limit_warning(redis=None, workers=1, is_production=True)
