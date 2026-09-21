@@ -20,7 +20,7 @@ import pytest
 import respx
 
 from app.core.retrieval import profile_embeddings_request, profile_rerank_request
-from app.core.tokens import estimate_text_tokens
+from app.core.tokens import WIDE_CHARS_PER_TOKEN, estimate_text_tokens
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -486,9 +486,13 @@ def test_rerank_charges_the_query_once_per_document():
     # 320 ตัวอักษรของ query × 4 เอกสาร + 4×320 ของเอกสารเอง = 2,560 ตัวอักษร
     assert profile.text_chars == 2560
     assert profile.batch_items == 4
-    assert estimate_text_tokens(profile) == 800
-    # การนับแบบ "prompt เดียว" จะได้ (320 + 1280)/3.2 = 500 — ต่ำกว่าของจริง 37%
-    assert estimate_text_tokens(profile) > (320 + 4 * 320) / 3.2
+    # ข้อความเป็นภาษาไทยล้วน จึงถูกนับด้วยอัตราของอักขระนอก ASCII
+    assert estimate_text_tokens(profile) == int(2560 / WIDE_CHARS_PER_TOKEN)
+
+    # หัวใจของเทส: การนับแบบ "prompt เดียว" (query ครั้งเดียว) ต่ำกว่าความจริงชัดเจน
+    once = profile_rerank_request({"model": "rerank", "query": query, "documents": documents[:1]})
+    once.batch_items = 4
+    assert estimate_text_tokens(profile) > estimate_text_tokens(once) * 2
 
 
 def test_pre_tokenized_input_is_counted_exactly_not_as_zero():

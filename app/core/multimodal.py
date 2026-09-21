@@ -37,6 +37,9 @@ _MAGIC: tuple[tuple[bytes, str], ...] = (
 )
 
 
+_ASCII_SYMBOL = re.compile(r"[^A-Za-z\s]")
+
+
 @dataclass
 class ImageRef:
     """One image found in a request. `data` is held only for the request's life."""
@@ -58,6 +61,11 @@ class RequestProfile:
     requires_tools: bool = False
     requires_streaming: bool = False
     text_chars: int = 0
+    # ส่วนย่อยของ `text_chars` — แยกไว้เพราะอักขระคนละชนิดกลายเป็น token คนละอัตรากันมาก
+    # (วัดจริงกับ qwen3-embedding-8b 2026-09-22: อังกฤษ 4.9 · ไทย 1.9 · ตัวเลข/สัญลักษณ์ 1.2
+    #  อักขระต่อ token) · ค่าเดียวจึงครอบไม่ได้ ดู `core/tokens.estimate_text_tokens`
+    text_wide_chars: int = 0     # นอก ASCII — ไทย จีน ญี่ปุ่น เกาหลี อีโมจิ
+    text_symbol_chars: int = 0   # ASCII ที่ไม่ใช่ตัวอักษรและไม่ใช่ช่องว่าง — ตัวเลข วรรคตอน
 
     # ── คำขอที่ backend มองเป็นหลายงานย่อย (embedding หลายสตริง · rerank หลายเอกสาร) ──
     #
@@ -99,6 +107,19 @@ class RequestProfile:
         if self.requires_streaming:
             caps.append("streaming")
         return caps
+
+    def add_text(self, text: str) -> None:
+        """นับอักขระของข้อความหนึ่งชิ้น แยกตามชนิดไปในตัว
+
+        ใช้ `encode`/regex แทนลูปทีละอักขระเพราะนี่คือ hot path — prompt แสนตัวอักษร
+        มีจริง และการวนทีละตัวใน Python จะกินเวลาต่อคำขอแบบที่เห็นได้
+        """
+        if not text:
+            return
+        self.text_chars += len(text)
+        plain = text.encode("ascii", "ignore").decode("ascii")
+        self.text_wide_chars += len(text) - len(plain)
+        self.text_symbol_chars += len(_ASCII_SYMBOL.findall(plain))
 
 
 def _sniff_mime(data: bytes) -> str | None:
@@ -263,7 +284,7 @@ def profile_openai_request(body: dict[str, Any], policy: VisionPolicy) -> Reques
 
         content = message.get("content")
         if isinstance(content, str):
-            profile.text_chars += len(content)
+            profile.add_text(content)
             continue
         if content is None:
             continue
@@ -282,7 +303,7 @@ def profile_openai_request(body: dict[str, Any], policy: VisionPolicy) -> Reques
                 )
             btype = block.get("type")
             if btype == "text":
-                profile.text_chars += len(block.get("text") or "")
+                profile.add_text(block.get("text") or "")
             elif btype == "image_url":
                 image_url = block.get("image_url")
                 url = image_url.get("url") if isinstance(image_url, dict) else image_url
@@ -326,7 +347,7 @@ def profile_responses_request(body: dict[str, Any], policy: VisionPolicy) -> Req
 
     instructions = body.get("instructions")
     if isinstance(instructions, str):
-        profile.text_chars += len(instructions)
+        profile.add_text(instructions)
 
     payload = body.get("input")
     if isinstance(payload, str):
@@ -334,7 +355,7 @@ def profile_responses_request(body: dict[str, Any], policy: VisionPolicy) -> Req
             raise GatewayError(
                 ErrorCode.INVALID_REQUEST, "'input' must not be empty.", param="input"
             )
-        profile.text_chars += len(payload)
+        profile.add_text(payload)
         return profile
 
     if not isinstance(payload, list) or not payload:
@@ -354,12 +375,12 @@ def profile_responses_request(body: dict[str, Any], policy: VisionPolicy) -> Req
         itype = item.get("type")
         if itype in {"function_call", "function_call_output"}:
             profile.requires_tools = True
-            profile.text_chars += len(str(item.get("arguments") or item.get("output") or ""))
+            profile.add_text(str(item.get("arguments") or item.get("output") or ""))
             continue
 
         content = item.get("content")
         if isinstance(content, str):
-            profile.text_chars += len(content)
+            profile.add_text(content)
             continue
         if content is None:
             continue
@@ -378,7 +399,7 @@ def profile_responses_request(body: dict[str, Any], policy: VisionPolicy) -> Req
                 )
             ptype = part.get("type")
             if ptype in {"input_text", "output_text", "text"}:
-                profile.text_chars += len(part.get("text") or "")
+                profile.add_text(part.get("text") or "")
             elif ptype == "input_image":
                 url = part.get("image_url")
                 if isinstance(url, dict):  # tolerated: some clients send the chat shape
@@ -411,11 +432,11 @@ def profile_anthropic_request(body: dict[str, Any], policy: VisionPolicy) -> Req
 
     system = body.get("system")
     if isinstance(system, str):
-        profile.text_chars += len(system)
+        profile.add_text(system)
     elif isinstance(system, list):
         for block in system:
             if isinstance(block, dict) and block.get("type") == "text":
-                profile.text_chars += len(block.get("text") or "")
+                profile.add_text(block.get("text") or "")
 
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
@@ -426,7 +447,7 @@ def profile_anthropic_request(body: dict[str, Any], policy: VisionPolicy) -> Req
     for idx, message in enumerate(messages):
         content = message.get("content") if isinstance(message, dict) else None
         if isinstance(content, str):
-            profile.text_chars += len(content)
+            profile.add_text(content)
             continue
         if not isinstance(content, list):
             raise GatewayError(
@@ -442,7 +463,7 @@ def profile_anthropic_request(body: dict[str, Any], policy: VisionPolicy) -> Req
                 )
             btype = block.get("type")
             if btype == "text":
-                profile.text_chars += len(block.get("text") or "")
+                profile.add_text(block.get("text") or "")
             elif btype == "image":
                 profile.modalities.add("image")
                 profile.images.append(_profile_anthropic_image(block, policy, path))

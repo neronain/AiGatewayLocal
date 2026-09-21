@@ -28,7 +28,7 @@ from typing import Any
 from app.config import get_settings
 from app.core.errors import ErrorCode, GatewayError
 from app.core.multimodal import RequestProfile
-from app.core.tokens import CHARS_PER_TOKEN
+from app.core.tokens import estimate_chars
 
 # เส้นทางที่ยิงไปหา backend · ตรงกับที่ bundle ของ LMDS บอกว่าเสิร์ฟจริง
 # (bundles/qwen3-embedding-8b, bundles/qwen3-reranker-4b → MODEL_PROFILE.yaml)
@@ -36,9 +36,14 @@ UPSTREAM_EMBEDDINGS_PATH = "/v1/embeddings"
 UPSTREAM_RERANK_PATH = "/v1/rerank"
 
 
-def _tokens(chars: int = 0, token_ids: int = 0) -> int:
-    """ต้นทุนของงานย่อยหนึ่งชิ้น · token id นับเป๊ะ ส่วนอักขระต้องประมาณ"""
-    return int(chars / CHARS_PER_TOKEN) + token_ids
+def _tokens(text: str = "", token_ids: int = 0) -> int:
+    """ต้นทุนของงานย่อยหนึ่งชิ้น · token id นับเป๊ะ ส่วนข้อความต้องประมาณ
+
+    ใช้ตัวประมาณตัวเดียวกับที่นับโควตา — ไม่งั้นด่านตรวจ context กับยอดที่บันทึกจะ
+    ไม่ตรงกัน · เอกสารภาษาไทยยาว ๆ เคยถูกประเมินต่ำกว่าจริงเท่าตัว แล้วปล่อยผ่านด่านนี้
+    ไปให้ backend ปฏิเสธเอง
+    """
+    return estimate_chars(text) + token_ids
 
 
 def _check_batch_size(count: int, param: str) -> None:
@@ -84,15 +89,18 @@ def profile_embeddings_request(body: dict[str, Any]) -> RequestProfile:
             ErrorCode.INVALID_REQUEST, "'input' is required.", param="input"
         )
 
-    # (จำนวนอักขระ, จำนวน token id) ต่อหนึ่งงานย่อย
-    items: list[tuple[int, int]] = []
+    # (ข้อความ, จำนวน token id) ต่อหนึ่งงานย่อย
+    #
+    # เก็บตัวข้อความไว้ ไม่ใช่แค่ `len()` เพราะการประมาณ token แยกตามชนิดอักขระ —
+    # ไทยกับตัวเลขกลายเป็น token หนาแน่นกว่าอังกฤษหลายเท่า (ดู `core/tokens`)
+    items: list[tuple[str, int]] = []
 
     if isinstance(raw, str):
         if not raw:
             raise GatewayError(
                 ErrorCode.INVALID_REQUEST, "'input' must not be empty.", param="input"
             )
-        items.append((len(raw), 0))
+        items.append((raw, 0))
     elif isinstance(raw, list):
         if not raw:
             raise GatewayError(
@@ -102,11 +110,11 @@ def profile_embeddings_request(body: dict[str, Any]) -> RequestProfile:
             )
         # อาร์เรย์ของ int ล้วน = *หนึ่ง* ลำดับที่ tokenize มาแล้ว ไม่ใช่หลายงานย่อย
         if all(_is_int(x) for x in raw):
-            items.append((0, len(raw)))
+            items.append(("", len(raw)))
         else:
             for idx, item in enumerate(raw):
                 if isinstance(item, str):
-                    items.append((len(item), 0))
+                    items.append((item, 0))
                 elif isinstance(item, list) and all(_is_int(x) for x in item):
                     if not item:
                         raise GatewayError(
@@ -114,7 +122,7 @@ def profile_embeddings_request(body: dict[str, Any]) -> RequestProfile:
                             f"input[{idx}] must not be an empty array.",
                             param=f"input[{idx}]",
                         )
-                    items.append((0, len(item)))
+                    items.append(("", len(item)))
                 else:
                     raise GatewayError(
                         ErrorCode.INVALID_REQUEST,
@@ -129,10 +137,11 @@ def profile_embeddings_request(body: dict[str, Any]) -> RequestProfile:
         )
 
     _check_batch_size(len(items), "input")
-    profile.text_chars = sum(chars for chars, _ in items)
+    for text, _ids in items:
+        profile.add_text(text)
     profile.pretokenized_tokens = sum(ids for _, ids in items)
     profile.batch_items = len(items)
-    profile.largest_item_tokens = max(_tokens(chars, ids) for chars, ids in items)
+    profile.largest_item_tokens = max(_tokens(text, ids) for text, ids in items)
     return profile
 
 
@@ -183,10 +192,12 @@ def profile_rerank_request(body: dict[str, Any]) -> RequestProfile:
             param="top_n",
         )
 
-    query_chars = len(query)
-    profile.text_chars = query_chars * len(documents) + sum(len(d) for d in documents)
+    # นับ query ซ้ำทีละรอบจริง ๆ แทนการคูณจำนวนอักขระ — ชนิดอักขระต้องถูกนับซ้ำตามไปด้วย
+    for document in documents:
+        profile.add_text(query)
+        profile.add_text(document)
     profile.batch_items = len(documents)
-    profile.largest_item_tokens = _tokens(query_chars + max(len(d) for d in documents))
+    profile.largest_item_tokens = _tokens(query + max(documents, key=len))
     return profile
 
 

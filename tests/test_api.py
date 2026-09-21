@@ -436,7 +436,7 @@ def test_count_tokens_endpoint(client, member_key):
         },
     )
     assert response.status_code == 200
-    assert response.json()["input_tokens"] == 100
+    assert response.json()["input_tokens"] == 80   # 320 อักขระ ASCII / 4.0
 
 
 # ---------------------------------------------------------------------------

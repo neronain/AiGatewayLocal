@@ -16,11 +16,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.core.multimodal import ImageRef, RequestProfile
+from app.core.multimodal import _ASCII_SYMBOL, ImageRef, RequestProfile
 
-# Average characters per token for mixed Thai/English prompts. Thai is denser
-# per character than English, so this sits below the common English ~4.0.
-CHARS_PER_TOKEN = 3.2
+# อักขระต่อ token แยกตามชนิด — **ค่าเดียวครอบไม่ได้**
+#
+# วัดจริงกับ `qwen3-embedding-8b` บน dgx-spark04 (2026-09-22) ด้วยข้อความ 8 ชุด
+# แล้วอ่าน `usage.prompt_tokens` ที่ backend รายงานกลับมา:
+#
+#     อังกฤษล้วน        4.86 อักขระ/token
+#     โค้ด              3.26
+#     ไทยปนอังกฤษ       2.43
+#     ไทยล้วน           1.89
+#     ตัวเลข/สัญลักษณ์   1.16   (IP, เวอร์ชัน, วันที่ — เกือบ 1 token ต่ออักขระ)
+#
+# ค่าเดิมคือ `3.2` ตัวเดียว ซึ่งตั้งไว้โดยตั้งใจให้ต่ำกว่าอังกฤษเพราะรู้ว่ามีภาษาไทย —
+# แต่ยังสูงไป **2.6 เท่า** สำหรับไทย · ผลคือยอดรวมของชุดทดสอบออกมาเป็น **73% ของจริง**
+# และต่ำกว่าจริงใน 5 จาก 8 เคส
+#
+# ค่าด้านล่างให้ 107% ของจริง — **ตั้งใจให้เกินเล็กน้อย** เพราะนี่เป็นค่าสำรองที่ใช้ตอน
+# backend ไม่รายงาน usage มา และในงานโควตา **การนับต่ำกว่าจริงคือช่องโหว่** ส่วนการนับ
+# เกินเล็กน้อยแค่เข้มกับผู้ใช้เกินไปหน่อย · สองอย่างนี้ไม่เท่ากัน
+CHARS_PER_TOKEN = 4.0          # ASCII ที่เป็นตัวอักษรหรือช่องว่าง
+SYMBOL_CHARS_PER_TOKEN = 1.0   # ASCII อื่น — ตัวเลข วรรคตอน เครื่องหมาย
+WIDE_CHARS_PER_TOKEN = 1.6     # นอก ASCII — ไทย จีน ญี่ปุ่น เกาหลี อีโมจิ
 
 # Tile model, matching how most vision encoders bill: the image is covered by
 # 512x512 tiles, each worth TILE_TOKENS, plus a fixed thumbnail pass.
@@ -59,6 +77,23 @@ def estimate_visual_tokens(profile: RequestProfile) -> int:
     return sum(estimate_image_tokens(img) for img in profile.images)
 
 
+def estimate_chars(text: str) -> int:
+    """ประมาณ token ของข้อความชิ้นเดียว — ตัวเดียวกับที่ `estimate_text_tokens` ใช้
+
+    มีไว้ให้ฝั่งที่ถือ *ตัวข้อความ* อยู่ (เช่นด่านตรวจ context ต่อชิ้นของ /v1/rerank)
+    เรียกได้โดยไม่ต้องสร้าง `RequestProfile` ขึ้นมาทั้งก้อน
+    """
+    if not text:
+        return 0
+    plain = text.encode("ascii", "ignore").decode("ascii")
+    wide = len(text) - len(plain)
+    symbols = len(_ASCII_SYMBOL.findall(plain))
+    letters = len(plain) - symbols
+    return (int(letters / CHARS_PER_TOKEN)
+            + int(symbols / SYMBOL_CHARS_PER_TOKEN)
+            + int(wide / WIDE_CHARS_PER_TOKEN))
+
+
 def estimate_text_tokens(profile: RequestProfile) -> int:
     """อักขระที่ต้องเดา บวกกับ token ที่ไม่ต้องเดา
 
@@ -66,7 +101,14 @@ def estimate_text_tokens(profile: RequestProfile) -> int:
     และคนที่ส่ง id มาก็บอกจำนวนที่แน่นอนมาแล้ว · ไม่บวกตรงนี้ = คำขอที่ส่ง token id
     ถูกคิดเป็น 0 token ทั้งที่ backend รันเต็ม ๆ ซึ่งคือช่องโหว่โควตาที่เปิดทิ้งไว้
     """
-    return int(profile.text_chars / CHARS_PER_TOKEN) + profile.pretokenized_tokens
+    wide = profile.text_wide_chars
+    symbols = profile.text_symbol_chars
+    # ที่เหลือคือตัวอักษรละตินกับช่องว่าง · ไม่ติดลบแม้โปรไฟล์ถูกสร้างขึ้นเองโดยไม่ได้แยกชนิด
+    plain = max(0, profile.text_chars - wide - symbols)
+    return (int(plain / CHARS_PER_TOKEN)
+            + int(symbols / SYMBOL_CHARS_PER_TOKEN)
+            + int(wide / WIDE_CHARS_PER_TOKEN)
+            + profile.pretokenized_tokens)
 
 
 def estimate_prompt_tokens(profile: RequestProfile) -> int:

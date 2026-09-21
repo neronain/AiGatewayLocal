@@ -226,4 +226,4 @@ def test_usage_falls_back_to_estimate_without_upstream_numbers():
     profile = profile_openai_request(body, VisionPolicy())
     usage = resolve_usage(profile, None)
     assert usage.accounting == "estimated"
-    assert usage.text_input_tokens == 100  # 320 chars / 3.2
+    assert usage.text_input_tokens == 80   # 320 อักขระ ASCII / 4.0
