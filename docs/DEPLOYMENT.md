@@ -1843,6 +1843,25 @@ The button does not appear on installs without this wiring — `POST
 /admin/version/check` returns `can_apply: false` and the console shows only the
 commands to copy. A button that quietly does nothing is worse than no button.
 
+**Backups are kept, but not forever.** Every press copies `app/` to
+`/opt/gw-backup-<date>-<time>` before touching anything. Five are kept; older ones
+are deleted once the gateway answers `/healthz` again — never before, because a
+failed update is exactly when you want the whole history. Set `GW_KEEP_BACKUPS` to
+change the count. Only directories the script named itself are considered, so a
+`gw-backup-` path you created by hand is left alone.
+
+**The updater does not update itself.** The button copies `app/` and
+`pyproject.toml`, nothing else. `app/` runs as the unprivileged `litegate` user;
+`self_update.sh` runs as root. Letting the button replace a root script from the
+source directory would hand root to anyone who can write that directory, which is
+the whole thing the path unit exists to prevent. When the source carries a newer
+updater the log says so and prints the one command to install it:
+
+```bash
+sudo install -m 755 -o root -g root /srv/AiGatewayLocal/scripts/self_update.sh \
+  /opt/litegate/scripts/self_update.sh
+```
+
 When the host has a checkout of this repository:
 
 ```bash
