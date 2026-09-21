@@ -132,6 +132,8 @@ async function showBuild() {
   try {
     const h = await api('/healthz');
     const el = $('cred-build');
+    const now = $('ver-now');
+    if (now) now.textContent = `LiteGate v${h.version || '?'}`;
     if (!h.console_updated) { el.textContent = `v${h.version || '?'}`; return; }
     const d = stamp(h.console_updated);
     el.textContent = `v${h.version} · UI ${d.toLocaleDateString()} ${d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}`;
@@ -139,6 +141,78 @@ async function showBuild() {
   } catch { /* ท้ายหน้าไม่ใช่ที่สำหรับรายงานว่าดึงเวอร์ชันไม่ได้ */ }
 }
 showBuild();
+
+// ── มีรุ่นใหม่ไหม ─────────────────────────────────────────────────────────────
+//
+// เครื่อง production เคยค้างที่ 1.10.0 หลายสัปดาห์หลัง 1.12.1 ออกไปแล้ว เพราะไม่มีอะไร
+// บนจอบอกว่ามันตามหลังอยู่ · ป้ายท้ายหน้าบอกแค่ "รันอะไรอยู่" ซึ่งตอบไม่ได้ว่า
+// "ของล่าสุดคืออะไร"
+//
+// สองข้อที่ห้ามหลุด:
+// 1. ยิงเมื่อกดเท่านั้น — ไม่มีการเรียกตอนโหลดหน้าหรือตอนสลับแท็บ เพราะลูกค้าที่รัน
+//    air-gapped มีจริง และเป็นเหตุผลที่หน้านี้ไม่โหลดแม้แต่ฟอนต์จากข้างนอก
+// 2. ให้เกตเวย์เป็นคนถาม ไม่ใช่เบราว์เซอร์ — ถ้าเบราว์เซอร์ยิง api.github.com เอง
+//    IP ของเครื่องที่เปิดคอนโซลจะไปโผล่ที่ GitHub ทุกครั้ง ซึ่งเป็นการส่งข้อมูลออก
+//    ที่ไม่มีใครสัญญาไว้ · ในไฟล์นี้จึงต้องไม่มี URL ของ GitHub เลยแม้แต่ที่เดียว
+const VER_TONE = { behind: 'warn', current: 'ok', ahead: 'mute', unknown: 'mute' };
+const VER_LABEL = {
+  behind: 'update available',
+  current: 'up to date',
+  ahead: 'newer than the latest release',
+  unknown: 'cannot compare',
+};
+
+// คำสั่งอ่านจากดิสก์ของเครื่องนั้นเอง (checkout / container / ก๊อปไฟล์) — กางไว้เมื่อ
+// มีของให้อัปจริง พับไว้เมื่อไม่มี เพราะคนที่เพิ่งเห็นว่า "ล่าสุดแล้ว" ไม่ได้มาอ่านคำสั่ง
+function updateSteps(update, open) {
+  if (!update) return '';
+  const steps = (update.commands || []).map(esc).join('\n');
+  const doc = update.doc ? `<p class="hint">ขั้นตอนเต็มและกรณีที่ต้องระวัง: ${esc(update.doc)}</p>` : '';
+  const inner = `<p class="hint">${esc(update.summary || '')}</p><pre>${steps}</pre>${doc}`;
+  return open
+    ? `<div style="margin-top:10px">${inner}</div>`
+    : `<details style="margin-top:10px"><summary class="sub">How this install updates</summary>
+         ${inner}</details>`;
+}
+
+function renderVersion(r) {
+  const when = r.checked_at ? stamp(r.checked_at).toLocaleString() : '';
+  const foot = `<p class="hint">ตรวจเมื่อ ${esc(when)} · การตรวจครั้งนี้ไม่ได้ส่งเลขเวอร์ชัน
+    ชื่อเครื่อง หรือสถิติใด ๆ ออกไป — เกตเวย์อ่านเลขรุ่นล่าสุดมาเทียบเองที่เครื่องนี้</p>`;
+  if (!r.ok) {
+    return `<p><span class="pill mute">not checked</span> ${esc(r.reason || '')}</p>
+      <p class="hint">เครื่องนี้รัน <code>${esc(r.current)}</code> · ดูรุ่นล่าสุดเองได้จาก
+        <code>${esc(r.releases_url || '')}</code> บนเครื่องที่ต่อเน็ตได้</p>
+      ${foot}${updateSteps(r.update, false)}`;
+  }
+  const behind = r.status === 'behind';
+  // ไม่มีวันเผยแพร่ = เลขนี้มาจากแท็ก ไม่ใช่ release · หน้าปลายทางเป็นหน้าแท็ก
+  // ซึ่งไม่มี release notes ให้อ่าน การเรียกมันว่า notes คือการส่งคนไปหาของที่ไม่มี
+  const notes = r.release_url
+    ? ` <a href="${esc(r.release_url)}" target="_blank" rel="noopener">${r.published_at ? 'release notes' : 'ดูแท็กบน GitHub'}</a>`
+    : '';
+  const published = r.published_at
+    ? ` · ออกเมื่อ ${esc(stamp(r.published_at).toLocaleDateString())}`
+    : '';
+  return `<p><span class="pill ${VER_TONE[r.status] || 'mute'}">${esc(VER_LABEL[r.status] || r.status)}</span>
+      เครื่องนี้ <code>${esc(r.current)}</code> · ล่าสุด <code>${esc(r.latest)}</code>${published}${notes}</p>
+    ${foot}${updateSteps(r.update, behind)}`;
+}
+
+$('ver-check').onclick = async () => {
+  const button = $('ver-check');
+  const body = $('ver-body');
+  button.disabled = true;
+  body.innerHTML = '<p class="hint">กำลังถาม GitHub…</p>';
+  try {
+    body.innerHTML = renderVersion(await post('/admin/version/check'));
+  } catch (e) {
+    // ไปไม่ถึงเกตเวย์ (หมดเซสชัน, nginx บล็อก) คนละเรื่องกับ "เกตเวย์ออกเน็ตไม่ได้"
+    body.innerHTML = `<p><span class="pill err">${esc(e.message)}</span></p>`;
+  } finally {
+    button.disabled = false;
+  }
+};
 
 /* ------------------------------------------------- นำทางบนจอแคบ */
 // เมนูอยู่ซ้ายถาวรบนจอกว้าง · จอแคบเปิดเป็นลิ้นชักทับเนื้อหา แล้วปิดเองเมื่อ
@@ -173,6 +247,9 @@ function applyRole(role) {
     if (el.hasAttribute('data-staff')) el.hidden = !staff;
   }
   $('health-wrap').hidden = !admin;
+  // เลขรุ่นและปุ่มตรวจเป็นเรื่องของคนที่อัปเดตเครื่องได้ · ตั้งก่อน buildSubtabs()
+  // ไม่งั้นเมนูย่อยจะสร้างปุ่มไปหาหมวดที่ตั้งใจซ่อน
+  $('version-wrap').hidden = !admin;
   // สิทธิ์เพิ่งรู้ตอนนี้ — สร้างเมนูย่อยใหม่ให้ตรงกับหมวดที่คนนี้เห็นได้จริง
   if (typeof buildSubtabs === 'function') buildSubtabs();
   $('usage-wrap').hidden = !staff;

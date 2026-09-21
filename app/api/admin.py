@@ -13,7 +13,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import assistant_fit, lmds
+from app import config
+from app.core import assistant_fit, lmds, release
 from app.core.auth import (
     Principal,
     extract_bearer_token,
@@ -2167,6 +2168,30 @@ async def _compatibility_by_alias(session: AsyncSession) -> dict[str, dict[str, 
 # ---------------------------------------------------------------------------
 # Deploy-tool integration
 # ---------------------------------------------------------------------------
+# ── มีรุ่นใหม่ให้อัปเดตไหม ───────────────────────────────────────────────────
+#
+# เครื่อง production เคยค้างอยู่ที่ 1.10.0 หลายสัปดาห์หลัง 1.12.1 ออกไปแล้ว โดยไม่มี
+# อะไรบนจอบอกว่ามันตามหลังอยู่สองรุ่น · ลูกค้าติดตั้งแบบเครื่องใครเครื่องมัน ไม่มีใคร
+# ไล่ดูให้ คอนโซลจึงต้องบอกเอง
+#
+# **นี่คือที่เดียวในทั้งเกตเวย์ที่ต่อออกอินเทอร์เน็ตโดยไม่ได้ถูกตั้งค่าให้ต่อ** และมันเป็น
+# POST โดยตั้งใจ: ไม่มี GET คู่กัน เพราะ GET คือสิ่งที่คอนโซลเรียกเองตอนโหลดหน้า
+# แล้วเครื่อง air-gapped จะกลายเป็นเครื่องที่ยิงเน็ตทุกครั้งที่มีคนเปิดหน้า
+@router.post("/version/check")
+async def check_for_updates(actor: Principal = Depends(require_admin)) -> dict[str, Any]:
+    """เทียบเลขที่รันอยู่กับ release ล่าสุดบน GitHub · ตรวจไม่ได้ ไม่ใช่ error
+
+    คำตอบเมื่อต่อไม่ได้ยังเป็น 200 พร้อม ``ok: false`` และเหตุผล — เครื่องที่ไม่มีทาง
+    ออกเน็ตคือการตั้งค่าที่ตั้งใจ ไม่ใช่อาการเสีย และคอนโซลไม่ควรขึ้นแดงใส่คนที่
+    ตั้งใจให้มันเป็นแบบนั้น
+    """
+    result = await release.check(config.VERSION)
+    # วิธีอัปเดตอ่านจากดิสก์ล้วน ๆ ไม่ได้ถามใคร · ติดมาด้วยทุกคำตอบ คอนโซลจะได้บอก
+    # คำสั่งที่ถูกกับที่ติดตั้งแบบนี้ได้แม้ตอนที่ตรวจไม่สำเร็จ
+    result["update"] = release.how_to_update()
+    return result
+
+
 class LmdsConnectionIn(BaseModel):
     base_url: str = Field(default="", max_length=200)
     # Write-only. Absent means "keep what is stored"; empty string clears it.

@@ -75,6 +75,7 @@ assumes a particular sector.
 | 📊 **Real quota** | Per member, workspace, model or group — over requests, text tokens, **visual tokens**, output tokens and images, plus per-minute rate limits. |
 | 🤖 **Claude Code + Codex work** | `/v1/messages` และ `/v1/responses` เสิร์ฟได้แม้ backend พูดแต่ OpenAI — เกตเวย์แปลให้ทั้งสองทาง รวม streaming |
 | 🔒 **Private by default** | No prompt, no response, no image is ever written to disk. The schema has no column for them. |
+| 🔔 **Says when it is behind** | The console compares the running version against the latest release — **only when an administrator presses the button**. Nothing is sent but a read of a public repository, and a gateway with no internet says so calmly instead of failing. |
 
 ---
 
@@ -816,6 +817,44 @@ with its verification badge, licence, supported platforms, and a **download
 button that auto-detects the viewer's OS**. A Connect button mints a scoped key
 and displays the `ANTHROPIC_BASE_URL`, `AUTH_TOKEN`, and `MODEL` the tool needs
 to wire itself to this gateway, ready to paste into a client config.
+
+---
+
+## Staying on the current release
+
+A production gateway once sat on 1.10.0 for weeks after 1.12.1 shipped. Nothing
+on screen said so, and nobody was going to go looking. Customers install this
+one machine at a time, so the console has to be the thing that notices.
+
+**Dashboard → Version → Check for updates** (administrators only) compares the
+running version against the latest release of this repository and says one of
+four things: up to date, an update is available, newer than the latest release
+(a build from `main`), or it could not tell you.
+
+Three rules the button lives under:
+
+- **It only runs when pressed.** Nothing is checked at startup, on page load, or
+  on a timer. An air-gapped install is a deliberate configuration, and this
+  console does not fetch so much as a font from the internet without being told.
+- **Nothing about this machine goes out.** The request is a plain `GET` for the
+  latest release of a public repository: no query string, no body, no version
+  number, no hostname, no identifier of any kind. The comparison happens here,
+  after the answer arrives. There is no telemetry in LiteGate and this did not
+  add any. The gateway asks, not your browser — otherwise the address of
+  whoever opened the console would show up at GitHub on every check.
+- **No internet is an answer, not an error.** A machine with no route out gets
+  "could not check", the reason why, and the version it is running — in a few
+  seconds, not after a long hang.
+
+**There is no "update it for me" button, on purpose.** LMDS can offer one
+because it is always a git checkout. LiteGate is installed three different ways
+— a checkout, a container image, or files copied onto the host — and the third
+one, which is what real production machines use, has a five-step safe procedure
+where every step exists because skipping it once caused an outage. A button that
+works on some customer machines and not others is worse than no button. So the
+console reports what it found and prints the commands that match *this*
+install, and a person runs them. See
+[DEPLOYMENT.md § Routine upgrade](docs/DEPLOYMENT.md).
 
 ---
 

@@ -1658,6 +1658,51 @@ It is tracked as its own task.
 
 ### Routine upgrade
 
+#### Knowing you are behind in the first place
+
+Everything below assumes somebody already knows there is a newer release. For
+weeks, on a production machine, nobody did: it ran 1.10.0 while 1.12.1 was out,
+and the console said nothing because it had nothing to say.
+
+**Dashboard → Version → Check for updates**, in the console, as an administrator.
+It compares `app/config.py:VERSION` against the latest release of
+`neronain/AiGatewayLocal` and prints the commands for however *this* host was
+installed — checkout, container, or copied files, decided by what is on disk.
+
+What it does not do matters as much on a customer site:
+
+| | |
+|---|---|
+| Runs at startup or on page load | **No.** Only when the button is pressed. Nothing polls, nothing schedules. |
+| Sends the version, hostname or any statistics | **No.** One `GET` for a public repository's latest release — no query string, no body, no identifying header. The comparison happens on this machine. |
+| Needs the browser to reach GitHub | **No.** The gateway makes the call, so the address of whoever opened the console never reaches GitHub. |
+| Fails loudly with no internet | **No.** It reports that it could not check, and why, within a few seconds. An air-gapped install is a configuration, not a fault. |
+| Applies the update | **No.** See *Why there is no update button* below. |
+
+The endpoint behind it is `POST /admin/version/check`, administrator-only like
+every other `/admin` route, reaching `api.github.com:443` and nothing else. An
+egress firewall that blocks it breaks nothing — the button simply always answers
+"could not check", which is the correct answer on that machine. A site that
+reaches the internet only through a proxy needs no extra setting either: the
+call honours `HTTPS_PROXY` / `NO_PROXY` from the service environment like any
+other client on the host.
+
+#### Why there is no update button
+
+LMDS ships one because LMDS is always a git checkout. Here there are three
+install shapes with nothing in common:
+
+| Shape | How the gateway recognises it | What "update" means |
+|---|---|---|
+| Checkout | `.git` in the install directory | `git pull`, re-run bootstrap, restart |
+| Container | `/.dockerenv` or `/run/.containerenv` | Rebuild the **image on the host** — nothing inside the container changes |
+| Copied files | neither of the above | The five-step procedure under *When the host has no checkout* |
+
+The third is what the production machines actually use, and each of its steps
+exists because skipping it once cost an outage. A button that succeeds on some
+customer machines and quietly half-succeeds on others is worse than no button,
+so the console reports and prints; a person runs.
+
 When the host has a checkout of this repository:
 
 ```bash

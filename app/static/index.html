@@ -197,6 +197,24 @@
       <h2><span class="hi" data-icon="health" data-icon-size="15" aria-hidden="true"></span>Backend health</h2>
       <div class="scroll"><table id="health"></table></div>
     </div>
+
+    <!-- Admin-only: เลขรุ่นที่รันอยู่ เทียบกับรุ่นล่าสุด — ตรวจเมื่อกดเท่านั้น -->
+    <div data-fold-section="dash-version" id="version-wrap" hidden data-subtab="version" data-subtab-label="Version">
+      <h2><span class="hi" data-icon="download" data-icon-size="15" aria-hidden="true"></span>Version</h2>
+      <div class="panel">
+        <div class="panel-hd">
+          <div><h3 id="ver-now">LiteGate</h3>
+            <div class="sub">เทียบรุ่นที่รันอยู่กับรุ่นล่าสุดบน GitHub · คอนโซลจะต่อออกอินเทอร์เน็ต
+              ก็ต่อเมื่อกดปุ่มนี้เท่านั้น และสิ่งที่ส่งออกไปคือคำขออ่าน release ของ repo สาธารณะเปล่า ๆ
+              ไม่มีเลขเวอร์ชัน ไม่มีชื่อเครื่อง ไม่มีสถิติติดไปด้วย</div></div>
+          <button id="ver-check" class="ghost small">Check for updates</button>
+        </div>
+        <div class="panel-bd"><div id="ver-body">
+          <p class="hint">ยังไม่ได้ตรวจ · เครื่องที่ไม่มีทางออกอินเทอร์เน็ตกดปุ่มนี้ได้ตามปกติ
+            จะได้คำตอบว่าตรวจไม่ได้พร้อมเหตุผล ไม่ใช่หน้าจอแดง</p>
+        </div></div>
+      </div>
+    </div>
   </section>
 
   <!-- ================= Models ================= -->

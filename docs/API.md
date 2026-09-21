@@ -383,6 +383,7 @@ network at the proxy (SEC-5).
 | PATCH | `/admin/models/{alias}/enabled` | admin | Take an alias or one endpoint out of service |
 | PATCH | `/admin/models/{alias}/endpoints/{name}` | admin | `priority`, `weight`, `max_concurrency` |
 | POST | `/admin/registry/reload` | admin | Reload YAML (see the worker caveat below) |
+| POST | `/admin/version/check` | admin | Ask GitHub whether a newer release exists — the only outbound request the gateway ever makes on its own behalf, and only when this is called. Always `200`: an air-gapped host gets `{"ok": false, "reason": …}`, never an error. Falls back to the newest tag when no release is published |
 | POST | `/admin/models/{alias}/compatibility` | admin | Record a test result |
 | GET | `/admin/models/{alias}/compatibility` | manager | READY / DEGRADED roll-up |
 | GET | `/admin/usage/summary?days=` | manager | Per-model totals |
