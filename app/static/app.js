@@ -164,16 +164,62 @@ const VER_LABEL = {
 
 // คำสั่งอ่านจากดิสก์ของเครื่องนั้นเอง (checkout / container / ก๊อปไฟล์) — กางไว้เมื่อ
 // มีของให้อัปจริง พับไว้เมื่อไม่มี เพราะคนที่เพิ่งเห็นว่า "ล่าสุดแล้ว" ไม่ได้มาอ่านคำสั่ง
+// ปุ่มคัดลอกอยู่ตรงนี้ **แทนที่จะเป็นปุ่ม "อัปเดตให้เลย"** โดยตั้งใจ
+//
+// เกตเวย์รันเป็น `litegate` ที่ไม่มีสิทธิ์ sudo และ unit ตั้ง `ProtectSystem=strict`
+// ให้เขียนได้แค่ `data logs config` — `/opt/litegate/app` จึงเป็น read-only สำหรับตัวมันเอง
+// **นั่นคือการออกแบบที่ถูก**: ถ้าเปิดให้แอปเขียนโค้ดตัวเองได้ ช่องโหว่ใด ๆ ในเกตเวย์จะ
+// กลายเป็นของถาวรทันที · การทำปุ่มอัปเดตจริงต้องรื้อข้อนั้นหรือเพิ่มกลไก root ที่แอปสั่งได้
+//
+// สิ่งที่เจ็บจริงสำหรับคนที่ใช้ GUI คือ "ต้องพิมพ์เจ็ดบรรทัดเอง" ไม่ใช่ "ต้องเปิด terminal" —
+// ปุ่มคัดลอกจึงแก้ปัญหานั้นได้เกือบหมดโดยไม่ต้องแลกอะไรเลย
+let stepsSeq = 0;
 function updateSteps(update, open) {
   if (!update) return '';
-  const steps = (update.commands || []).map(esc).join('\n');
+  const commands = update.commands || [];
+  const steps = commands.map(esc).join('\n');
   const doc = update.doc ? `<p class="hint">ขั้นตอนเต็มและกรณีที่ต้องระวัง: ${esc(update.doc)}</p>` : '';
-  const inner = `<p class="hint">${esc(update.summary || '')}</p><pre>${steps}</pre>${doc}`;
+  const id = `upcmds-${++stepsSeq}`;
+  // บรรทัดที่ขึ้นต้นด้วย # เป็นคำอธิบาย ไม่ใช่คำสั่ง — คัดลอกไปทั้งก้อนได้ไม่มีปัญหา
+  // เพราะเชลล์มองเป็นคอมเมนต์ · แต่ต้องนับให้ถูกตอนบอกจำนวน
+  const real = commands.filter((c) => !String(c).trim().startsWith('#')).length;
+  const copy = commands.length
+    ? `<div class="field" style="margin-top:8px">
+         <button class="ghost small" data-copy-steps="${id}">Copy all ${real} commands</button>
+         <span class="hint">วางใน terminal ของเครื่องนี้ได้ทั้งก้อน · รันเรียงตามลำดับ</span>
+       </div>`
+    : '';
+  const inner = `<p class="hint">${esc(update.summary || '')}</p>
+    <pre id="${id}">${steps}</pre>${copy}${doc}`;
   return open
     ? `<div style="margin-top:10px">${inner}</div>`
     : `<details style="margin-top:10px"><summary class="sub">How this install updates</summary>
          ${inner}</details>`;
 }
+
+// ตัวส่งงานกลางของปุ่มคัดลอก — อ่านจาก DOM ตอนกด ไม่ได้พกข้อความไปกับปุ่ม
+// `navigator.clipboard` ใช้ไม่ได้บน http ที่ไม่ใช่ localhost ซึ่งคือวิธีที่ลูกค้าเปิดคอนโซล
+// จริงบ่อยที่สุด — ล้มแล้วต้องเลือกข้อความให้ ไม่ใช่เงียบแล้วคนกดคิดว่าคัดลอกไปแล้ว
+document.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('[data-copy-steps]');
+  if (!btn) return;
+  const pre = document.getElementById(btn.dataset.copySteps);
+  if (!pre) return;
+  const was = btn.textContent;
+  try {
+    if (!navigator.clipboard) throw new Error('no clipboard');
+    await navigator.clipboard.writeText(pre.textContent);
+    btn.textContent = 'Copied';
+    setTimeout(() => { btn.textContent = was; }, 1500);
+  } catch {
+    btn.textContent = 'Select and copy';
+    const range = document.createRange();
+    range.selectNodeContents(pre);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+});
 
 function renderVersion(r) {
   const when = r.checked_at ? stamp(r.checked_at).toLocaleString() : '';

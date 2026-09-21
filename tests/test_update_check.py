@@ -415,3 +415,19 @@ def test_the_health_check_it_prints_actually_retries_a_closed_port():
         for line in release.how_to_update(shape)["commands"]:
             if "curl" in line and "healthz" in line:
                 assert "--retry-connrefused" in line, (shape, line)
+
+
+def test_the_console_offers_the_commands_to_copy_but_never_runs_them():
+    """ปุ่มคัดลอก ไม่ใช่ปุ่ม "อัปเดตให้เลย" — และข้อนี้ต้องไม่ถูกเปลี่ยนโดยไม่ตั้งใจ
+
+    เกตเวย์รันเป็น `litegate` ที่ไม่มีสิทธิ์ sudo และ unit ตั้ง `ProtectSystem=strict`
+    ให้เขียนได้แค่ data/logs/config — `/opt/litegate/app` เป็น read-only สำหรับตัวมันเอง
+    **การทำปุ่มอัปเดตจริงต้องรื้อข้อนั้น** ซึ่งเปลี่ยนจุดยืนด้านความปลอดภัยของสินค้า
+    """
+    js = (ROOT / "app/static/app.js").read_text(encoding="utf-8")
+
+    assert "data-copy-steps" in js, "ต้องมีปุ่มคัดลอกคำสั่ง"
+    # ห้ามมี endpoint ที่สั่งให้เกตเวย์อัปเดตตัวเอง
+    assert "/admin/version/update" not in js
+    for name in ("app/api/admin.py", "app/core/release.py"):
+        assert "version/update" not in (ROOT / name).read_text(encoding="utf-8"), name
