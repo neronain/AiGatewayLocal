@@ -71,13 +71,23 @@ copied and run as-is.</sub>
 
 <br><br>
 
-<img src="docs/img/member-dashboard.png" alt="Member page showing the key in use, a quota window with four meters, the models the member may call, and fourteen days of usage" width="820">
+<img src="docs/img/member-dashboard.png" alt="Console dashboard: requests, tokens, models used and average latency over fourteen days, a daily usage chart, and a share-of-requests bar per model" width="820">
 
-<sub><code>/console/member/</code> — a member pastes their own API key and sees
-the key's name and age, how much of the quota window is left across requests,
-input tokens, output tokens and images, which models they may call and what each
-one can do, and fourteen days of their own usage. No account, and no ticket to an
-administrator. (The figures shown are demo data.)</sub>
+<sub>The console dashboard — requests, tokens in+out, how many distinct models were
+called and the request-weighted average latency, then fourteen days of daily usage
+and the share of requests each model took. A member sees their own figures on the
+same page by pasting their key: no account, and no ticket to an administrator.
+(Real figures from the fleet that runs this gateway.)</sub>
+
+<br><br>
+
+<img src="docs/img/client-tools.png" alt="Connect your tool: pick a tool and model, paste your key, and the page writes the configuration file to copy" width="820">
+
+<sub>The part people actually ask for. Pick the tool and the model, paste your key,
+and the page writes the file that tool expects — here <code>~/.claude/settings.json</code>
+for Claude Code, pointed at this gateway. <b>The key never leaves the page</b>: the
+configuration is assembled in the browser and posted nowhere, which is why the field
+is blank in this screenshot and the output carries a placeholder.</sub>
 
 </div>
 
