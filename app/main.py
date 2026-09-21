@@ -19,7 +19,18 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app import config
-from app.api import admin, anthropic, assistant, auth, catalog, health, openai, responses, tools
+from app.api import (
+    admin,
+    anthropic,
+    assistant,
+    auth,
+    catalog,
+    health,
+    openai,
+    responses,
+    retrieval,
+    tools,
+)
 from app.config import get_settings
 from app.core.auth import generate_api_key
 from app.core.errors import ErrorCode, GatewayError
@@ -384,6 +395,7 @@ def create_app() -> FastAPI:
     app.include_router(openai.router)
     app.include_router(anthropic.router)
     app.include_router(responses.router)
+    app.include_router(retrieval.router)
     app.include_router(assistant.router)
     app.include_router(catalog.router)
     app.include_router(admin.router)

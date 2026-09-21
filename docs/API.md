@@ -60,7 +60,7 @@ OpenAI-shaped catalogue, filtered by the caller's role.
     "purpose": ["coding", "agent"],
     "capabilities": { "chat": true, "vision": false, "tools": true, "streaming": true,
                       "agentic": true, "coding": true, "reasoning": false,
-                      "audio": false, "embedding": false },
+                      "audio": false, "embedding": false, "rerank": false },
     "modalities": { "input": ["text"], "output": ["text"] },
     "context_window": 262144,
     "max_output_tokens": 16384,
@@ -71,6 +71,10 @@ OpenAI-shaped catalogue, filtered by the caller's role.
 ```
 
 `upstream_model` and `endpoints` appear **only** for `role=admin`.
+
+`protocols` also carries `embeddings` and `rerank` for retrieval models — those
+aliases answer on `/v1/embeddings` or `/v1/rerank` and nowhere else, so the list
+is what tells a client which door to knock on.
 
 ### `GET /v1/catalog`
 
@@ -301,6 +305,84 @@ was silently dropped is worse than saying so.
 
 `x-litegate-protocol` tells you which path served the request:
 `responses-native` or `responses-via-openai`.
+
+### `POST /v1/embeddings`
+
+OpenAI-shaped. Available for any alias whose `protocols.embeddings` is true —
+which requires `capabilities.embedding` **and** at least one backend declaring
+`protocols.embeddings`. There is no translation path: the gateway cannot
+synthesise a vector from a chat model, so an alias without a pooling backend is
+refused when the registry loads, not when a request arrives.
+
+```bash
+curl -X POST $GW/v1/embeddings \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"embed","input":["ประโยคแรก","ประโยคที่สอง"]}'
+```
+
+`input` accepts a string, an array of strings, an array of token ids, or an
+array of those arrays. Everything else in the body (`encoding_format`,
+`dimensions`, `user`) is forwarded untouched; only `model` is rewritten to the
+name the backend knows.
+
+```json
+{ "object": "list", "model": "embed",
+  "data": [{ "object": "embedding", "index": 0, "embedding": [0.01, -0.02] }],
+  "usage": { "prompt_tokens": 4242, "total_tokens": 4242,
+             "litegate": { "text_input_tokens": 4242, "output_tokens": 0,
+                           "accounting": "upstream" } } }
+```
+
+### `POST /v1/rerank`
+
+Cohere/Jina-shaped, because **OpenAI has no rerank endpoint** and this is the
+shape vLLM and TEI actually serve. The gateway passes the body through and
+rewrites `model`; it does not translate.
+
+```bash
+curl -X POST $GW/v1/rerank \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"rerank","query":"ใครเป็นคนเขียน",
+       "documents":["เอกสารหนึ่ง","เอกสารสอง"],"top_n":2}'
+```
+
+```json
+{ "id": "rerank-…", "model": "rerank",
+  "results": [{ "index": 1, "document": { "text": "เอกสารสอง" },
+                "relevance_score": 0.98 }],
+  "usage": { "total_tokens": 777,
+             "litegate": { "text_input_tokens": 777, "output_tokens": 0,
+                           "accounting": "upstream" } } }
+```
+
+`documents` must be an array of strings; Cohere's object form is refused with a
+`400` naming the position, because the backend cannot read it. `/v1/score` and
+Cohere's `/v2/rerank` are **not** served — v2 returns a different `results`
+shape, and answering a v2 path with a v1 body would be a lie.
+
+**How these two are counted.** Neither has output tokens, so `output_tokens` is
+`0` on the usage row and in every report; the input dimension carries the whole
+cost.
+
+| Request | Counted as |
+|---|---|
+| `/v1/embeddings`, strings | the characters of every string, summed |
+| `/v1/embeddings`, token ids | the number of ids — exact, not estimated |
+| `/v1/rerank` | **the query once per document**, plus every document |
+| either | one HTTP call = one request against `max_requests` |
+
+The query is charged per document because a cross-encoder runs the pair
+(query, document) afresh for each one. That is what the backend bills, and
+counting the query once understates a 50-document call by an order of magnitude.
+
+The context window is checked **per item**, never against the batch total: each
+string — or each query+document pair — must fit, while the sum routinely will
+not. A 500-document batch is ordinary indexing traffic.
+
+Neither route streams, neither is cached, and neither ever fails over to a
+*different* model: vectors from two models are not comparable, so a silent
+substitution corrupts an index with nothing to show for it. Failover between
+machines serving the same alias still happens.
 
 ### `POST /v1/messages/count_tokens`
 

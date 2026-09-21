@@ -69,7 +69,13 @@ def validate_protocol(model: ModelDefinition, protocol: str) -> None:
 
 
 def _enabled_protocols(model: ModelDefinition) -> list[str]:
-    return [p for p in ("openai", "anthropic") if getattr(model.spec.protocols, p, False)]
+    # ต้องครบทุก surface · เดิมนับแค่สองตัว โมเดลที่เปิดเฉพาะ responses จึงถูกบอกว่า
+    # "Available: none" ซึ่งอ่านแล้วเหมือนทะเบียนพัง ทั้งที่มันใช้ได้อยู่ แค่คนละทาง
+    return [
+        p
+        for p in ("openai", "anthropic", "responses", "embeddings", "rerank")
+        if getattr(model.spec.protocols, p, False)
+    ]
 
 
 def endpoint_supports(endpoint: Endpoint, profile: RequestProfile, protocol: str) -> bool:
@@ -119,6 +125,35 @@ def validate_context_budget(
     return max(max_output, 1)
 
 
+def validate_batch_context(model: ModelDefinition, profile: RequestProfile) -> None:
+    """ด่าน context ของคำขอที่แตกเป็นหลายงานย่อย (embeddings · rerank)
+
+    วัด **งานย่อยที่ใหญ่ที่สุด** ไม่ใช่ผลรวม — และนี่คือความต่างที่สำคัญจาก
+    `validate_context_budget` · backend รัน forward pass แยกกันต่อสตริง (หรือต่อคู่
+    query+เอกสาร) ผลรวมของ batch จึงไม่เคยต้องอยู่ใน window เดียว · เอาผลรวมไปตรวจ
+    เมื่อไหร่ = ปฏิเสธการ index เอกสาร 500 ชิ้นที่เครื่องรับไหวสบาย ๆ ซึ่งเป็นรูปร่าง
+    ของงาน RAG ทุกงาน
+
+    ไม่มี max_output_tokens ให้คืน: เส้นทางนี้ไม่มี output
+    """
+    limits = model.spec.limits
+    if profile.largest_item_tokens > limits.context_tokens * CONTEXT_TOLERANCE:
+        raise GatewayError(
+            ErrorCode.CONTEXT_LENGTH_EXCEEDED,
+            f"One item in this request is estimated at ~"
+            f"{profile.largest_item_tokens:,} tokens, which exceeds the "
+            f"{limits.context_tokens:,}-token context window of '{model.alias}'. "
+            f"Split the long item and retry.",
+            details={
+                # ตัวเลขล้วน · ไม่มีเนื้อหาและไม่มีดัชนีของชิ้นที่ยาว เพราะลำดับของ
+                # เอกสารก็เป็นข้อมูลของผู้ใช้อย่างหนึ่ง (PRD FR-28)
+                "estimated_item_tokens": profile.largest_item_tokens,
+                "context_tokens": limits.context_tokens,
+                "items": profile.batch_items,
+            },
+        )
+
+
 def upstream_model_for(model: ModelDefinition, endpoint: Endpoint) -> str:
     """The name this particular backend knows the model by (PRD §4.1)."""
     return endpoint.upstream_model or model.spec.upstream_model
@@ -142,4 +177,10 @@ def compatibility_badges(model: ModelDefinition) -> list[str]:
         badges.append("Reasoning")
     if caps.agentic:
         badges.append("Agent")
+    # ป้ายของงานค้นคืน · สองตัวนี้ตอบคำถามที่คนทำ RAG ถามก่อนเสมอ ("ตัวไหนทำ index
+    # ได้ ตัวไหนจัดอันดับได้") และมันไม่มีทางดูออกจากชื่อรุ่น
+    if caps.embedding:
+        badges.append("Embedding")
+    if caps.rerank:
+        badges.append("Rerank")
     return badges

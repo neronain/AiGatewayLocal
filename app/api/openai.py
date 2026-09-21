@@ -95,7 +95,8 @@ async def list_models(
             # surface ไหนใช้ alias นี้ได้บ้าง — Codex กับ Claude Code ไม่ได้คุย protocol
             # เดียวกัน การเดาเอาจากรายชื่อโมเดลแล้วยิงผิดทางคือได้ 400 หลังพิมพ์ prompt เสร็จ
             "protocols": [
-                name for name in ("openai", "anthropic", "responses")
+                name
+                for name in ("openai", "anthropic", "responses", "embeddings", "rerank")
                 if getattr(model.spec.protocols, name, False)
             ],
             "context_window": model.spec.limits.context_tokens,
@@ -354,6 +355,7 @@ class _RequestContext:
         started: float,
         client_agent: str,
         protocol: str,
+        allow_model_fallback: bool = True,
     ) -> None:
         self.state = state
         self.principal = principal
@@ -373,6 +375,13 @@ class _RequestContext:
         self.started = started
         self.client_agent = client_agent
         self.protocol = protocol
+        # ยอมให้ล้มไปโมเดล *อื่น* ได้ไหมเมื่อเครื่องของ alias นี้หมด
+        #
+        # chat ยอม — คำตอบจากรุ่นสำรองยังเป็นคำตอบ · /v1/embeddings ยอมไม่ได้เด็ดขาด:
+        # เวกเตอร์จากคนละโมเดลอยู่คนละปริภูมิ เอามาเทียบระยะกับดัชนีเดิมไม่ได้ ผลคือ
+        # RAG ที่ "ยังทำงาน" แต่ค้นเจอแต่ของมั่ว และไม่มี error ให้ใครเห็นเลย
+        # (ดู app/api/retrieval.py — ที่นั่นตั้งค่านี้เป็น False)
+        self.allow_model_fallback = allow_model_fallback
         # Which backends this request has already burned. Not a count: the same
         # machine must never be handed the request twice, and it stays healthy
         # for two more strikes after the first failure.
@@ -398,6 +407,8 @@ class _RequestContext:
             )
         except GatewayError:
             pass
+        if not self.allow_model_fallback:
+            return None
         # เครื่องของ alias นี้หมดแล้ว — ยังไม่ยอมแพ้ถ้ามีโมเดลสำรองที่รับได้
         # ยังอยู่ก่อนไบต์แรกเสมอ (ผู้เรียกเป็นคนคุม) คนใช้จึงไม่มีทางเห็นคำตอบซ้ำครึ่งอัน
         for candidate in fallback_models(self.state.registry.snapshot, self.model):

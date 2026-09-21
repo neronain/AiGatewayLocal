@@ -35,6 +35,9 @@ class Purpose(StrEnum):
     AGENT = "agent"
     FAST = "fast"
     EMBEDDING = "embedding"
+    # แยกจาก EMBEDDING โดยตั้งใจ · ตัวจัดอันดับไม่คืนเวกเตอร์ เอาไปสร้างดัชนีไม่ได้เลย
+    # รวมสองอย่างไว้หมวดเดียวเมื่อไหร่ คนทำ RAG จะหยิบตัวผิดไป index แล้วเพิ่งรู้ตอน query
+    RERANK = "rerank"
 
 
 class ServerType(StrEnum):
@@ -93,6 +96,9 @@ class Capabilities(BaseModel):
     reasoning: bool = False
     agentic: bool = False
     embedding: bool = False
+    # cross-encoder ที่ให้คะแนนคู่ (query, document) · คนละความสามารถกับ embedding
+    # อย่างสิ้นเชิง — ตัวทำเวกเตอร์ให้คะแนนคู่ไม่ได้ และตัวให้คะแนนไม่คืนเวกเตอร์
+    rerank: bool = False
 
 
 class Protocols(BaseModel):
@@ -103,6 +109,19 @@ class Protocols(BaseModel):
     # OpenAI Responses API (/v1/responses) — Codex คุยด้วย protocol นี้เท่านั้น
     # backend ส่วนใหญ่ยังพูดแค่ chat completions เกตเวย์จึงแปลให้ เหมือนที่ทำกับ Anthropic
     responses: bool = False
+    # ── surface ของงานค้นคืน ──
+    #
+    # เป็น protocol ไม่ใช่ flag ย่อยของ openai เพราะ **มันคือ surface คนละอันจริง ๆ**:
+    # vLLM ที่เสิร์ฟ pooling model (ดู bundles/qwen3-embedding-8b) ไม่รับ
+    # /v1/chat/completions เลย และตัวจัดอันดับก็ไม่รับ /v1/embeddings
+    # (bundles/qwen3-reranker-4b/MODEL_PROFILE.yaml: "เสิร์ฟ /v1/rerank + /v1/score
+    # เท่านั้น — ไม่มี chat/embeddings")
+    #
+    # ต่างจาก anthropic/responses ตรงที่ **แปลให้ไม่ได้** — เกตเวย์สังเคราะห์เวกเตอร์
+    # จากโมเดล chat ไม่ได้ · endpoint ที่ไม่ประกาศว่าเสิร์ฟ จึงต้องไม่ถูกเลือกเด็ดขาด
+    # ค่าตั้งต้น false แปลว่าทะเบียนที่มีอยู่แล้วทุกไฟล์ปิดอยู่โดยอัตโนมัติ (fail closed)
+    embeddings: bool = False
+    rerank: bool = False
 
 
 class Modalities(BaseModel):
@@ -325,6 +344,21 @@ class ModelSpec(BaseModel):
         if not enabled:
             raise ValueError("at least one endpoint must be enabled")
 
+        # ปิดทุก surface = alias ที่ไม่มีทางเรียกได้เลย · ไม่มีใครตั้งใจทำ แต่มันเกิดได้
+        # จากการ *ตกหล่น*: ฟอร์มที่ส่ง protocols กลับมาเพียงบางตัวจะเขียน false ทับตัวที่
+        # มันไม่รู้จัก แล้วโมเดลที่เคยเสิร์ฟ /v1/embeddings ก็เงียบหายไปโดยที่ทะเบียน
+        # ยังโหลดผ่าน ไม่มี error ให้ใครเห็น มีแต่ 400 ที่ปลายทางในอีกหลายวัน
+        #
+        # ทำให้ดังตั้งแต่ตอนโหลดตามหลักเดียวกับข้อตรวจอื่นในบล็อกนี้ (PRD §15)
+        if not any(
+            getattr(self.protocols, name)
+            for name in ("openai", "anthropic", "responses", "embeddings", "rerank")
+        ):
+            raise ValueError(
+                "no protocol is enabled — this alias could never be called. "
+                "Enable at least one of: openai, anthropic, responses, embeddings, rerank"
+            )
+
         # `spec.protocols` declares which gateway API surfaces this alias exposes;
         # `endpoint.protocols` declares what the backend natively speaks. The
         # gateway can bridge Anthropic -> OpenAI, but not the reverse, so the
@@ -347,6 +381,31 @@ class ModelSpec(BaseModel):
                 "protocols.responses=true requires an enabled endpoint speaking either "
                 "the Responses API (native passthrough) or the OpenAI API (translated)"
             )
+
+        # ── surface ค้นคืน: ไม่มีทางแปลให้ ต้องมีของจริงทั้งสองชั้น ──
+        #
+        # anthropic/responses ข้างบนยอมรับ endpoint ที่พูด openai ได้ เพราะเกตเวย์แปลให้
+        # ตรงนี้ยอมไม่ได้: เวกเตอร์สังเคราะห์จากโมเดล chat ไม่ได้ และคะแนนจัดอันดับก็เช่นกัน
+        # ถ้าปล่อยให้ประกาศ surface โดยไม่มี backend รองรับ คำขอจะไปตาย 404 ที่ปลายทาง
+        # หลังผ่านด่านสิทธิ์และโควตาไปแล้ว — ซึ่งคือ 400 ที่ควรตอบตั้งแต่ตอนโหลดทะเบียน
+        if self.protocols.embeddings:
+            if not self.capabilities.embedding:
+                raise ValueError(
+                    "protocols.embeddings=true requires capabilities.embedding=true"
+                )
+            if not any(e.protocols.embeddings for e in enabled):
+                raise ValueError(
+                    "protocols.embeddings=true but no enabled endpoint serves "
+                    "/v1/embeddings (set protocols.embeddings on the backend)"
+                )
+        if self.protocols.rerank:
+            if not self.capabilities.rerank:
+                raise ValueError("protocols.rerank=true requires capabilities.rerank=true")
+            if not any(e.protocols.rerank for e in enabled):
+                raise ValueError(
+                    "protocols.rerank=true but no enabled endpoint serves /v1/rerank "
+                    "(set protocols.rerank on the backend)"
+                )
 
         # Same for modalities: model says vision, backend must serve images.
         if self.capabilities.vision and not any(e.modalities.image for e in enabled):

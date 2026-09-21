@@ -59,6 +59,20 @@ class RequestProfile:
     requires_streaming: bool = False
     text_chars: int = 0
 
+    # ── คำขอที่ backend มองเป็นหลายงานย่อย (embedding หลายสตริง · rerank หลายเอกสาร) ──
+    #
+    # chat มีงานย่อยเดียวเสมอ ทั้งสามฟิลด์จึงเป็น 0 ตลอดบนเส้นทางเดิม
+    #
+    # `pretokenized_tokens` คือ token ที่ผู้เรียกส่งมาเป็น id อยู่แล้ว — นับได้ *เป๊ะ*
+    # ไม่ต้องประมาณจากจำนวนอักขระ และถ้าไม่นับตรงนี้ คำขอที่ส่ง token id มาจะถูกคิดเป็น
+    # 0 token ทั้งที่ backend เผาจริง (ดู app/core/retrieval.py)
+    #
+    # `largest_item_tokens` มีไว้ตรวจ context window แทนผลรวม เพราะงานย่อยแต่ละอัน
+    # เข้า backend แยกกัน · เอาผลรวมไปเทียบกับ window จะปฏิเสธ batch ที่รับไหวจริง
+    pretokenized_tokens: int = 0
+    batch_items: int = 0
+    largest_item_tokens: int = 0
+
     @property
     def image_count(self) -> int:
         return len(self.images)

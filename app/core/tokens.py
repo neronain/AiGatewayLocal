@@ -60,7 +60,13 @@ def estimate_visual_tokens(profile: RequestProfile) -> int:
 
 
 def estimate_text_tokens(profile: RequestProfile) -> int:
-    return int(profile.text_chars / CHARS_PER_TOKEN)
+    """อักขระที่ต้องเดา บวกกับ token ที่ไม่ต้องเดา
+
+    `pretokenized_tokens` ไม่ใช่ค่าประมาณ: /v1/embeddings รับ token id ตรง ๆ ได้
+    และคนที่ส่ง id มาก็บอกจำนวนที่แน่นอนมาแล้ว · ไม่บวกตรงนี้ = คำขอที่ส่ง token id
+    ถูกคิดเป็น 0 token ทั้งที่ backend รันเต็ม ๆ ซึ่งคือช่องโหว่โควตาที่เปิดทิ้งไว้
+    """
+    return int(profile.text_chars / CHARS_PER_TOKEN) + profile.pretokenized_tokens
 
 
 def estimate_prompt_tokens(profile: RequestProfile) -> int:
@@ -116,6 +122,44 @@ def resolve_usage(profile: RequestProfile, upstream_usage: dict | None) -> Token
     return TokenUsage(
         text_input_tokens=estimate_text_tokens(profile),
         visual_input_tokens=visual_estimate,
+        output_tokens=0,
+        accounting="estimated",
+    )
+
+
+def resolve_pooling_usage(profile: RequestProfile, upstream_usage: dict | None) -> TokenUsage:
+    """การนับของ /v1/embeddings และ /v1/rerank — เส้นทางที่ **ไม่มี output token เลย**
+
+    แยกจาก `resolve_usage` เพราะกติกาการอ่าน `total_tokens` ต่างกันจนใช้ตัวเดียวกันไม่ได้:
+
+    * chat: `total_tokens = prompt + completion` · ตีความเป็น input ไม่ได้เด็ดขาด
+    * pooling: ไม่มี completion ให้บวก `total_tokens` จึง **คือ** input ทั้งก้อน
+
+    ข้อนี้ไม่ใช่เรื่องทฤษฎี — vLLM ตอบ `/v1/rerank` ด้วย usage ที่มีแต่ `total_tokens`
+    ไม่มี `prompt_tokens` · ถ้าเอา `resolve_usage` มาใช้ซ้ำ ตัวเลขที่ backend วัดมาจริง
+    จะถูกทิ้งแล้วบันทึกค่าประมาณของเราแทน โดยติดป้ายว่า "estimated" — คือรายงานที่
+    ดูเหมือนทำงานปกติแต่ตัวเลขมาจากคนละที่กับที่คิด
+
+    visual_input_tokens เป็น 0 เสมอตามโครงสร้าง: ทั้งสอง surface รับแต่ข้อความ
+    """
+    if upstream_usage:
+        prompt = int(
+            upstream_usage.get("prompt_tokens")
+            or upstream_usage.get("input_tokens")
+            or upstream_usage.get("total_tokens")
+            or 0
+        )
+        if prompt:
+            return TokenUsage(
+                text_input_tokens=prompt,
+                visual_input_tokens=0,
+                output_tokens=0,
+                accounting="upstream",
+            )
+
+    return TokenUsage(
+        text_input_tokens=estimate_text_tokens(profile),
+        visual_input_tokens=0,
         output_tokens=0,
         accounting="estimated",
     )

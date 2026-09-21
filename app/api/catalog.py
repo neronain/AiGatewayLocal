@@ -29,6 +29,7 @@ _PURPOSE_LABELS: dict[Purpose, str] = {
     Purpose.AGENT: "Agent AI",
     Purpose.FAST: "Fast AI",
     Purpose.EMBEDDING: "Embedding",
+    Purpose.RERANK: "Rerank",
 }
 
 
@@ -52,8 +53,12 @@ def _member_entry(model: ModelDefinition) -> dict[str, Any]:
         "supports_images": model.spec.capabilities.vision,
         "supports_tools": model.spec.capabilities.tools,
         "supports_streaming": model.spec.capabilities.streaming,
+        # ต้องมี embeddings/rerank ด้วย ไม่งั้นโมเดลค้นคืนขึ้นในแค็ตตาล็อกโดยมี
+        # protocols เป็นลิสต์ว่าง ซึ่งอ่านแล้วเหมือน "เรียกไม่ได้" ทั้งที่เรียกได้
         "protocols": [
-            p for p in ("openai", "anthropic") if getattr(model.spec.protocols, p)
+            p
+            for p in ("openai", "anthropic", "responses", "embeddings", "rerank")
+            if getattr(model.spec.protocols, p, False)
         ],
     }
 

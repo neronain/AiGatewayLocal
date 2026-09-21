@@ -1693,6 +1693,8 @@ function addEndpointRow(data = {}) {
   //
   // พาผ่านไปทั้งก้อน ไม่ต้องรู้ว่าข้างในมีอะไร — ฟิลด์ที่ LMDS เพิ่มทีหลังจะได้ไม่ต้องมาแก้ตรงนี้
   node.managedBy = data.managed_by ?? null;
+  // ด้วยเหตุผลเดียวกัน: protocol ของ backend ที่ฟอร์มไม่มีช่องให้ (embeddings, rerank)
+  node.protocolsBase = data.protocols || null;
 
   const retitle = () => {
     q('ep-title').textContent = q('ep-name').value.trim() || q('ep-url').value.trim() || 'Backend';
@@ -1948,7 +1950,13 @@ function readEndpoints() {
       weight: 1,
       max_concurrency: Number(q('ep-conc').value) || 8,
       health_path: '/health',
-      protocols: { openai: q('ep-openai').checked, anthropic: q('ep-anthropic').checked },
+      // กฎเดียวกับ managed_by ข้างล่าง · แถวนี้อาจประกาศ embeddings/rerank ไว้ซึ่ง
+      // ฟอร์มไม่มีช่องให้ติ๊ก — ทับด้วย false เมื่อไหร่ backend ตัวนั้นก็หายไปจาก
+      // การเลือกเส้นทางทันที แล้วคำขอ embedding จะได้ 503 โดยไม่มีอะไรเปลี่ยนให้เห็น
+      protocols: {
+        ...(node.protocolsBase || {}),
+        openai: q('ep-openai').checked, anthropic: q('ep-anthropic').checked,
+      },
       modalities: {
         text: true, image: q('ep-image').checked, audio: false, video: false,
       },
@@ -1961,11 +1969,26 @@ function readEndpoints() {
   });
 }
 
+// หมวดที่ฟอร์มมีช่องให้ติ๊ก · หมวดอื่น (embedding, rerank) มาจาก YAML หรือจาก LMDS
+// และต้องรอดข้าม Save ให้ได้ — ดู keptPurposes ใน editorValues
+const FORM_PURPOSES = ['general', 'coding', 'vision', 'reasoning', 'agent', 'fast'];
+
 function editorValues() {
   const checked = (id) => $(id).checked;
-  const purposes = ['general', 'coding', 'vision', 'reasoning', 'agent', 'fast']
-    .filter((p) => checked(`p-${p}`));
+  const purposes = FORM_PURPOSES.filter((p) => checked(`p-${p}`));
+  // หมวดที่หน้าจอไม่มีช่องให้ติ๊ก ต้องไม่หายไปเพราะมีคนกด Save หลังแก้แค่ชื่อรุ่น
+  const keptPurposes = (state.cache.editingPurpose || [])
+    .filter((p) => !FORM_PURPOSES.includes(p));
   const vision = checked('c-vision');
+
+  // ── ค่าที่ฟอร์มไม่มีช่องให้ ต้องพาผ่านไป ไม่ใช่เขียนทับด้วย false ──
+  //
+  // กฎเดียวกับ routing/managed_by ข้างล่าง แต่เจ็บกว่า: โมเดล embedding/rerank
+  // ประกาศตัวด้วย capabilities.embedding + protocols.embeddings ซึ่งไม่มีช่องบนหน้าจอ
+  // เลย · Save ที่เขียนทับทั้งเอกสารจะลบทิ้ง แล้วทะเบียนจะโหลดไม่ผ่าน (หรือแย่กว่า:
+  // กลายเป็นโมเดล chat ที่ backend ไม่รับ) ทั้งที่คนกดแค่แก้ชื่อที่แสดง
+  const keptCaps = state.cache.editingCaps || {};
+  const keptProtocols = state.cache.editingProtocols || {};
 
   const definition = {
     apiVersion: 'litegate.dev/v1',
@@ -1979,19 +2002,23 @@ function editorValues() {
     },
     spec: {
       upstream_model: $('m-upstream').value.trim(),
-      purpose: purposes.length ? purposes : ['general'],
+      purpose: purposes.length || keptPurposes.length
+        ? [...purposes, ...keptPurposes] : ['general'],
       limits: {
         context_tokens: Number($('m-ctx').value) || 8192,
         max_output_tokens: Number($('m-out').value) || 2048,
       },
       modalities: { input: vision ? ['text', 'image'] : ['text'], output: ['text'] },
       capabilities: {
+        ...keptCaps,
         chat: checked('c-chat'), vision, tools: checked('c-tools'),
         streaming: checked('c-streaming'), coding: checked('c-coding'),
         reasoning: checked('c-reasoning'), agentic: checked('c-agentic'),
-        audio: false, embedding: false,
       },
-      protocols: { openai: checked('x-openai'), anthropic: checked('x-anthropic') },
+      protocols: {
+        ...keptProtocols,
+        openai: checked('x-openai'), anthropic: checked('x-anthropic'),
+      },
       endpoints: readEndpoints(),
       enabled: true,
     },
@@ -2048,6 +2075,10 @@ function openEditor(model) {
   flash('save-status', '', '');
   $('endpoints').innerHTML = '';
   state.cache.editingTags = model?.tags || [];
+  // ของที่ฟอร์มไม่แสดง แต่ต้องส่งกลับตอน Save — ดู editorValues
+  state.cache.editingCaps = model?.capabilities || {};
+  state.cache.editingProtocols = model?.protocols || {};
+  state.cache.editingPurpose = model?.purpose || [];
 
   // Null-safe: the API returns every capability flag, including ones the form
   // deliberately has no box for (audio, embedding). Without the guard the first
@@ -2075,8 +2106,7 @@ function openEditor(model) {
     for (const [k, v] of Object.entries(model.capabilities)) check(`c-${k}`, v);
     check('x-openai', model.protocols.openai); check('x-anthropic', model.protocols.anthropic);
     check('x-claudecode', !!model.agent_clients?.claude_code?.enabled);
-    ['general', 'coding', 'vision', 'reasoning', 'agent', 'fast']
-      .forEach((p) => check(`p-${p}`, model.purpose.includes(p)));
+    FORM_PURPOSES.forEach((p) => check(`p-${p}`, model.purpose.includes(p)));
     model.endpoints.forEach((e) => addEndpointRow(e));
   }
 
