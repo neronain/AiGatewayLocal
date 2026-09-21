@@ -1842,7 +1842,7 @@ sudo /opt/litegate/.venv/bin/python -m compileall -q <staged files>      # 2. sy
 sudo install -o litegate -g litegate -m 644 <file> /opt/litegate/<file>  # 3. copy
 sudo -u litegate /opt/litegate/.venv/bin/python -c 'import app.main'     # 4. imports, before restart
 sudo systemctl restart litegate
-curl -sf --retry 10 --retry-delay 2 http://127.0.0.1:8080/healthz        # 5. prove it came back
+curl -sf --retry 10 --retry-delay 2 --retry-connrefused http://127.0.0.1:8080/healthz        # 5. prove it came back
 ```
 
 Steps 2 and 4 are the point: a syntax error or a missing import found *after*

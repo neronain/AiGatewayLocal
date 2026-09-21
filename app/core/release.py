@@ -217,7 +217,11 @@ def how_to_update(shape: str | None = None) -> dict:
             f"{REPO_ROOT}/<file>",
             f"sudo -u litegate {REPO_ROOT}/.venv/bin/python -c 'import app.main'",
             "sudo systemctl restart litegate",
-            "curl -sf --retry 10 --retry-delay 2 http://127.0.0.1:8080/healthz",
+            # `--retry-connrefused` จำเป็น ไม่ใช่ของประดับ: ทันทีหลัง restart พอร์ตยังไม่เปิด
+            # curl จึงเจอ "connection refused" ซึ่ง `--retry` เฉย ๆ **ไม่ retry ให้** (มันลองซ้ำ
+            # เฉพาะ timeout กับ error ชั่วคราวของ HTTP) · ผลคือคำสั่งสุดท้ายของขั้นตอนอัปเกรด
+            # รายงานว่าล้มเหลวบนเกตเวย์ที่ขึ้นมาดีอยู่แล้ว — เจอจริงตอนอัปเดตเครื่องนี้เอง 2026-09-21
+            "curl -sf --retry 10 --retry-delay 2 --retry-connrefused http://127.0.0.1:8080/healthz",
         ],
         "doc": "docs/DEPLOYMENT.md § When the host has no checkout",
     }

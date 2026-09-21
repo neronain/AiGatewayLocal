@@ -401,3 +401,17 @@ def test_the_only_caller_in_the_whole_app_is_the_admin_endpoint():
     admin = (ROOT / "app" / "api" / "admin.py").read_text(encoding="utf-8")
     assert admin.count("release.check(") == 1
     assert '@router.post("/version/check")' in admin
+
+
+def test_the_health_check_it_prints_actually_retries_a_closed_port():
+    """คำสั่งสุดท้ายของขั้นตอนอัปเกรดต้องรอจนเกตเวย์ขึ้นจริง
+
+    ทันทีหลัง `systemctl restart` พอร์ตยังไม่เปิด curl จึงเจอ connection refused ซึ่ง
+    `--retry` เฉย ๆ **ไม่ retry ให้** — มันลองซ้ำเฉพาะ timeout กับ error ชั่วคราวของ HTTP
+    ผลคือขั้นตอนที่เราพิมพ์ให้ผู้ดูแลทำ รายงานว่าล้มเหลวบนเกตเวย์ที่ขึ้นมาดีอยู่แล้ว
+    (เจอจริงตอนอัปเดตเกตเวย์ของเราเอง 2026-09-21)
+    """
+    for shape in ("copied", "checkout", "container"):
+        for line in release.how_to_update(shape)["commands"]:
+            if "curl" in line and "healthz" in line:
+                assert "--retry-connrefused" in line, (shape, line)

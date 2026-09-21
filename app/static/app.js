@@ -2549,8 +2549,35 @@ async function loadAccess() {
   if (!state.cache.models) {
     try { state.cache.models = (await api('/admin/models')).data; } catch { state.cache.models = []; }
   }
-  $('k-models').innerHTML = (state.cache.models || []).map((m) =>
-    `<label><input type="checkbox" class="k-model" value="${esc(m.alias)}"> ${esc(m.alias)}</label>`
+  // แยกกลุ่มตามประตูที่โมเดลนั้นตอบจริง ๆ
+  //
+  // เดิมแสดง alias เปล่า ๆ เรียงกันทั้งหมด · พอมีโมเดล embedding/rerank เข้ามา มันไป
+  // นั่งปนกับโมเดล chat ทั้งที่ **ตอบคนละ endpoint กันคนละเรื่อง** — client ที่คุยแบบ chat
+  // เรียก `embed` ไม่ได้เลย แต่หน้าจอไม่บอก ติ๊กทั้งหมดจึงได้ใบที่มีของใช้ไม่ได้ปนอยู่
+  // (รายงานจากผู้ใช้ 2026-09-21) · `display_name` มีอยู่ในข้อมูลอยู่แล้วแต่ไม่เคยถูกใช้
+  const MODEL_GROUPS = [
+    ['chat', 'คุยกับโมเดล (chat / completions)', (p) => p.openai || p.anthropic || p.responses],
+    ['embeddings', 'เวกเตอร์ค้นคืน — /v1/embeddings', (p) => p.embeddings],
+    ['rerank', 'จัดอันดับเอกสาร — /v1/rerank', (p) => p.rerank],
+  ];
+  const all = state.cache.models || [];
+  const seen = new Set();
+  const groups = MODEL_GROUPS.map(([key, title, match]) => {
+    const list = all.filter((m) => match(m.protocols || {}) && !seen.has(m.alias));
+    list.forEach((m) => seen.add(m.alias));
+    return { key, title, list };
+  }).filter((g) => g.list.length);
+  // โมเดลที่ไม่เข้าพวกไหนเลยต้องไม่หายไปเงียบ ๆ — ไม่งั้นติ๊กไม่ได้ทั้งที่มีอยู่ในทะเบียน
+  const rest = all.filter((m) => !seen.has(m.alias));
+  if (rest.length) groups.push({ key: 'other', title: 'อื่น ๆ', list: rest });
+
+  const box = (m) => `<label title="${esc(m.display_name || m.alias)}">
+    <input type="checkbox" class="k-model" value="${esc(m.alias)}">
+    <span>${esc(m.alias)}${m.display_name && m.display_name !== m.alias
+      ? `<br><span class="hint">${esc(m.display_name)}</span>` : ''}</span></label>`;
+  $('k-models').innerHTML = groups.map((g) =>
+    `<div class="mb-group"><div class="mb-group-hd">${esc(g.title)}</div>
+       <div class="mgrid">${g.list.map(box).join('')}</div></div>`
   ).join('') || '<span class="hint">ยังไม่มีโมเดลใน registry</span>';
   $('q-workspace').innerHTML = workspaceOpts;
 
@@ -2710,16 +2737,31 @@ async function loadAccess() {
         let history = [];
         try { history = (await api(`/admin/api-keys/${id}/reveals`)).data || []; } catch { /* ไม่สำคัญพอจะล้มทั้งกล่อง */ }
         const earlier = history.slice(1);
-        $('key-out').innerHTML = `<div class="secret">
+        // แสดงใต้ใบที่กด ไม่ใช่ที่ `#key-out`
+        //
+        // `#key-out` อยู่ในแท็บย่อย "Issue a key" ส่วนปุ่ม Reveal อยู่ในแท็บ "API keys" —
+        // กดแล้วคีย์ไปโผล่อีกแท็บที่ถูกซ่อนอยู่ คนกดจึงไม่เห็นอะไรเกิดขึ้นเลย และ
+        // `scrollIntoView` ก็ช่วยไม่ได้เพราะปลายทางไม่ได้แสดงผลอยู่ (รายงานจากผู้ใช้ 2026-09-21)
+        const card = btn.closest('.kcard');
+        btn.closest('.rowmenu')?.classList.remove('open');   // ปิดเมนูที่บังอยู่
+        card.querySelector('.kc-secret')?.remove();          // กดซ้ำ = แทนที่ ไม่ใช่ซ้อนกันไปเรื่อย
+        const box = document.createElement('div');
+        box.className = 'kc-secret';
+        box.innerHTML = `<div class="secret">
           <strong>${esc(btn.dataset.label)}</strong>
           <code class="mono">${esc(out.api_key)}</code>
-          <button class="ghost small" id="copy-key">Copy</button>
+          <button class="ghost small" data-copy-secret>Copy</button>
+          <button class="ghost small" data-hide-secret>Hide</button>
           <div class="hint">การเปิดดูครั้งนี้ถูกบันทึกไว้แล้ว${earlier.length
             ? ` · ก่อนหน้านี้เปิดดูไปแล้ว ${earlier.length} ครั้ง ล่าสุด `
               + esc(new Date(earlier[0].at).toLocaleString())
             : ' · เป็นการเปิดดูครั้งแรกของใบนี้'}</div></div>`;
-        $('copy-key').onclick = () => navigator.clipboard.writeText(out.api_key);
-        $('key-out').scrollIntoView({ block: 'nearest' });
+        card.appendChild(box);
+        box.querySelector('[data-copy-secret]').onclick =
+          () => navigator.clipboard.writeText(out.api_key);
+        // ปิดเองได้ — คีย์ที่ค้างบนจอหลังจากคัดลอกไปแล้วคือคีย์ที่คนเดินผ่านอ่านได้
+        box.querySelector('[data-hide-secret]').onclick = () => box.remove();
+        box.scrollIntoView({ block: 'nearest' });
       } catch (e) { showError(e.message); }
     };
   }

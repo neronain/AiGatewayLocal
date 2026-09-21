@@ -993,6 +993,14 @@ table tr:not(.alias-row):not(.ep-row):hover > td {
 .checks.mgrid label:hover { background: var(--card); color: var(--fg); }
 .checks.mgrid input { width: 16px; height: 16px; accent-color: var(--accent); box-shadow: none; }
 .checks.mgrid label:has(input:checked) { background: var(--card); color: var(--fg); font-weight: 500; }
+/* กลุ่มในช่องเลือกโมเดล — โมเดล chat กับ embedding/rerank ตอบคนละ endpoint กัน
+   การเรียงปนกันทำให้คนติ๊กของที่ client ของตัวเองเรียกไม่ได้ */
+.mb-group + .mb-group { margin-top: 4px; border-top: 1px solid var(--line); padding-top: 4px; }
+.mb-group-hd { padding: 7px 11px 4px; font-size: 0.68rem; font-weight: 600; color: var(--fg3);
+  text-transform: uppercase; letter-spacing: .05em; }
+/* ชื่อจริงของโมเดลอยู่บรรทัดที่สองใต้ alias — จัดกลางไม่ได้แล้วเพราะสูงสองบรรทัด */
+.checks.mgrid label:has(.hint) { align-items: flex-start; }
+.checks.mgrid label .hint { display: block; margin-top: 2px; font-size: 0.72rem; }
 .issue-models .hint { margin-top: 8px; }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -1012,6 +1020,10 @@ table tr:not(.alias-row):not(.ep-row):hover > td {
 .kc-meta { display: flex; flex-wrap: wrap; gap: 5px 22px; margin-top: 10px; padding-top: 10px;
   border-top: 1px solid var(--line); font-size: 0.72rem; color: var(--fg3); }
 .kc-meta .hint { display: inline; }
+/* คีย์ที่เปิดดูแสดงใต้ใบของมันเอง — เดิมไปโผล่ที่แท็บ "Issue a key" ซึ่งถูกซ่อนอยู่
+   คนกดจึงไม่เห็นอะไรเกิดขึ้น (รายงานจากผู้ใช้ 2026-09-21) */
+.kc-secret { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.kc-secret .secret { margin: 0; }
 .menu-note { padding: 6px 10px; font-size: 0.72rem; color: var(--fg3); }
 
 /* status dot + word — used in People and API keys */
