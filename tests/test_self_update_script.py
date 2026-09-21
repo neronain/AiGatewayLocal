@@ -94,3 +94,76 @@ def test_it_never_touches_anything_but_the_app_directory():
                 # อ่านได้ แต่ห้ามเขียนทับ
                 writes = ("rm -rf", "rsync", "mv ", "install -o", "> \"")
                 assert not any(w in line for w in writes), line
+
+
+# ── เก็บกวาด backup ───────────────────────────────────────────────────────────
+#
+# เจอจริงบนเครื่องเดโม: สคริปต์สำรอง app/ ทุกครั้งที่กด Update แต่ไม่เคยลบของเก่า
+# สะสมไป 19 ชุด 474MB เครื่องลูกค้าที่กดทุกสัปดาห์จะเต็ม /opt ในปีเดียว
+def test_prune_runs_only_after_a_healthy_gateway():
+    """ล้มกลางทางต้องเหลือ backup ครบ — ไม่งั้นไล่ย้อนไม่ได้ตอนที่ต้องการที่สุด"""
+    body = SCRIPT.read_text()
+    after_ok = body.split('say "เกตเวย์กลับมาแล้ว')[1]
+    assert "prune_backups" in after_ok.split("else")[0]
+    # ต้องไม่ถูกเรียกในเส้นทางที่ rollback
+    for branch in ("import ไม่ผ่าน", "ไม่ตอบหลัง restart"):
+        seg = body.split(branch)[1][:200]
+        assert "prune_backups" not in seg
+
+
+def test_prune_keeps_five_and_deletes_the_rest(tmp_path):
+    parent = tmp_path / "opt"
+    parent.mkdir()
+    install = parent / "litegate"
+    (install / "app").mkdir(parents=True)
+    made = []
+    for day in range(1, 9):
+        d = parent / f"gw-backup-2026090{day}-120000"
+        d.mkdir()
+        made.append(d)
+    # ของที่คนอื่นวางไว้ ชื่อไม่ตรงแบบแผน — ห้ามแตะ
+    keep_foreign = [parent / "gw-backup-static-235542", parent / "gw-backup-unit-x.service"]
+    for d in keep_foreign:
+        d.mkdir()
+
+    _run_prune(install, made[-1])
+
+    left = sorted(p.name for p in parent.glob("gw-backup-*"))
+    assert "gw-backup-static-235542" in left
+    assert "gw-backup-unit-x.service" in left
+    dated = [n for n in left if n.startswith("gw-backup-2026")]
+    assert len(dated) == 5, dated
+    assert dated == sorted(dated)[-5:]          # เหลือห้าชุดที่ใหม่ที่สุด
+
+
+def test_prune_never_deletes_this_runs_backup(tmp_path):
+    """ถ้า BACKUP ของรอบนี้บังเอิญหลุดเข้าลิสต์ ก็ยังต้องรอด"""
+    parent = tmp_path / "opt"
+    parent.mkdir()
+    install = parent / "litegate"
+    (install / "app").mkdir(parents=True)
+    for day in range(1, 9):
+        (parent / f"gw-backup-2026090{day}-120000").mkdir()
+    mine = parent / "gw-backup-20260901-120000"     # ตัวที่เก่าที่สุด = โดนลบแน่ถ้าไม่กัน
+
+    _run_prune(install, mine)
+
+    assert mine.exists()
+
+
+def _run_prune(install_dir, backup):
+    """ดึงฟังก์ชัน prune_backups ออกมารันจริงด้วย bash — ไม่ใช่อ่านข้อความเอา"""
+    import subprocess
+    body = SCRIPT.read_text()
+    start = body.index("KEEP_BACKUPS=")
+    end = body.index("restore() {")
+    snippet = body[start:end]
+    script = (
+        f'INSTALL_DIR="{install_dir}"\n'
+        f'BACKUP="{backup}"\n'
+        'say() { :; }\n'
+        f"{snippet}\n"
+        "prune_backups\n"
+    )
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr

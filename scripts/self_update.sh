@@ -137,6 +137,28 @@ say "1/5 สำรอง app/ ไปที่ $BACKUP"
 mkdir -p "$BACKUP"
 cp -a "${INSTALL_DIR}/app" "$BACKUP/"
 
+# เก็บไว้ย้อนกลับได้จริงไม่กี่ชุดพอ — ชุดละ ~4MB ถ้าไม่ลบเลย เครื่องที่กด Update
+# ทุกสัปดาห์จะสะสมจนเต็ม /opt ในปีเดียว (เจอจริง: 19 ชุด 474MB บนเครื่องเดโม)
+#
+# ลบ **หลังอัปเดตสำเร็จเท่านั้น** — ถ้าล้มกลางทางต้องเหลือทุกชุดไว้ให้ไล่ย้อน
+# และคัดเฉพาะชื่อที่สคริปต์นี้ตั้งเอง (gw-backup-<8หลัก>-<6หลัก>) ไม่แตะของที่คนอื่นวางไว้
+KEEP_BACKUPS="${GW_KEEP_BACKUPS:-5}"
+prune_backups() {
+  local parent; parent="$(dirname "$INSTALL_DIR")"
+  local old; old=$(find "$parent" -maxdepth 1 -type d \
+        -regex '.*/gw-backup-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]' \
+        2>/dev/null | sort -r | tail -n +$((KEEP_BACKUPS + 1)))
+  [ -z "$old" ] && return 0
+  local n=0
+  while IFS= read -r dir; do
+    [ -n "$dir" ] || continue
+    [ "$dir" = "$BACKUP" ] && continue          # ของรอบนี้ ห้ามลบไม่ว่ากรณีใด
+    rm -rf -- "$dir" && n=$((n + 1))
+  done <<< "$old"
+  [ "$n" -gt 0 ] && say "เก็บกวาด: ลบ backup เก่า $n ชุด (เก็บไว้ $KEEP_BACKUPS ชุดล่าสุด)"
+  return 0
+}
+
 restore() {
   say "กู้คืนจาก $BACKUP"
   rm -rf "${INSTALL_DIR}/app"
@@ -189,6 +211,7 @@ PORT="$(env_value GW_PORT)"; PORT="${PORT:-8080}"
 if curl -sf --retry 20 --retry-delay 2 --retry-connrefused \
         -o /dev/null "http://127.0.0.1:${PORT}/healthz"; then
   say "เกตเวย์กลับมาแล้ว · รุ่น $(ver "$INSTALL_DIR")"
+  prune_backups
   mark ok
 else
   say "เกตเวย์ไม่ตอบหลัง restart — กู้คืนของเดิม"
