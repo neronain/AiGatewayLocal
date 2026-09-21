@@ -174,8 +174,9 @@ def test_the_updater_never_copies_itself_over_the_installed_one():
     """สคริปต์นี้รันเป็น root ส่วน app/ รันเป็น litegate — ถ้าปุ่มเขียนทับตัวเองได้
     ใครแก้โฟลเดอร์ต้นทางได้ก็ได้ root ไปด้วย ซึ่งลบล้างเหตุผลของ path unit ทั้งหมด"""
     body = SCRIPT.read_text()
+    copying = ("cp ", "install ", "rsync", "mv ")
     installs = [ln for ln in body.splitlines()
-                if "self_update.sh" in ln and ln.strip().startswith(("cp ", "install ", "rsync", "mv "))]
+                if "self_update.sh" in ln and ln.strip().startswith(copying)]
     assert installs == [], installs
 
 
