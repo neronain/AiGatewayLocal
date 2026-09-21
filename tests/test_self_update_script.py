@@ -167,3 +167,29 @@ def _run_prune(install_dir, backup):
     )
     r = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+# ── ตัวอัปเดตอัปเดตตัวเองไม่ได้ — ต้องไม่ทำเงียบ ─────────────────────────────
+def test_the_updater_never_copies_itself_over_the_installed_one():
+    """สคริปต์นี้รันเป็น root ส่วน app/ รันเป็น litegate — ถ้าปุ่มเขียนทับตัวเองได้
+    ใครแก้โฟลเดอร์ต้นทางได้ก็ได้ root ไปด้วย ซึ่งลบล้างเหตุผลของ path unit ทั้งหมด"""
+    body = SCRIPT.read_text()
+    installs = [ln for ln in body.splitlines()
+                if "self_update.sh" in ln and ln.strip().startswith(("cp ", "install ", "rsync", "mv "))]
+    assert installs == [], installs
+
+
+def test_but_it_does_tell_the_admin_when_a_newer_one_exists():
+    body = SCRIPT.read_text()
+    assert "warn_if_updater_is_stale" in body
+    fn = body.split("warn_if_updater_is_stale() {")[1].split("\n}")[0]
+    assert "cmp -s" in fn                      # เทียบไฟล์จริง ไม่ใช่เดาจากวันที่
+    assert "install -m 755 -o root -g root" in fn   # บอกคำสั่งที่รันได้เลย
+
+
+def test_the_stale_check_runs_only_on_success_and_never_fails_the_update():
+    body = SCRIPT.read_text()
+    after_ok = body.split('say "เกตเวย์กลับมาแล้ว')[1].split("else")[0]
+    assert "warn_if_updater_is_stale" in after_ok
+    fn = body.split("warn_if_updater_is_stale() {")[1].split("\n}")[0]
+    assert "return 0" in fn                    # ตั้ง trap ERR ไว้ — ห้าม return ไม่ใช่ 0

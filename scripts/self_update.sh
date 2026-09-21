@@ -159,6 +159,23 @@ prune_backups() {
   return 0
 }
 
+# ปุ่มนี้คัดลอกแค่ app/ กับ pyproject.toml — **ไม่คัดลอกตัวเอง** และนั่นตั้งใจ
+#
+# app/ รันเป็น litegate ที่ไม่มีสิทธิ์อะไร ส่วนสคริปต์นี้รันเป็น root คนละชั้นความเชื่อถือ
+# ถ้าให้ปุ่มเขียนทับสคริปต์ root ได้จากโฟลเดอร์ต้นทาง ใครแก้ต้นทางได้ก็ได้ root ไปด้วย
+# ซึ่งลบล้างเหตุผลทั้งหมดที่เราแยก path unit ออกมาตั้งแต่แรก
+#
+# แต่ "ไม่ทำให้" กับ "ไม่บอก" คนละเรื่อง — ถ้ารุ่นในต้นทางใหม่กว่า ต้องบอกให้ผู้ดูแลรู้
+warn_if_updater_is_stale() {
+  local mine="${INSTALL_DIR}/scripts/self_update.sh"
+  local theirs="${SOURCE}/scripts/self_update.sh"
+  [ -f "$theirs" ] && [ -f "$mine" ] || return 0
+  cmp -s "$mine" "$theirs" && return 0
+  say "หมายเหตุ: ตัวอัปเดตเองมีรุ่นใหม่ในต้นทาง — ปุ่มนี้อัปเดตตัวเองไม่ได้โดยตั้งใจ"
+  say "ถ้าต้องการรุ่นใหม่ รันเอง: sudo install -m 755 -o root -g root '${theirs}' '${mine}'"
+  return 0
+}
+
 restore() {
   say "กู้คืนจาก $BACKUP"
   rm -rf "${INSTALL_DIR}/app"
@@ -212,6 +229,7 @@ if curl -sf --retry 20 --retry-delay 2 --retry-connrefused \
         -o /dev/null "http://127.0.0.1:${PORT}/healthz"; then
   say "เกตเวย์กลับมาแล้ว · รุ่น $(ver "$INSTALL_DIR")"
   prune_backups
+  warn_if_updater_is_stale
   mark ok
 else
   say "เกตเวย์ไม่ตอบหลัง restart — กู้คืนของเดิม"
