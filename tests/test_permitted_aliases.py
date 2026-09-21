@@ -150,7 +150,7 @@ def test_the_switch_can_be_turned_off_for_a_site_with_live_keys(writable_config)
 
     app = create_app()
     with TestClient(app) as client:
-        client.admin_key = _bootstrap_key(app)
+        client.admin_key = _bootstrap_key(client)
         user = make_user(client, "s9")
         join(client, make_workspace(client, "CS101", ["coding"]), user)
         assert catalogue(client, issue(client, user)) > {"coding"}, "ปิดแล้วต้องเป็นพฤติกรรมเดิม"

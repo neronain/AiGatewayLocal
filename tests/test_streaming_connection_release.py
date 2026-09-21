@@ -425,6 +425,7 @@ def test_usage_rows_still_land_after_a_stream(client, member_key):
 # ---------------------------------------------------------------------------
 # Pool configuration is a decision, not an accident
 # ---------------------------------------------------------------------------
+@pytest.mark.sqlite_only
 def test_sqlite_pool_is_configured_explicitly(client):
     """SQLite used to fall through the `else` and inherit 5+10 silently.
 

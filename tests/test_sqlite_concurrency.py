@@ -18,6 +18,7 @@ import threading
 import pytest
 
 
+@pytest.mark.sqlite_only
 @pytest.mark.anyio
 async def test_engine_puts_sqlite_in_wal_mode(temp_db):
     """A file-backed database is opened in WAL, not the default rollback journal."""
