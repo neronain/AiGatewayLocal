@@ -499,11 +499,24 @@ Two things are counted **per process** unless Redis is configured:
 * **The response cache** (off by default) — a hit only lands on the worker that
   produced it.
 
-This is the one place where the container path is *better* than bare metal:
-`docker/docker-compose.yml` ships a Redis service and sets `GW_REDIS_URL`,
-while `scripts/bootstrap.sh` writes `GW_REDIS_URL=` (empty) next to
-`GW_WORKERS=4`. **A default native install is the one that oversubscribes its
-backends.** Either point `GW_REDIS_URL` at a Redis, or drop to one worker.
+**Fixed in 1.12.1.** `scripts/bootstrap.sh` used to write `GW_REDIS_URL=` (empty)
+next to `GW_WORKERS=4`, so *a default native install was the one that
+oversubscribed its backends* — the container path, which ships a Redis service
+and sets `GW_REDIS_URL`, had it right all along. Bootstrap now writes
+`GW_WORKERS=1`: the gateway is I/O-bound and one worker carries a lot, and a
+correct `max_concurrency` is worth more than parallelism nobody asked for.
+
+To go wider, set `GW_REDIS_URL` **first**, then raise `GW_WORKERS`. If you raise
+it without Redis the gateway still starts — it is not our place to refuse — but
+every worker logs, on every boot:
+
+```
+GW_WORKERS=4 แต่ไม่มี GW_REDIS_URL — ตัวนับคำขอที่กำลังวิ่งไม่ถูกแชร์ข้าม worker ·
+max_concurrency: N ของทุก endpoint จะกลายเป็น N×4 ที่ backend จริง ๆ
+```
+
+An `.env` written by an older bootstrap keeps its `GW_WORKERS=4` — the installer
+never overwrites an existing `.env`. The warning above is how you find out.
 
 Quota counters are *not* affected: they are a single atomic
 `UPDATE ... SET n = n + :x` in the database and are correct with any number of

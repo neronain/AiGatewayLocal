@@ -87,6 +87,14 @@ class AppState:
                 log.error("Redis unavailable (%s); using database counters", exc)
                 self.redis = None
 
+        unshared = unshared_limit_warning(
+            redis=self.redis is not None,
+            workers=self.settings.workers,
+            is_production=self.settings.is_production,
+        )
+        if unshared:
+            log.warning("%s", unshared)
+
         if self.settings.response_cache:
             from app.core.responsecache import ResponseCache
 
@@ -109,6 +117,30 @@ class AppState:
                 await self.redis.aclose()
             except Exception:
                 log.warning("error closing redis connection", exc_info=True)
+
+
+def unshared_limit_warning(*, redis: bool, workers: int, is_production: bool) -> str:
+    """ข้อความเตือนเมื่อ max_concurrency จะไม่หมายความตามที่เขียนไว้ — "" เมื่อไม่มีปัญหา
+
+    ตัวนับคำขอที่กำลังวิ่งอยู่แชร์ข้าม worker ได้ก็ต่อเมื่อมี Redis (ดู core/inflight.py)
+    ไม่มีแล้วแต่ละ worker นับของตัวเอง `max_concurrency: 1` จึงแปลว่า "1 ต่อ worker"
+    = N ตัวพร้อมกันจริงที่ backend — ตรงข้ามกับสิ่งเดียวที่ค่านั้นมีไว้ทำ และเป็นค่าที่
+    คนตั้งตอนโมเดลใหญ่รับได้ทีละคำขอพอดี
+
+    **เตือน ไม่ใช่ปฏิเสธไม่ให้สตาร์ต** — คนที่ตั้งใจรันหลาย worker โดยไม่สนใจ
+    max_concurrency มีจริง และเกตเวย์ที่ไม่ยอมขึ้นตอนตี 3 แย่กว่าเกตเวย์ที่ขึ้นพร้อม
+    บรรทัดที่บอกตรง ๆ ว่ากำลังเกิดอะไร
+
+    แยกออกมาจาก start() เพราะ start() ต่อ Redis จริง เปิด health check จริง และเริ่ม
+    background task — เงื่อนไขสามตัวนี้จึงเทสไม่ได้ถ้าไม่แยก
+    """
+    if redis or workers <= 1 or not is_production:
+        return ""
+    return (
+        f"GW_WORKERS={workers} แต่ไม่มี GW_REDIS_URL — ตัวนับคำขอที่กำลังวิ่งไม่ถูกแชร์"
+        f"ข้าม worker · max_concurrency: N ของทุก endpoint จะกลายเป็น N×{workers} "
+        f"ที่ backend จริง ๆ · ตั้ง GW_REDIS_URL หรือลด GW_WORKERS=1"
+    )
 
 
 def get_state(request: Request) -> AppState:

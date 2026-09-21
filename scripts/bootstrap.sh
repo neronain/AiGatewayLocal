@@ -105,7 +105,16 @@ GW_ENV=production
 GW_HOST=0.0.0.0
 GW_PORT=8080
 GW_LOG_LEVEL=INFO
-GW_WORKERS=4
+
+# 1 worker ไม่ใช่ 4 — โดยตั้งใจ · ตัวนับคำขอที่กำลังวิ่งอยู่แชร์ข้าม worker ได้ก็ต่อเมื่อมี
+# Redis (ดู app/core/inflight.py) · ไม่มี Redis แล้วตั้ง 4 worker แปลว่า max_concurrency: 1
+# ที่ผู้ดูแลเขียนไว้ กลายเป็น 4 คำขอพร้อมกันจริง ๆ ที่ backend — ซึ่งตรงข้ามกับสิ่งเดียว
+# ที่ค่านั้นมีไว้ทำ และเป็นค่าที่คนตั้งตอนโมเดลใหญ่รับได้ทีละคำขอพอดี
+#
+# เกตเวย์เป็นงาน I/O ล้วน (ไม่ประมวลผลโมเดลเอง) 1 worker จึงรับได้เยอะอยู่แล้ว ·
+# อยากได้มากกว่านี้: ตั้ง GW_REDIS_URL ก่อน แล้วค่อยเพิ่ม GW_WORKERS — แอปจะเตือน
+# ตอนสตาร์ตถ้าตั้งเกิน 1 โดยไม่มี Redis
+GW_WORKERS=1
 
 # Rotating this invalidates every issued API key.
 GW_API_KEY_PEPPER=${PEPPER}
