@@ -78,6 +78,16 @@ class Settings(BaseSettings):
     # Keys a member may hold at once. Keys are what nobody cleans up; a list
     # that grows without bound is one nobody can audit.
     max_keys_per_member: int = 5
+    # ชิ้นงานสูงสุดในคำขอเดียวของ /v1/embeddings และ /v1/rerank · โควตาเป็นแบบตรวจก่อน
+    # แล้วค่อยบันทึก (NFR-Q1) · เส้นทาง chat ถูกคุมขนาดคำขอเดียวโดยโครงสร้างอยู่แล้วด้วย
+    # `context_tokens` แต่ batch ไม่มีอะไรคุม — คำขอเดียวที่มีแสนเอกสารจึงทะลุโควตาได้ใน
+    # นัดเดียวแล้วค่อยโดนกันที่คำขอถัดไป ซึ่งสายเกินไป
+    #
+    # เลือกจำกัด *จำนวนชิ้น* แทนการหักโควตาล่วงหน้า เพราะอย่างหลังต้องเปลี่ยนลายเซ็นของ
+    # `QuotaService.check` ซึ่งกระทบทุกเส้นทาง · เพดานนี้ปิดวงความเสียหายให้เป็นค่าที่รู้ได้
+    # โดยไม่แตะกลไกโควตาเลย · 2048 คือเพดานเดียวกับที่ OpenAI ใช้กับ /v1/embeddings
+    # ผู้เรียกที่เขียนมาให้ทำงานกับ OpenAI ได้จึงไม่ต้องแก้อะไร
+    max_batch_items: int = 2048
     # Alias the console assistant talks to. Empty = pick the best chat model the
     # caller is already allowed to use, so a fresh install needs no setting.
     assistant_model: str = ""

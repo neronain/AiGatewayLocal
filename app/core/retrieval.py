@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.config import get_settings
 from app.core.errors import ErrorCode, GatewayError
 from app.core.multimodal import RequestProfile
 from app.core.tokens import CHARS_PER_TOKEN
@@ -38,6 +39,27 @@ UPSTREAM_RERANK_PATH = "/v1/rerank"
 def _tokens(chars: int = 0, token_ids: int = 0) -> int:
     """ต้นทุนของงานย่อยหนึ่งชิ้น · token id นับเป๊ะ ส่วนอักขระต้องประมาณ"""
     return int(chars / CHARS_PER_TOKEN) + token_ids
+
+
+def _check_batch_size(count: int, param: str) -> None:
+    """ปฏิเสธ batch ที่ใหญ่เกินเพดาน **ก่อน** จะไปถึงด่านโควตา
+
+    โควตาเป็นแบบตรวจก่อนแล้วค่อยบันทึก (NFR-Q1) · เส้นทาง chat ถูกคุมขนาดคำขอเดียว
+    โดยโครงสร้างอยู่แล้วด้วย `context_tokens` แต่ batch ไม่มีอะไรคุม — คำขอเดียวที่มี
+    แสนเอกสารจึงใช้โควตาทั้งเดือนหมดในนัดเดียว แล้วค่อยโดนกันที่คำขอ*ถัดไป* ซึ่งสายไปแล้ว
+
+    จำกัดจำนวนชิ้นแทนการหักโควตาล่วงหน้า เพราะอย่างหลังต้องเปลี่ยนลายเซ็นของ
+    `QuotaService.check` ซึ่งกระทบทุกเส้นทาง · เพดานนี้ปิดวงความเสียหายให้เป็นค่าที่
+    คำนวณล่วงหน้าได้ โดยไม่แตะกลไกโควตาเลย
+    """
+    limit = get_settings().max_batch_items
+    if limit > 0 and count > limit:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            f"'{param}' has {count} items; this gateway accepts at most {limit} "
+            "per request. Split the batch and send it in several calls.",
+            param=param,
+        )
 
 
 def _is_int(value: Any) -> bool:
@@ -106,6 +128,7 @@ def profile_embeddings_request(body: dict[str, Any]) -> RequestProfile:
             param="input",
         )
 
+    _check_batch_size(len(items), "input")
     profile.text_chars = sum(chars for chars, _ in items)
     profile.pretokenized_tokens = sum(ids for _, ids in items)
     profile.batch_items = len(items)
@@ -139,6 +162,8 @@ def profile_rerank_request(body: dict[str, Any]) -> RequestProfile:
             "'documents' is required and must be a non-empty array of strings.",
             param="documents",
         )
+    # ตรวจจำนวนก่อนไล่ดูทีละชิ้น — แสนเอกสารไม่ควรถูกวนอ่านก่อนจะรู้ว่าเกินเพดานอยู่ดี
+    _check_batch_size(len(documents), "documents")
     for idx, document in enumerate(documents):
         if not isinstance(document, str):
             # Cohere ยอมให้ส่ง object ได้ด้วย แต่ vLLM รับแค่สตริง (ดู docs/API.md)

@@ -325,6 +325,15 @@ array of those arrays. Everything else in the body (`encoding_format`,
 `dimensions`, `user`) is forwarded untouched; only `model` is rewritten to the
 name the backend knows.
 
+At most **2048 items per request** (`GW_MAX_BATCH_ITEMS`; `0` lifts the cap).
+The same ceiling applies to `documents` on `/v1/rerank`. It exists because quota
+is checked before a request runs and recorded after: without a ceiling, one call
+carrying a hundred thousand documents spends a month of allowance in a single
+shot, and the limit only bites on the *next* call. 2048 is what OpenAI allows on
+its own embeddings endpoint, so a client written against that needs no change.
+Over the ceiling the gateway answers `400` naming the count, the limit, and the
+remedy — before the backend is touched.
+
 ```json
 { "object": "list", "model": "embed",
   "data": [{ "object": "embedding", "index": 0, "embedding": [0.01, -0.02] }],

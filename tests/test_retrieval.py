@@ -877,3 +877,96 @@ def test_the_catalogue_says_which_surface_a_retrieval_model_answers_on(
     catalog = client.get("/v1/catalog", headers=auth(member_key)).json()
     titles = {section["title"] for section in catalog["sections"]}
     assert {"Embedding", "Rerank"} <= titles
+
+
+# ---------------------------------------------------------------------------
+# เพดานของ batch — โควตาตรวจก่อนแล้วค่อยบันทึก คำขอเดียวจึงทะลุได้ถ้าไม่มีเพดาน
+# ---------------------------------------------------------------------------
+def test_an_oversized_batch_is_refused_before_it_can_spend_the_whole_quota(
+    retrieval_config, client, member_key, backends, monkeypatch
+):
+    """เส้นทาง chat ถูกคุมขนาดคำขอเดียวโดยโครงสร้างด้วย `context_tokens` แต่ batch ไม่มี ·
+    โควตาเป็นแบบตรวจ *ก่อน* แล้วค่อยบันทึก คำขอเดียวที่มีแสนเอกสารจึงใช้โควตาทั้งเดือน
+    หมดในนัดเดียว แล้วค่อยโดนกันที่คำขอ *ถัดไป* ซึ่งสายไปแล้ว"""
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "max_batch_items", 3, raising=False)
+    route = backends.post(EMBED_PRIMARY).mock(
+        return_value=httpx.Response(200, json=EMBED_REPLY)
+    )
+
+    response = client.post(
+        "/v1/embeddings",
+        headers=auth(member_key),
+        json={"model": "embed", "input": ["a", "b", "c", "d"]},
+    )
+
+    assert response.status_code == 400
+    assert not route.called, "ต้องปฏิเสธก่อนถึง backend ไม่ใช่ให้เครื่องทำงานแล้วค่อยเสียใจ"
+    body = response.json()["error"]
+    # ข้อความต้องบอกทั้งจำนวนที่ส่งมา เพดาน และทางออก — ไม่ใช่แค่ "invalid request"
+    assert "4" in body["message"] and "3" in body["message"]
+    assert "split" in body["message"].lower()
+    assert body.get("param") == "input"
+
+
+def test_a_batch_at_the_limit_still_goes_through(
+    retrieval_config, client, member_key, backends, monkeypatch
+):
+    """เพดานที่กันของที่ *เท่ากับ* เพดานคือเพดานที่ตั้งผิดไปหนึ่ง — เคสคลาสสิก off-by-one"""
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "max_batch_items", 3, raising=False)
+    route = backends.post(EMBED_PRIMARY).mock(
+        return_value=httpx.Response(200, json=EMBED_REPLY)
+    )
+
+    response = client.post(
+        "/v1/embeddings",
+        headers=auth(member_key),
+        json={"model": "embed", "input": ["a", "b", "c"]},
+    )
+
+    assert response.status_code == 200 and route.called
+
+
+def test_the_rerank_document_list_has_the_same_ceiling(
+    retrieval_config, client, member_key, backends, monkeypatch
+):
+    """rerank คูณ query ด้วยจำนวนเอกสาร — batch ใหญ่ที่นี่แพงกว่า embeddings ต่อชิ้นอีก"""
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "max_batch_items", 2, raising=False)
+    route = backends.post(RERANK_URL).mock(
+        return_value=httpx.Response(200, json=RERANK_REPLY)
+    )
+
+    response = client.post(
+        "/v1/rerank",
+        headers=auth(member_key),
+        json={"model": "rerank", "query": "q", "documents": ["a", "b", "c"]},
+    )
+
+    assert response.status_code == 400 and not route.called
+    assert response.json()["error"].get("param") == "documents"
+
+
+def test_the_ceiling_can_be_switched_off_for_a_site_that_wants_no_limit(
+    retrieval_config, client, member_key, backends, monkeypatch
+):
+    """ไซต์ที่รันคนเดียวและรู้ว่าตัวเองทำอะไรอยู่ต้องปิดได้ · 0 = ไม่จำกัด
+    ไม่ใช่ 'เพดานเป็นศูนย์' ซึ่งจะแปลว่าปฏิเสธทุกคำขอ"""
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "max_batch_items", 0, raising=False)
+    route = backends.post(EMBED_PRIMARY).mock(
+        return_value=httpx.Response(200, json=EMBED_REPLY)
+    )
+
+    response = client.post(
+        "/v1/embeddings",
+        headers=auth(member_key),
+        json={"model": "embed", "input": [f"doc {i}" for i in range(5000)]},
+    )
+
+    assert response.status_code == 200 and route.called
