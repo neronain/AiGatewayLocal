@@ -3,15 +3,43 @@
 Base URL: `https://gateway.example.com`
 Interactive docs: `/docs` · OpenAPI: `/openapi.json`
 
+## Every route at a glance
+
+**Member** — any valid key, narrowed by the key's scope and its workspace:
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | [`/v1/models`](#get-v1models) | OpenAI-shaped catalogue, filtered by the caller's role |
+| GET | [`/v1/catalog`](#get-v1catalog) | The same models grouped by purpose, for a member-facing UI |
+| GET | [`/v1/me`](#get-v1me) | Identity plus remaining quota |
+| POST | [`/v1/chat/completions`](#post-v1chatcompletions) | OpenAI chat, unary or streaming, text and images |
+| POST | [`/v1/messages`](#post-v1messages) | Anthropic surface — what Claude Code talks to |
+| POST | [`/v1/responses`](#post-v1responses) | Responses API — what Codex talks to |
+| POST | [`/v1/embeddings`](#post-v1embeddings) | Vectors, OpenAI-shaped |
+| POST | [`/v1/rerank`](#post-v1rerank) | Cohere/Jina-shaped rerank, passed through |
+| POST | [`/v1/messages/count_tokens`](#post-v1messagescount_tokens) | Pre-flight estimate — approximate by design |
+| GET | [`/v1/assistant/status`](#get-v1assistantstatus) | Whether the console assistant has a model for this caller |
+| POST | [`/v1/assistant/chat`](#post-v1assistantchat) | Ask the console assistant, streamed |
+
+**Admin and operations** — the full table is under
+[Admin endpoints](#admin-endpoints); health and metrics are under
+[Health and metrics](#health-and-metrics).
+
+Which surfaces an alias exposes is per-model (`spec.protocols`), and
+`GET /v1/models` reports it — so a client checks instead of guessing.
+
 ## Authentication
 
 Both header styles are accepted everywhere, so the OpenAI and Anthropic SDKs work
 unmodified:
 
 ```http
-Authorization: Bearer edu_sk_...
-x-api-key: edu_sk_...
+Authorization: Bearer lg_sk_...
+x-api-key: lg_sk_...
 ```
+
+Keys issued before v1.4 start with `edu_sk_` and keep working — see
+[Key format](#post-adminapi-keys).
 
 ## Error envelope
 
@@ -829,6 +857,28 @@ whether the finding is gone is a question only a fresh probe answers.
 naming an `lmds_node` and `lmds_slug`, when the finding is not one of
 `appliable_issues`, or when the parser name is not letters, digits, underscore
 and hyphen. Errors from the deploy tool are passed through verbatim.
+
+#### The `managed_by` block
+
+`managed_by` is what turns a finding into a runnable command, and what
+`apply-fix` addresses. It sits on an endpoint:
+
+```yaml
+endpoints:
+  - name: msi-6
+    base_url: http://10.0.0.6:8000
+    managed_by:
+      tool: lmds
+      node: ops@10.0.0.6                  # ssh target, for humans
+      controller: ~/bundles/coder/coder-single.sh
+      lmds_node: msi-6                    # the machine's name in LMDS
+      lmds_slug: coder-next               # the bundle LMDS knows it by
+```
+
+`lmds_node` is separate from `node` because LMDS addresses machines by the name
+in its own registry, which is usually not the ssh target; guessing one from the
+other would restart the wrong machine. The field is inert — nothing in the
+request path reads it, and every model works without it.
 
 ---
 

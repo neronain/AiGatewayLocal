@@ -239,7 +239,13 @@ Thirty people rarely hit a limit at the same moment. Check, in this order:
    who changed it and when.
 2. Is one client looping? `/admin/usage/top-users` — a single member with
    thousands of requests is a script, not a person.
-3. Is the window shorter than intended? A `day` policy meant as `term` will
+3. **Is somebody indexing?** One `/v1/embeddings` or `/v1/rerank` call can carry
+   up to `GW_MAX_BATCH_ITEMS` (2048) items, and rerank charges the query once
+   per document — a 50-document call with a 200-token query is 10,000 tokens,
+   not 200. A RAG job that looks like a handful of requests in
+   `/admin/usage/top-users` can be most of the month's tokens. Sort by tokens,
+   not by request count.
+4. Is the window shorter than intended? A `day` policy meant as `term` will
    look exactly like this every afternoon. Note that `term` currently resolves
    against the hardcoded default months `(1, 6, 8)` —
    `quota_defaults.term_start_months` is not wired up (DEPLOYMENT.md §10) — so a
@@ -271,6 +277,12 @@ identical to the user and none of them is the key:
 | `not available to you. Allowed by the model list on this key` | The key's own scope |
 | the workspace's models | The workspace, or it is suspended |
 | unknown model | The alias is not in the registry — a typo, or the file failed validation (`/readyz`) |
+
+A fourth case looks the same to the caller and is not about permission at all:
+`PROTOCOL_NOT_SUPPORTED` — *"Model 'x' is not available over the embeddings API.
+Available: openai, anthropic."* The key is fine and the alias exists; it is the
+**surface** that is not enabled for it. Fix it in the model's `spec.protocols`,
+not on the key. `GET /v1/models` lists the surfaces each alias exposes.
 
 Only the first is fixed on the key, and it no longer needs reissuing:
 

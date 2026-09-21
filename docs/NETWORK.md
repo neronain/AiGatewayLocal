@@ -11,25 +11,33 @@
 
 | พอร์ต | โปรโตคอล | ใครเรียก | จำเป็นไหม |
 |---|---|---|---|
-| **8080/tcp** | HTTP | ผู้ใช้ทุกคน · Claude Code · Codex · SDK · คอนโซล | **ใช่ — พอร์ตเดียวที่ต้องเปิด** |
+| **443/tcp** | HTTPS | ผู้ใช้ทุกคน · Claude Code · Codex · SDK · คอนโซล | **ใช่ ถ้าติดตั้งด้วย `bootstrap.sh`** — nginx ที่ `install_tls.sh` วางไว้ · คือที่อยู่ที่แจกให้คนอื่น |
+| **80/tcp** | HTTP | เบราว์เซอร์ที่พิมพ์ชื่อโฮสต์มาเฉย ๆ | ควรเปิดคู่กับ 443 — ตอบ 301 ไป 443 อย่างเดียว |
+| **8080/tcp** | HTTP | สคริปต์ · health check · ไคลเอนต์ในวง LAN | **ใช่ ถ้าไม่ได้ลง TLS** · ถ้าลงแล้วพอร์ตนี้ยังอยู่โดยตั้งใจ แต่ไม่ต้องเปิดออกนอกเครื่อง |
 
-ทุกอย่างของ LiteGate อยู่บนพอร์ตเดียว:
+**ตัวแอปเองพูด HTTP ล้วนเสมอ** ที่ `8080` · ส่วน TLS เป็นงานของ nginx ที่
+`scripts/install_tls.sh` ติดตั้งให้ — และ `scripts/bootstrap.sh` เรียกตัวนั้นให้เป็นขั้น
+สุดท้ายของการติดตั้ง (ข้ามด้วย `SKIP_TLS=1`) · จะวาง Caddy หรือ Traefik เองแทนก็ได้
+ขอแค่ให้มันคุยกับ `127.0.0.1:8080`
+
+ทุกอย่างของ LiteGate อยู่บนพอร์ตเดียวของตัวแอป:
 
 ```
 /                    หน้าต้อนรับ (เบราว์เซอร์) · JSON (script)
 /console/            คอนโซลผู้ดูแล
 /console/member/     หน้าตรวจสิทธิ์ของสมาชิก
-/v1/...              OpenAI + Anthropic API
+/v1/chat/completions OpenAI · /v1/messages Anthropic (Claude Code)
+/v1/responses        Responses API (Codex)
+/v1/embeddings       เวกเตอร์ · /v1/rerank จัดอันดับเอกสาร (RAG)
+/v1/models  /v1/me   แค็ตตาล็อกและโควตาของผู้เรียก
 /healthz  /readyz    สำหรับ load balancer และ monitoring
 /metrics             Prometheus
 /docs                OpenAPI
 ```
 
 เปลี่ยนพอร์ตด้วย `GW_PORT` · ผูกกับอินเทอร์เฟซเดียวด้วย `GW_HOST`
-(ค่าเริ่มต้น `0.0.0.0` = รับทุกอินเทอร์เฟซ)
-
-**ไม่มี TLS ในตัว** — ถ้าต้อง HTTPS ให้วาง reverse proxy (nginx / Caddy / Traefik)
-ไว้หน้า แล้วให้มันคุยกับ LiteGate ทาง HTTP ภายในเครื่อง
+(ค่าเริ่มต้น `0.0.0.0` = รับทุกอินเทอร์เฟซ) · รายละเอียดของ TLS อยู่ที่
+[DEPLOYMENT.md §5c](DEPLOYMENT.md#5c-tls)
 
 ---
 

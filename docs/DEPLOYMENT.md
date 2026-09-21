@@ -13,7 +13,30 @@ Three supported paths. Pick one:
 | [B — Native + systemd](#path-b--native--systemd) | No Docker on the host; single-node install | ~5 min |
 | [C — Local staging on OrbStack](#path-c--local-staging-on-orbstack) | Validating the whole system on a laptop, no GPU | ~5 min |
 
+Path D covers the awkward hosts — [LXC and Docker
+containers](#path-d--containers-lxc-and-docker) — and is worth reading before
+Path A or B if that is where this is going.
+
 Every command below has been run end-to-end on Ubuntu 24.04 (arm64).
+
+<details>
+<summary><b>Everything in this guide</b> — the section numbers grew in the order
+they were written; this is the order you need them in</summary>
+
+| | |
+|---|---|
+| **Before you start** | [0. Prerequisites](#0-prerequisites) · [1. Configure before you deploy](#1-configure-before-you-deploy) |
+| **Install** | [Path A — Docker Compose](#path-a--docker-compose) · [Path B — Native + systemd](#path-b--native--systemd) · [Path C — Local staging on OrbStack](#path-c--local-staging-on-orbstack) · [Path D — Containers: LXC and Docker](#path-d--containers-lxc-and-docker) |
+| **Get it working** | [2. First-run setup](#2-first-run-setup) · [3. Member setup](#3-member-setup) · [4. Operating](#4-operating) |
+| **Make it production** | [5c. TLS](#5c-tls) · [5. SQLite → PostgreSQL](#5-moving-from-sqlite-to-postgresql) · [5f. Redis — shared quota counters](#5f-redis--shared-quota-counters) |
+| **Day-to-day** | [5a. Where the models come from](#5a-where-the-models-come-from) · [5b. The console assistant](#5b-the-console-assistant) · [5d. Enrolling a group](#5d-enrolling-a-group) · [5g. Client tools, mirrored on-premises](#5g-client-tools-mirrored-on-premises) |
+| **Watch it** | [5e. Scrape config and alert rules](#5e-monitoring--scrape-config-and-alert-rules) · [7. The metrics reference](#7-monitoring--the-metrics-reference) |
+| **Keep it alive** | [6. Backup](#6-backup) (and [6.1 Restoring — rehearse it now](#61-restoring--rehearse-it-now)) · [8. Troubleshooting](#8-troubleshooting) · [9. Upgrading](#9-upgrading) |
+| **Read before trusting a number** | [10. Known limitations](#10-known-limitations) |
+| **Optional** | [Reading an issued key back](#reading-an-issued-key-back-optional) · [Certificates for clients on other machines](#certificates-for-clients-on-other-machines) |
+| **Locked out** | [Forgot the console password](#forgot-the-console-password) |
+
+</details>
 
 ---
 
@@ -367,7 +390,7 @@ change. Then run the full suite:
 orb -m <machine> bash -lc '
   sudo -u litegate /opt/litegate/.venv/bin/python \
     /opt/litegate/scripts/model_test_suite.py \
-    --base-url http://127.0.0.1:8080 --admin-key edu_sk_... --model coding'
+    --base-url http://127.0.0.1:8080 --admin-key lg_sk_... --model coding'
 ```
 
 Expected:
@@ -608,7 +631,7 @@ both tools are present and the scripts work as documented in §6.
 Export the bootstrap key once:
 
 ```bash
-export ADMIN_KEY=edu_sk_...
+export ADMIN_KEY=lg_sk_...
 export GW=http://localhost:8080
 ```
 
@@ -900,7 +923,7 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="https://gateway.example.com/v1",
-    api_key="edu_sk_...",
+    api_key="lg_sk_...",
 )
 
 response = client.chat.completions.create(
@@ -914,7 +937,7 @@ print(response.choices[0].message.content)
 
 ```bash
 export ANTHROPIC_BASE_URL=https://gateway.example.com
-export ANTHROPIC_AUTH_TOKEN=edu_sk_...
+export ANTHROPIC_AUTH_TOKEN=lg_sk_...
 export ANTHROPIC_MODEL=coding
 claude
 ```
@@ -1202,6 +1225,25 @@ Pin an alias when the automatic choice is not the one you want — typically to
 send assistant traffic to a small fast model rather than the largest one, since
 its answers are short and its prompt is not.
 
+The console's *Assistant* tab ranks every chat model for the role and says why,
+which is what the automatic choice follows. The prompt is mostly system state and
+grows with the fleet while the answers are short and read in a small panel, so
+context headroom and *not narrating* weigh more here than raw capability:
+
+```
+  coder-next   Good fit   131,222-token context — room for state and history.
+                          Plain chat model — answers without narrating.
+                          Backend is healthy.
+  general      Usable     16,384-token context works today, but the state block
+                          grows with the fleet. Watch it as you add models.
+                          Reasoning model, and nobody has tested whether this
+                          backend separates the chain of thought.
+  embed-only   Cannot     Does not serve chat, so it cannot hold a conversation.
+```
+
+A model that cannot serve the role is refused with the failing check named,
+rather than accepted into a chat box that visibly does not work.
+
 Two things to know before promising it to anyone:
 
 * **It spends the caller's quota.** Assistant requests are ordinary requests. A
@@ -1210,8 +1252,8 @@ Two things to know before promising it to anyone:
 * **Reasoning models narrate.** Unless the backend was started with vLLM's
   `--reasoning-parser`, the chain of thought arrives inside the answer. The
   console strips what it recognises; the real fix is the flag. Run
-  `litegate model-test <alias>` and look for `reasoning_not_separated`, which
-  carries the command.
+  `python scripts/model_test_suite.py --base-url $GW --admin-key $ADMIN --model
+  <alias>` and look for `reasoning_not_separated`, which carries the command.
 * **Reasoning models need a bigger `max_tokens` than you would guess.** They
   spend the budget thinking first, so too small a number returns
   `stop_reason: end_turn` with an *empty* answer — which reads as a broken
@@ -1428,7 +1470,7 @@ obtain a real certificate — then none of the CA installation applies.
 
 ---
 
-## 5e. Monitoring
+## 5e. Monitoring — scrape config and alert rules
 
 `/metrics` is Prometheus exposition. Scrape it and load the rules:
 
@@ -1467,6 +1509,52 @@ Note what is *not* alerted on: NFR-P1 is about gateway overhead, and the request
 histogram includes the model's own generation time, so a slow model would fire
 it. The latency alert covers only endpoints that do no generation, where slow
 means the gateway or its database.
+
+---
+
+## 5g. Client tools, mirrored on-premises
+
+A customer running the gateway on their own site can get the client-side tools
+that point at it — a provider switcher like
+[cc-switch](https://github.com/farion1231/cc-switch), a token-saving CLI proxy
+like [rtk](https://github.com/rtk-ai/rtk) — *from the gateway itself*, offline,
+instead of hunting GitHub releases.
+
+The discipline is deliberate: **mirror → verify → stage → (human) promote**, the
+same two tiers the fleet uses for deploy recipes. Nothing reaches a customer on an
+automatic pull — once a school runs what we hand them, we are the trust anchor, so
+a compromised upstream must never flow straight through. Auto-sync is off by
+design (`GW_TOOLS_AUTO_SYNC=false`).
+
+```bash
+python -m app.tools list                      # registry + what's mirrored/published
+python -m app.tools sync --check              # is the latest release + its assets there?
+python -m app.tools sync cc-switch rtk        # download, verify, stage as CANDIDATE
+python -m app.tools promote cc-switch 3.19.2  # publish a vetted candidate (gated)
+```
+
+Each tool declares **how it is verified**, per asset:
+
+| Tool | Licence | Verify | Note |
+|---|---|---|---|
+| cc-switch | MIT | **minisign** against a pinned public key | authenticity; only the assets that ship a `.sig` (the `.dmg` is unsigned upstream) |
+| cc-switch-cli | MIT | **SHA-256** against the release `checksums.txt` | the terminal build — same switching over SSH, `cc-switch start claude <id>` for one session |
+| rtk | Apache-2.0 | **SHA-256** against the release `checksums.txt` | integrity; the checksums file is itself unsigned, so the gated promote carries authenticity |
+| 9router | MIT | not mirrored — `npm install -g 9router` | a local multi-provider router with quota tracking and fallback |
+| Free Claude Code | MIT | not mirrored — upstream install script | runs Claude Code / Codex / Cline against free and local providers with failover |
+
+Tools without release binaries are listed with their install command and the
+gateway connection values, so the console still hands people one working recipe.
+Verification is pure-Python (`cryptography`), so it runs unchanged inside the
+hardened Docker image — no `minisign` binary needed. The curated registry is
+[`config/tools.yaml`](../config/tools.yaml) (in git, vetted); mirrored binaries land
+under `GW_TOOLS_DIR` (`data/tools/`, git-ignored). Adding a tool later is one
+entry in that file, not new code.
+
+**In the console** (the *เครื่องมือ* tab, staff): each published tool is a card with
+its verification badge, licence, platforms and a download button that detects the
+viewer's OS. A Connect button mints a scoped key and shows the
+`ANTHROPIC_BASE_URL`, `AUTH_TOKEN` and `MODEL` the tool needs.
 
 ---
 
@@ -1553,7 +1641,7 @@ sudo sqlite3 /opt/litegate/data/gateway.db ".backup '/backup/gateway-$(date +%F)
 
 ---
 
-## 7. Monitoring
+## 7. Monitoring — the metrics reference
 
 `/metrics` exposes Prometheus data. Restrict it to the management network
 (both the nginx and Caddy configs already do).
@@ -1877,7 +1965,7 @@ the gauge is decremented in a `finally` around `call_next`, which completes when
 the headers are out. An active stream that has not sent its last token is not
 counted. On a gateway whose whole job is long streams, the gauge is closer to
 "requests currently in their header phase" than to concurrency, and it can read
-near zero while every backend is saturated. The 80%-of-200-streams alert in §5e
+near zero while every backend is saturated. The 80%-of-200-streams alert in §5e (scrape config and alert rules)
 inherits this.
 
 **TTFT is measured but never exported.** `UsageLog.ttft_ms` is populated for

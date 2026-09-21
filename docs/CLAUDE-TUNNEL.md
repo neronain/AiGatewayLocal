@@ -190,6 +190,6 @@ open while cloudflared runs, so:
 - close the tunnel when finished — `Ctrl-C` is the whole procedure
 - for anything standing, use a named tunnel with Access in front
 
-See also: [README — pointing clients at it](../README.md#pointing-claude-code-and-other-clients-at-it)
+See also: [README — pointing clients at it](../README.md#pointing-clients-at-it)
 · [DEPLOYMENT.md](DEPLOYMENT.md) for certificates when you would rather stay on
 your own network.

@@ -36,7 +36,7 @@ POST /v1/chat/completions
    ┌────▼──────────────────┐
    │ authenticate          │ HMAC-SHA256 key lookup            → 401
    ├───────────────────────┤
-   │ workspace policy         │ workspace_models allow-list          → 403
+   │ workspace policy      │ workspace_models allow-list       → 403
    ├───────────────────────┤
    │ resolve alias         │ registry snapshot + visibility    → 404
    ├───────────────────────┤
@@ -66,6 +66,12 @@ The order is not arbitrary. Cheap, local checks run before expensive ones, and
 every check that can reject does so before a backend connection is opened. A
 capability rejection costs a few hundred microseconds and zero GPU time.
 
+`/v1/messages` and `/v1/responses` enter the same pipeline after translation.
+`/v1/embeddings` and `/v1/rerank` run the same order with the steps that do not
+apply removed — no content blocks, no image policy, no streaming, no routing
+rules — and two additions: a batch-size ceiling checked before quota, and a
+context budget checked **per item** rather than against the batch total.
+
 ### Two layers of routing
 
 They answer different questions and must not be collapsed into one:
@@ -90,8 +96,35 @@ usage row all carry the requested alias — routing is an admin decision of the 
 kind as repointing an alias (PRD §6), and the member asked for `coding` and gets
 `coding`.
 
-Cross-alias checks (target exists, no self-reference, no cycle, overflow target is
-actually wider) run once when the registry is loaded, not per request.
+Rules are declared on the model that is asked for, and there are three:
+
+```yaml
+spec:
+  routing:
+    overflow: coding-long          # the prompt does not fit this model's window
+    small_prompt:                  # housekeeping calls should not occupy a big model
+      under_tokens: 2000
+      max_output_tokens: 512       # skip the rule when a long answer is requested
+      target: quick
+    fallback: [coding-backup]      # every machine for this alias is down
+```
+
+| Rule | The problem it solves |
+|---|---|
+| `overflow` | A prompt over the window is thrown away with a `400` while a long-context machine sits idle. Claude Code produces these routinely. |
+| `small_prompt` | Naming a session or summarising a topic used to take a slot on the same model as the real work. |
+| `fallback` | Endpoint failover runs out when **every machine for the alias** is down. That was a `503`. |
+
+Decisions are made on **request size only** — never on guessed intent — and every
+threshold is a number in a file that can be read back and checked.
+
+The guard rails are load-time wherever they can be. An `overflow` target whose
+window is not actually wider is rejected when the registry loads, as are cycles
+and targets that do not exist; cross-alias checks (target exists, no
+self-reference, no cycle, overflow target actually wider) run once at load, not
+per request. At request time the resolved target must clear the *same* capability
+gate: an image bound for a text-only target keeps the request where it started,
+so the error names the alias the member actually asked for.
 
 ---
 
@@ -105,6 +138,7 @@ app/
 │
 ├── registry/
 │   ├── schema.py         canonical YAML schema + load-time consistency rules
+│   ├── writer.py         comment-preserving writes from the console
 │   └── store.py          snapshot loading, atomic hot reload
 │
 ├── core/
@@ -114,6 +148,12 @@ app/
 │   ├── tokens.py         token estimation + the visual/text split
 │   ├── quota.py          policy resolution, counters (Redis or DB)
 │   ├── routing.py        endpoint selection, health with hysteresis
+│   ├── rules.py          model-level routing rules
+│   ├── retrieval.py      embeddings/rerank shapes, batch ceiling, costing
+│   ├── inflight.py       concurrency counters (Redis or per-process)
+│   ├── modeltest.py      the capability probe behind Verify
+│   ├── lmds.py           deploy-tool findings that can be applied
+│   ├── release.py        version comparison for the console's update check
 │   ├── usage.py          buffered usage recording
 │   └── errors.py         error taxonomy
 │
@@ -121,12 +161,18 @@ app/
 │   ├── client.py         pooled httpx, header sanitising
 │   ├── sse.py            SSE parse/format
 │   └── protocol/
-│       └── anthropic.py  Anthropic ⇄ OpenAI, unary and streaming
+│       ├── anthropic.py  Anthropic ⇄ OpenAI, unary and streaming
+│       └── responses.py  Responses ⇄ OpenAI, unary and streaming
 │
 ├── api/
 │   ├── openai.py         /v1/models, /v1/chat/completions
 │   ├── anthropic.py      /v1/messages, /v1/messages/count_tokens
+│   ├── responses.py      /v1/responses  (Codex)
+│   ├── retrieval.py      /v1/embeddings, /v1/rerank
+│   ├── assistant.py      /v1/assistant/*
 │   ├── catalog.py        /v1/catalog, /v1/me
+│   ├── auth.py           console sign-in, sessions
+│   ├── tools.py          the on-prem client-tool mirror
 │   ├── admin.py          /admin/*
 │   └── health.py         /healthz, /readyz, /metrics
 │
