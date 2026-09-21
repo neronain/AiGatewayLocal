@@ -34,6 +34,17 @@ services:
       # Registry is mounted read-only: a compromised container cannot rewrite
       # which backends it routes to.
       - ../config:/app/config:ro
+      # data/ holds provider API keys (data/secrets.json, written by the console)
+      # and the mirrored tool definitions. Without a volume they live in the
+      # container layer and `docker compose down` throws them away, and under the
+      # production overlay's `read_only: true` they cannot be written at all.
+      - gateway_data:/app/data
+    # Match TimeoutStopSec=30 in deploy/systemd/litegate.service. Docker's
+    # default is 10s; a streaming response still being written at second 11 was
+    # cut mid-token on every `docker compose restart`, while the same restart on
+    # a systemd install drained cleanly. The shutdown path alone budgets 5s for
+    # drain_pending_finalizers().
+    stop_grace_period: 30s
     depends_on:
       postgres:
         condition: service_healthy
@@ -95,3 +106,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  gateway_data:

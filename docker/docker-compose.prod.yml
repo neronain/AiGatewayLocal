@@ -9,7 +9,18 @@ services:
   gateway:
     environment:
       GW_ENV: production
-      GW_WORKERS: ${GW_WORKERS:-8}
+    # GW_WORKERS used to be set as an environment variable here and did nothing
+    # whatsoever. The image's CMD spells `--workers 4` out, exec-form CMD does no
+    # variable expansion, and the only code that reads settings.workers is
+    # app.main:run - the `litegate` console script, which neither this stack nor
+    # the systemd unit invokes. An operator who set GW_WORKERS=16 got 4.
+    #
+    # Compose interpolates the value below before the container starts, so the
+    # number really is the number of uvicorn workers.
+    command: ["uvicorn", "app.main:app",
+              "--host", "0.0.0.0", "--port", "8080",
+              "--workers", "${GW_WORKERS:-8}",
+              "--proxy-headers", "--forwarded-allow-ips", "*"]
     # Only Caddy reaches the gateway; nothing binds to the host directly.
     ports: !override []
     expose:
@@ -17,6 +28,10 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    # `read_only: true` also makes /app/data read-only. Saving a provider API key
+    # from the console writes data/secrets.json, so without the gateway_data
+    # volume declared in docker-compose.yml that save fails. It now reports why
+    # (app/core/secrets.py), but the volume is what makes it work.
     security_opt:
       - no-new-privileges:true
     cap_drop:

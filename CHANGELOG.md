@@ -1,3 +1,34 @@
+## 1.12.0 — 2026-09-21
+
+รอบที่ทำให้ **ติดตั้งได้จริงบนเครื่องที่ลูกค้าใช้** — Ubuntu 22 ถึง 25 และในคอนเทนเนอร์
+
+`docs/DEPLOYMENT.md` เขียนมาตลอดว่ารองรับ Ubuntu 22.04 แต่ `pyproject.toml` เขียน
+`requires-python = ">=3.11"` ขณะที่ 22.04 มาพร้อม **Python 3.10** — ลูกค้าที่ลง 22.04
+ล้มตั้งแต่ `pip install` ไม่ใช่ตอนรัน · CI ไม่เคยจับได้เพราะทดสอบแค่ 3.11/3.12
+ซึ่งไม่ครอบทั้งปลายล่าง (22.04) และปลายบน (25.x → 3.13)
+
+### เพิ่ม
+
+- **รองรับ Python 3.10–3.13** · CI ทดสอบครบทั้งสี่รุ่น + job `install-smoke`
+  · `StrEnum` ใช้ shim ที่ตรึง `__str__`/`__format__` — `class X(str, Enum)` เฉย ๆ
+  **ไม่ใช่ตัวแทน**: `str(X.A)` คืน `"X.A"` แทน `"a"` และผลของ f-string ต่างกันระหว่าง
+  3.10 กับ 3.12 · ค่าพวกนี้ลง YAML, JSON และ log จึงต้องเหมือนกันทุกไบต์
+- **`docs/DEPLOYMENT.md` §"Path D — Containers: LXC and Docker"**
+
+### แก้ — แปดจุดที่พังในคอนเทนเนอร์ ยืนยันกับ image ที่ build จริง
+
+- **ตั้ง provider key ไม่ได้เมื่อ `read_only: true`** — `OSError` ดิบหลุดออกมา แล้ว
+  `admin.py` จับเฉพาะ `SecretStoreError` ผู้ดูแลจึงได้ *"An internal error occurred."*
+- **`mkdir` ของ registry อยู่นอกรั้ว read-only** — 500 เปล่า ๆ แบบเดียวกันเมื่อ mount `:ro`
+- **`/console` 404 เงียบ ๆ** — หา static จาก `config_dir.parent` ซึ่งกับ
+  `GW_CONFIG_DIR=/etc/litegate` กลายเป็น `/etc/app/static` · ย้ายไปหาจากแพ็กเกจ
+- **`bootstrap.sh` ตายที่ `systemctl daemon-reload`** ใต้ `set -e` หลังสร้าง user/venv/.env/unit ไปแล้ว
+- **`stop_grace_period` ไม่ได้ตั้ง** — Docker ให้ 10 วิ แต่ `TimeoutStopSec=30` และการปิด
+  ใช้ 5 วิไล่สตรีม · สตรีมขาดทุกครั้งที่ restart
+- **`GW_WORKERS` ไม่มีผล** — มีแต่ `app.main:run` ที่อ่าน ซึ่งไม่มี deployment ไหนใช้
+- **`hostname -I`** พิมพ์ที่อยู่ NAT เป็น URL ของคอนโซล
+- **`uvicorn.run()` ทิ้ง forwarded header** — เพิ่ม `GW_FORWARDED_ALLOW_IPS`
+
 ## 1.11.2 — 2026-09-21
 
 ### แก้

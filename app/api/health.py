@@ -45,7 +45,7 @@ async def healthz(state: AppState = Depends(get_state)) -> dict[str, Any]:
 
 def _console_mtime() -> str | None:
     """เวลาที่ไฟล์หน้าคอนโซลถูกแก้ล่าสุด (ISO, UTC) — None ถ้าหาไฟล์ไม่เจอ"""
-    from datetime import UTC, datetime
+    from datetime import datetime, timezone
 
     here = pathlib.Path(__file__).resolve().parent.parent / "static"
     stamps = [
@@ -55,7 +55,7 @@ def _console_mtime() -> str | None:
     ]
     if not stamps:
         return None
-    return datetime.fromtimestamp(max(stamps), tz=UTC).isoformat()
+    return datetime.fromtimestamp(max(stamps), tz=timezone.utc).isoformat()
 
 
 @router.get("/readyz")

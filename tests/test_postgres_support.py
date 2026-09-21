@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
@@ -40,8 +40,12 @@ def test_sqlite_is_still_the_default():
 
 def test_asyncpg_is_optional_not_a_core_dependency():
     """asyncpg อยู่ใน extra ชื่อ postgres — ไม่ใช่ของที่ทุก deployment ต้องลง"""
-    import tomllib
     from pathlib import Path
+
+    try:
+        import tomllib
+    except ModuleNotFoundError:            # Python 3.10 — tomllib เข้ามาใน 3.11
+        import tomli as tomllib
 
     data = tomllib.loads(
         (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text("utf-8")
@@ -71,18 +75,18 @@ def test_dialect_is_read_from_the_url(url, name, sqlite_flag, pg_flag):
 # ── จุดที่ภาษา SQL ต่างกันจริง ─────────────────────────────────────────────────
 
 def test_daily_buckets_are_cut_on_utc_on_both_dialects():
-    """`func.date(ts)` ใช้ได้ทั้งคู่แต่ได้คนละคำตอบ — ตัวที่เราใช้ต้องบังคับ UTC
+    """`func.date(ts)` ใช้ได้ทั้งคู่แต่ได้คนละคำตอบ — ตัวที่เราใช้ต้องบังคับ timezone.utc
 
     บน Postgres คอลัมน์เป็น timestamptz และ `date()` แปลงตามค่า TimeZone ของ session
-    ก่อน · ถ้าไม่บังคับ รายงานรายวันของลูกค้าที่เซิร์ฟเวอร์ไม่ได้ตั้งเป็น UTC จะเลื่อน
-    ขอบวันไปเงียบ ๆ และไม่ตรงกับ `WHERE ts >= since` ที่คิดแบบ UTC อยู่แล้ว
+    ก่อน · ถ้าไม่บังคับ รายงานรายวันของลูกค้าที่เซิร์ฟเวอร์ไม่ได้ตั้งเป็น timezone.utc จะเลื่อน
+    ขอบวันไปเงียบ ๆ และไม่ตรงกับ `WHERE ts >= since` ที่คิดแบบ timezone.utc อยู่แล้ว
     """
     rendered_pg = str(select(utc_date(UsageLog.ts)).compile(dialect=PG))
     rendered_lite = str(select(utc_date(UsageLog.ts)).compile(dialect=LITE))
 
     assert "AT TIME ZONE 'UTC'" in rendered_pg
     assert "::date" in rendered_pg
-    # SQLite เก็บเป็นเวลา UTC แบบไม่มี tz อยู่แล้ว — date() ตัดถูกตั้งแต่แรก
+    # SQLite เก็บเป็นเวลา timezone.utc แบบไม่มี tz อยู่แล้ว — date() ตัดถูกตั้งแต่แรก
     assert "date(usage_logs.ts)" in rendered_lite
     assert "AT TIME ZONE" not in rendered_lite
 
@@ -255,8 +259,8 @@ async def test_daily_rollup_buckets_by_utc_day_on_sqlite(temp_db):
     from app.db.session import init_db, session_scope
 
     await init_db()
-    # 23:30Z กับ 00:30Z ของวันถัดไป — ห่างกันชั่วโมงเดียว แต่คนละวัน UTC
-    late = datetime(2026, 3, 1, 23, 30, tzinfo=UTC)
+    # 23:30Z กับ 00:30Z ของวันถัดไป — ห่างกันชั่วโมงเดียว แต่คนละวัน timezone.utc
+    late = datetime(2026, 3, 1, 23, 30, tzinfo=timezone.utc)
     async with session_scope() as db:
         for offset, alias in ((timedelta(0), "a"), (timedelta(hours=1), "b")):
             db.add(UsageLog(request_id=f"r{alias}", ts=late + offset,
@@ -300,14 +304,14 @@ async def test_schema_and_daily_rollup_work_on_a_real_postgres(monkeypatch):
         await session_mod.init_db()
         await session_mod._add_missing_columns(engine)
 
-        late = datetime(2026, 3, 1, 23, 30, tzinfo=UTC)
+        late = datetime(2026, 3, 1, 23, 30, tzinfo=timezone.utc)
         async with session_mod.session_scope() as db:
             for offset, alias in ((timedelta(0), "a"), (timedelta(hours=1), "b")):
                 db.add(UsageLog(request_id=f"pg-{alias}", ts=late + offset,
                                 model_alias=alias, protocol="openai"))
 
         async with session_mod.session_scope() as db:
-            # บังคับ TimeZone ของ session ให้ไม่ใช่ UTC — ถ้าเราใช้ func.date() ตรง ๆ
+            # บังคับ TimeZone ของ session ให้ไม่ใช่ timezone.utc — ถ้าเราใช้ func.date() ตรง ๆ
             # เทสนี้จะแตกตรงนี้ ซึ่งคือจุดที่ต้องการให้แตก
             from sqlalchemy import func, text
 

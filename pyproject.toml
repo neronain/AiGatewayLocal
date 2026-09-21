@@ -1,9 +1,9 @@
 [project]
 name = "litegate"
-version = "1.11.2"
+version = "1.12.0"
 description = "LiteGate - capability-aware, multimodal AI gateway for teams running their own model servers"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "neronain" }]
 
@@ -43,6 +43,9 @@ postgres = ["asyncpg>=0.29"]
 speed = ["orjson>=3.10"]
 
 dev = [
+    # tomllib เข้ามาเป็น stdlib ตอน 3.11 — Ubuntu 22.04 มาพร้อม 3.10 ซึ่งเรารองรับ
+    # เทสที่อ่าน pyproject จึงต้องมีของให้อ่านบนรุ่นนั้นด้วย (โค้ดของแอปไม่ได้ใช้ toml เลย)
+    "tomli>=2.0; python_version < '3.11'",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "respx>=0.21",
@@ -78,12 +81,12 @@ filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["B008"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.10"
 ignore_missing_imports = true

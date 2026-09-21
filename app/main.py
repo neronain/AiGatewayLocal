@@ -7,6 +7,7 @@ import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -28,6 +29,15 @@ from app.db.session import dispose_db, init_db, session_scope
 from app.state import build_state
 
 log = logging.getLogger(__name__)
+
+# The console and the welcome page ship *inside* the package, so locate them
+# from the package itself. They used to be derived as `config_dir.parent / "app"
+# / "static"`, which holds only while config/ happens to sit next to app/ -
+# true for /opt/litegate and for the image, false the moment an operator mounts
+# the registry somewhere idiomatic (`-v ./config:/etc/litegate -e
+# GW_CONFIG_DIR=/etc/litegate`). That resolved to /etc/app/static, the is_dir()
+# check below quietly failed, and /console returned 404 with nothing logged.
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 REQUESTS = Counter(
     "litegate_requests_total",
@@ -379,7 +389,7 @@ def create_app() -> FastAPI:
     app.include_router(admin.router)
     app.include_router(tools.router)
 
-    static_dir = settings.config_dir.parent / "app" / "static"
+    static_dir = STATIC_DIR
     if static_dir.is_dir():
         app.mount(
             "/console", _RevalidatingStatic(directory=str(static_dir), html=True), name="console"
@@ -394,7 +404,7 @@ def create_app() -> FastAPI:
         อยู่แล้วต้องไม่พัง จึงแยกด้วย Accept: ขอ HTML มา = ได้หน้า อย่างอื่น = ได้ JSON เดิม
         """
         wants_html = "text/html" in request.headers.get("accept", "")
-        page = settings.config_dir.parent / "app" / "static" / "welcome.html"
+        page = STATIC_DIR / "welcome.html"
         if wants_html and page.is_file():
             return FileResponse(page, media_type="text/html; charset=utf-8")
         return {
@@ -422,6 +432,8 @@ def run() -> None:
         port=settings.port,
         log_level=settings.log_level.lower(),
         workers=settings.workers if settings.is_production else 1,
+        proxy_headers=True,
+        forwarded_allow_ips=settings.forwarded_allow_ips,
     )
 
 

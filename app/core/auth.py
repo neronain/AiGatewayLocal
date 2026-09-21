@@ -19,7 +19,7 @@ import hmac
 import logging
 import secrets
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, Request
 from sqlalchemy import select
@@ -468,4 +468,4 @@ async def assert_model_permitted(
 
 def _aware(value: datetime) -> datetime:
     """SQLite hands back naive datetimes; normalize before comparing."""
-    return value if value.tzinfo else value.replace(tzinfo=UTC)
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)

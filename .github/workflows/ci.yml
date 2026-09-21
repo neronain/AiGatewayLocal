@@ -11,12 +11,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The matrix is the list of Pythons our supported distributions actually ship,
+  # not a list of Pythons we like. docs/DEPLOYMENT.md §0 names Ubuntu 22.04
+  # through 25.10, and an entry missing here is a release we claim to support and
+  # never run a line of code on:
+  #
+  #   3.10  Ubuntu 22.04 LTS        (`apt install python3` gives 3.10 - this is
+  #                                  the one that made `pip install` fail outright
+  #                                  while requires-python said >=3.11)
+  #   3.11  Debian 12 bookworm
+  #   3.12  Ubuntu 24.04 LTS
+  #   3.13  Ubuntu 25.04 / 25.10
   test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
@@ -47,6 +58,47 @@ jobs:
 
       - name: Test
         run: pytest tests/ -v --tb=short
+
+  # The customer-facing failure was `pip install` refusing to run at all on a
+  # stock 22.04 box - it never got as far as a test. This job reproduces exactly
+  # that: a clean install from the metadata, then import the app and build it.
+  # It deliberately does not depend on tests/, so it keeps verifying the install
+  # claim for 3.10 even while the suite is being brought up to date.
+  install-smoke:
+    name: install + boot on ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the package the way an operator does
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+
+      - name: Import and build the app
+        run: |
+          cd /tmp
+          python -c "
+          import sys
+          from app.main import create_app
+          from app.registry.schema import Modality, Purpose, ServerType, Visibility
+          # StrEnum semantics have to match across versions: these values are
+          # written into YAML, JSON and log lines.
+          assert str(Modality.TEXT) == 'text', str(Modality.TEXT)
+          assert f'{Visibility.MEMBER}' == 'member', f'{Visibility.MEMBER}'
+          assert Purpose.CODING == 'coding'
+          assert ServerType.VLLM.value == 'vllm'
+          create_app()
+          print('ok on', sys.version)
+          "
 
   secret-scan:
     name: secret leak scan

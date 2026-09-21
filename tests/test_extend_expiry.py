@@ -11,7 +11,7 @@ that lapsed last month gives a full period rather than a date already gone.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -41,7 +41,7 @@ def extend(client, key_id, days, key=None):
 
 
 def days_left(iso: str) -> int:
-    return (datetime.fromisoformat(iso) - datetime.now(UTC)).days
+    return (datetime.fromisoformat(iso) - datetime.now(timezone.utc)).days
 
 
 def test_a_key_can_be_given_more_time(client):
@@ -70,7 +70,7 @@ def test_days_count_from_today_not_from_the_old_date(client):
             row = (await session.execute(
                 select(ApiKey).where(ApiKey.id == key["id"])
             )).scalar_one()
-            row.expires_at = datetime.now(UTC) - timedelta(days=60)
+            row.expires_at = datetime.now(timezone.utc) - timedelta(days=60)
             await session.commit()
 
     asyncio.get_event_loop_policy().new_event_loop().run_until_complete(lapse())
@@ -99,7 +99,7 @@ def test_an_expired_key_works_again_once_extended(client):
             row = (await session.execute(
                 select(ApiKey).where(ApiKey.id == key["id"])
             )).scalar_one()
-            row.expires_at = datetime.now(UTC) - timedelta(days=1)
+            row.expires_at = datetime.now(timezone.utc) - timedelta(days=1)
             await session.commit()
 
     asyncio.get_event_loop_policy().new_event_loop().run_until_complete(lapse())

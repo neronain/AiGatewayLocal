@@ -18,6 +18,7 @@ service · ผู้ดูแลที่ใช้หน้าเว็บอย
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
@@ -34,6 +35,32 @@ NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 class SecretStoreError(ValueError):
     """ชื่อหรือค่าที่รับไม่ได้ — ข้อความอธิบายให้ผู้ใช้อ่านรู้เรื่อง"""
+
+
+def _not_writable(directory: Path, exc: OSError) -> SecretStoreError:
+    """บอกว่า *ทำไม* เขียนไม่ได้ และแก้ตรงไหน — เหมือนที่ registry writer ทำ
+
+    เดิม mkdir/mkstemp ปล่อย OSError ดิบขึ้นไป · ตัวเรียกที่ app/api/admin.py จับแค่
+    SecretStoreError ข้อผิดพลาดจึงไปโผล่ที่ handler กลางเป็น "An internal error
+    occurred" ซึ่งไม่บอกอะไรเลย · เคสนี้เกิดจริงกับ docker-compose.prod.yml ที่ตั้ง
+    `read_only: true` โดยมี tmpfs ให้แค่ /tmp — /app/data เขียนไม่ได้ ผู้ดูแลจึงตั้ง
+    คีย์ผู้ให้บริการจากหน้าเว็บไม่ได้ และไม่มีอะไรบอกว่าเพราะอะไร
+    """
+    cause = (
+        "the directory is on a read-only mount"
+        if exc.errno == errno.EROFS
+        else "the service user cannot write to the directory"
+    )
+    return SecretStoreError(
+        f"Cannot save the provider key: {cause} ({directory}).\n"
+        "· Docker: `read_only: true` needs a writable mount for the data "
+        "directory — add a named volume or a tmpfs at /app/data\n"
+        "· systemd install: add that path to ReadWritePaths= in "
+        "/etc/systemd/system/litegate.service, then "
+        "`systemctl daemon-reload && systemctl restart litegate`\n"
+        "· setting the key as an environment variable instead also works: "
+        "os.environ always wins over this store."
+    )
 
 
 class SecretStore:
@@ -121,12 +148,18 @@ class SecretStore:
         mkstemp ให้ 0600 มาตั้งแต่แรกอยู่แล้ว จึงไม่มีจังหวะที่ไฟล์อ่านได้ทั้งเครื่อง
         แม้ชั่วครู่ · ตัวโฟลเดอร์ก็ปิดด้วยเช่นกัน เพราะรายชื่อคีย์เองก็ไม่ใช่ของสาธารณะ
         """
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise _not_writable(self._path.parent, exc) from exc
         try:
             self._path.parent.chmod(0o700)
         except OSError:
             pass
-        fd, tmp = tempfile.mkstemp(dir=str(self._path.parent), prefix=".secrets-")
+        try:
+            fd, tmp = tempfile.mkstemp(dir=str(self._path.parent), prefix=".secrets-")
+        except OSError as exc:
+            raise _not_writable(self._path.parent, exc) from exc
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(data, handle, ensure_ascii=False, indent=2, sort_keys=True)

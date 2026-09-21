@@ -136,7 +136,7 @@ def test_a_policy_can_be_given_an_end_date(client):
 
 
 def test_an_expired_policy_stops_applying(client, member_key, upstream):
-    from datetime import UTC, datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     from app.db.models import QuotaPolicy
 
@@ -154,7 +154,7 @@ def test_an_expired_policy_stops_applying(client, member_key, upstream):
             from sqlalchemy import select
             rows = await session.execute(select(QuotaPolicy))
             for row in rows.scalars():
-                row.expires_at = datetime.now(UTC) - timedelta(days=1)
+                row.expires_at = datetime.now(timezone.utc) - timedelta(days=1)
             await session.commit()
 
     asyncio.get_event_loop_policy().new_event_loop().run_until_complete(expire())

@@ -131,13 +131,13 @@ def test_two_people_do_not_share_a_budget(client, member_key, upstream):
 
 
 def test_the_window_is_a_real_minute():
-    from datetime import UTC, datetime
+    from datetime import datetime, timezone
 
     from app.core.quota import window_bounds
 
-    now = datetime(2026, 8, 14, 10, 30, 45, tzinfo=UTC)
+    now = datetime(2026, 8, 14, 10, 30, 45, tzinfo=timezone.utc)
     start, end = window_bounds("minute", now)
-    assert start == datetime(2026, 8, 14, 10, 30, tzinfo=UTC)
+    assert start == datetime(2026, 8, 14, 10, 30, tzinfo=timezone.utc)
     assert (end - start).total_seconds() == 60
 
 

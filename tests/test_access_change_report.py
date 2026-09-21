@@ -92,7 +92,7 @@ def db(tmp_path):
         key(student, "gone")
         session.flush()
         session.query(ApiKey).filter(ApiKey.name == "gone").update(
-            {"revoked_at": __import__("datetime").datetime.now(__import__("datetime").UTC)}
+            {"revoked_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc)}
         )
         session.commit()
 

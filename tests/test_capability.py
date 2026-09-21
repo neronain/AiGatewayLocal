@@ -115,11 +115,11 @@ def test_model_and_endpoint_capability_must_both_pass(snapshot):
 # ---------------------------------------------------------------------------
 def test_term_window_follows_the_configured_calendar():
     """A term is whatever the organisation says it is."""
-    from datetime import UTC, datetime
+    from datetime import datetime, timezone
 
     from app.core.quota import DEFAULT_TERM_START_MONTHS, window_bounds
 
-    march = datetime(2026, 3, 15, tzinfo=UTC)
+    march = datetime(2026, 3, 15, tzinfo=timezone.utc)
 
     # Default (Thai academic year): Jan-Jun term contains March.
     start, end = window_bounds("term", march, DEFAULT_TERM_START_MONTHS)
@@ -138,11 +138,11 @@ def test_term_window_follows_the_configured_calendar():
 
 
 def test_term_window_wraps_the_year_end():
-    from datetime import UTC, datetime
+    from datetime import datetime, timezone
 
     from app.core.quota import window_bounds
 
-    december = datetime(2026, 12, 20, tzinfo=UTC)
+    december = datetime(2026, 12, 20, tzinfo=timezone.utc)
     start, end = window_bounds("term", december, (1, 6, 8))
     assert (start.year, start.month) == (2026, 8)
     assert (end.year, end.month) == (2027, 1)

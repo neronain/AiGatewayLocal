@@ -12,7 +12,7 @@ PostgreSQL ซึ่งรับการเขียนพร้อมกัน
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy.dialects import postgresql, sqlite
@@ -97,7 +97,7 @@ async def test_the_increment_is_a_self_referencing_update_on_both_dialects():
             pass
 
     await DatabaseCounterStore._add_to_existing(
-        _Session(), "u:x", datetime(2026, 3, 1, tzinfo=UTC),
+        _Session(), "u:x", datetime(2026, 3, 1, tzinfo=timezone.utc),
         Consumption(requests=1, output_tokens=2, images=3),
     )
     assert len(captured) == 1, "หนึ่งการบวก = หนึ่งคำสั่ง ไม่ใช่ SELECT แล้วค่อย UPDATE"

@@ -23,7 +23,7 @@ import time
 from abc import ABC, abstractmethod
 from calendar import monthrange
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from prometheus_client import Gauge
 from sqlalchemy import func, select, update
@@ -116,7 +116,7 @@ def window_bounds(
     now: datetime | None = None,
     term_start_months: tuple[int, ...] | None = None,
 ) -> tuple[datetime, datetime]:
-    now = now or datetime.now(UTC)
+    now = now or datetime.now(timezone.utc)
     # A per-minute window rides the same counters as the daily one. A day's
     # quota stops somebody using a term's worth in a week; it does nothing about
     # forty people pressing send at the start of a class, which is the shape of
@@ -337,7 +337,7 @@ class RedisCounterStore(CounterStore):
             value = getattr(delta, field_name)
             if value:
                 pipe.hincrby(redis_key, field_name, value)
-        ttl = max(int((end - datetime.now(UTC)).total_seconds()), 60)
+        ttl = max(int((end - datetime.now(timezone.utc)).total_seconds()), 60)
         pipe.expire(redis_key, ttl)
         await pipe.execute()
 
@@ -507,7 +507,7 @@ class QuotaService:
         person beats a rule about their class: it was written with more
         knowledge of the case.
         """
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         result = await session.execute(
             # นโยบายของ key ไม่เกี่ยวกับการคิดโควตาของคน · ถ้าไม่กันไว้ นโยบายที่ตั้ง
             # เพดานให้ key ใบเดียว (ซึ่งไม่ได้ระบุ user/workspace) จะได้คะแนน 0
@@ -603,7 +603,7 @@ class QuotaService:
         """
         if not api_key_id:
             return None
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         result = await session.execute(
             select(QuotaPolicy).where(
                 QuotaPolicy.enabled.is_(True),
@@ -759,9 +759,9 @@ class QuotaService:
 
 def _aware(value: datetime) -> datetime:
     """SQLite hands back naive datetimes; normalise before comparing."""
-    return value if value.tzinfo else value.replace(tzinfo=UTC)
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
 def _seconds_to_reset(window: str) -> int:
     _, end = window_bounds(window)
-    return max(int((end - datetime.now(UTC)).total_seconds()), 1)
+    return max(int((end - datetime.now(timezone.utc)).total_seconds()), 1)

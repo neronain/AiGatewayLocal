@@ -62,14 +62,14 @@ def test_a_new_key_starts_from_the_class_defaults(client):
 def test_the_class_expiry_wins_over_the_schema_default(client):
     """`expires_in_days` มีค่า default ของตัวเอง · อ่านค่านั้นว่า "ผู้เรียกเลือกแล้ว"
     ทำให้ค่าของวิชาแพ้เงียบ ๆ — ต้องดูที่ว่าผู้เรียกส่งฟิลด์มาไหม ไม่ใช่ดูที่ค่า"""
-    from datetime import UTC, datetime
+    from datetime import datetime, timezone
 
     student = user(client, "s1b")
     join(client, workspace(client, "CS101", default_key_days=45), student)
 
     key = issue(client, student)
     assert key["applied_defaults"]["expires_in_days"] == 45
-    days = (datetime.fromisoformat(key["expires_at"]) - datetime.now(UTC)).days
+    days = (datetime.fromisoformat(key["expires_at"]) - datetime.now(timezone.utc)).days
     assert 43 <= days <= 45, f"ควรหมดอายุใน 45 วัน ไม่ใช่ {days}"
 
 

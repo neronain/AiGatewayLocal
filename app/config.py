@@ -28,7 +28,7 @@ LICENSE_NOTE = "MIT — attribution required"
 # แล้วลืมบรรทัดนี้ · ตัวที่จับได้คือ test_the_version_has_one_source ซึ่งเทียบสองค่านี้
 # ตรง ๆ — ถ้าจะย้ายไปอ่าน importlib.metadata ให้ย้ายตอนไม่ได้กำลังจะ release
 # เพราะ metadata หายเมื่อรันจาก source tree ที่ยังไม่ได้ pip install แล้วจะ boot ไม่ขึ้น
-VERSION = "1.11.2"
+VERSION = "1.12.0"
 
 
 class Settings(BaseSettings):
@@ -45,6 +45,18 @@ class Settings(BaseSettings):
     port: int = 8080
     log_level: str = "INFO"
     workers: int = 4
+    # Which peers may set X-Forwarded-For/-Proto, for the `litegate` console
+    # script (app.main:run). The uvicorn command lines in deploy/systemd/ and
+    # docker/Dockerfile pass --forwarded-allow-ips themselves; this is the only
+    # way to reach the same setting when the entry point is used instead.
+    #
+    # Default matches uvicorn's own: trust only a proxy on loopback, which is
+    # what scripts/install_tls.sh sets up. In a container the reverse proxy is a
+    # *different* container, so its address is on the bridge network and not
+    # loopback - leave this at the default there and every request is attributed
+    # to the proxy instead of the caller. Set it to the proxy's address, or to
+    # "*" when nothing but the proxy can reach the port at all.
+    forwarded_allow_ips: str = "127.0.0.1"
 
     # Security
     api_key_pepper: str = "dev-only-insecure-pepper"

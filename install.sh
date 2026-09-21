@@ -37,13 +37,17 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── python ────────────────────────────────────────────────────────────────
-# ต้องการ 3.11+ · เครื่องที่มีหลายเวอร์ชันมักให้ `python3` เป็นตัวเก่าของระบบ
-# จึงไล่หาตัวที่ใหม่พอแทนที่จะยอมแพ้ตั้งแต่ตัวแรกที่เจอ
+# ต้องการ 3.10+ · เพดานล่างคือของที่ Ubuntu 22.04 LTS ให้มาเป็น `python3` พอดี —
+# เดิมเขียนไว้ 3.11 ซึ่งแปลว่า `pip install` ล้มทันทีบน 22.04 ทั้งที่คู่มือประกาศว่ารองรับ
+#
+# เครื่องที่มีหลายเวอร์ชันมักให้ `python3` เป็นตัวของระบบ จึงไล่หาตัวที่ใหม่กว่าก่อน แล้ว
+# ค่อยตกมาที่ `python3` · python3.10 อยู่ท้ายสุดโดยตั้งใจ: ถ้าเครื่องมีตัวใหม่กว่าอยู่แล้ว
+# ไม่มีเหตุผลจะไปเลือกตัวที่เก่าที่สุดที่ยังรองรับ
 find_python() {
     local candidate
-    for candidate in python3.13 python3.12 python3.11 python3; do
+    for candidate in python3.13 python3.12 python3.11 python3 python3.10; do
         command -v "$candidate" >/dev/null 2>&1 || continue
-        if "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
+        if "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
             echo "$candidate"; return 0
         fi
     done
@@ -51,7 +55,7 @@ find_python() {
 }
 
 log "ตรวจสิ่งที่ต้องมี"
-PY="$(find_python)" || die "ต้องใช้ Python 3.11 ขึ้นไป — ลง: sudo apt install python3.12 python3.12-venv"
+PY="$(find_python)" || die "ต้องใช้ Python 3.10 ขึ้นไป — ลง: sudo apt install python3 python3-venv"
 ok "$PY ($("$PY" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))'))"
 
 if ! "$PY" -c 'import venv' 2>/dev/null; then

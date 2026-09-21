@@ -21,6 +21,27 @@ die()  { printf '\033[31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "run as root (sudo $0)"
 
+# This script installs a systemd unit and reads the first-run credentials back
+# out of the journal. Without a running systemd both of those are impossible.
+#
+# It used to find that out at `systemctl daemon-reload` near the very end, under
+# `set -e` - by which point it had already created a system user, copied the
+# tree, built a venv, written .env and dropped a unit file into
+# /etc/systemd/system. The operator was left with a half-installed machine and
+# an error about D-Bus. Check it before touching anything.
+if ! [[ -d /run/systemd/system ]]; then
+    die "no running systemd (this is normal in Docker, and in an LXC container
+     started without an init).
+
+  · Docker: use the image instead - docker/docker-compose.yml. This script
+    has no equivalent there and is not needed.
+  · LXC: start the container with systemd as init (the default for a
+    distro container; 'lxc.init.cmd' must not be overridden), then re-run.
+  · Anything else: install by hand with ./install.sh, which needs no systemd.
+
+  See docs/DEPLOYMENT.md § 'Containers: LXC and Docker'."
+fi
+
 log "Installing system packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
@@ -124,11 +145,22 @@ fi
 systemctl daemon-reload
 systemctl enable --now "$SERVICE_NAME"
 
+# `hostname -I` lists the addresses of this machine's own interfaces. On bare
+# metal the first one is the LAN address an operator can actually reach. Inside
+# an LXC container it is the veth address, and there is no guarantee anyone
+# outside the host can route to it. Print it, but say what it is rather than
+# handing over a URL that may not work.
+advertise_addr() { hostname -I 2>/dev/null | awk '{print $1}'; }
+ADDR="$(advertise_addr)"
+if [[ -z "$ADDR" ]]; then
+    ADDR="<this-host>"
+fi
+
 log "Waiting for the service to become healthy"
 for _ in {1..30}; do
     if curl -fsS http://localhost:8080/healthz >/dev/null 2>&1; then
         echo
-        log "Gateway is up: http://$(hostname -I | awk '{print $1}'):8080"
+        log "Gateway is up: http://${ADDR}:8080"
         echo
         warn "Bootstrap admin key (shown once) - copy it now:"
         journalctl -u "$SERVICE_NAME" --no-pager | grep -A1 "BOOTSTRAP ADMIN KEY" | tail -2 || true
@@ -142,10 +174,14 @@ for _ in {1..30}; do
         echo "  ยังไม่มีโมเดลให้เรียก — โมเดลตัวอย่างถูกปิดไว้เพราะชี้ไปที่เครื่องของเรา"
         echo "  เพิ่มเครื่องจริงที่หน้า Models ในคอนโซล แล้วกด Detect"
         echo
-        echo "  Console : http://$(hostname -I | awk '{print $1}'):8080/console"
-        echo "  Docs    : http://$(hostname -I | awk '{print $1}'):8080/docs"
+        echo "  Console : http://${ADDR}:8080/console"
+        echo "  Docs    : http://${ADDR}:8080/docs"
         echo "  Logs    : journalctl -u ${SERVICE_NAME} -f"
         echo
+        if [[ -f /run/.containerenv || -f /.dockerenv ]] || grep -qa container=lxc /proc/1/environ 2>/dev/null; then
+            warn "This is a container: ${ADDR} is its internal address."
+            warn "Reach the console from outside via the host's port forward, not this URL."
+        fi
 
         # HTTPS belongs to the install, not to a follow-up someone gets to
         # later. Plenty of clients refuse http:// outright, and a gateway that

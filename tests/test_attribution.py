@@ -62,7 +62,10 @@ def test_catalog_sections_can_be_folded():
 
 def test_the_version_has_one_source():
     """เดิมฝังเลขเวอร์ชันตายสองที่ใน main.py แล้วลืมอัปตอน bump — `/` ประกาศเลขเก่าค้าง"""
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:            # Python 3.10 — tomllib เข้ามาใน 3.11
+        import tomli as tomllib
 
     main = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
     assert '"1.' not in main.split("def create_app")[1][:2000], "อย่าฝังเลขเวอร์ชันใน main.py"

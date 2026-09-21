@@ -147,7 +147,7 @@ async def me_usage(
 
     เห็นเฉพาะของตัวเอง — กรองด้วย user_id ของ principal เสมอ ไม่มีพารามิเตอร์ให้ระบุคนอื่น
     """
-    from datetime import UTC, datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     from sqlalchemy import func, select
 
@@ -155,7 +155,7 @@ async def me_usage(
     from app.db.models import UsageLog
 
     await state.usage.flush()
-    since = datetime.now(UTC) - timedelta(days=days)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
     mine = UsageLog.user_id == principal.user_id
 
     daily = (

@@ -53,10 +53,39 @@ a way to overwrite one that already exists.
 | CPU | 2 cores | 4–8 cores |
 | RAM | 2 GB | 8 GB |
 | Disk | 10 GB | 50 GB (usage history) |
-| OS | Ubuntu 22.04 / 24.04, Debian 12 | Ubuntu 24.04 LTS |
-| Python | 3.11+ | 3.12 |
+| OS | Ubuntu 22.04 / 24.04 / 25.04 / 25.10, Debian 12 | Ubuntu 24.04 LTS |
+| Python | 3.10 – 3.13 | 3.12 |
 
 The gateway does no inference — it is I/O bound. It needs **no GPU**.
+
+**The Python floor is 3.10 because that is what Ubuntu 22.04 hands you.** Every
+supported release is installable with the `python3` already on the box — no PPA,
+no `deadsnakes`, no source build:
+
+| Release | `apt install python3` gives | CI |
+|---|---|---|
+| Ubuntu 22.04 LTS | 3.10 | ✅ tested |
+| Debian 12 bookworm | 3.11 | ✅ tested |
+| Ubuntu 24.04 LTS | 3.12 | ✅ tested |
+| Ubuntu 25.04 | 3.13 | ✅ tested |
+| Ubuntu 25.10 | 3.13 | ✅ tested |
+
+`.github/workflows/ci.yml` runs the suite on 3.10, 3.11, 3.12 and 3.13, and a
+separate `install-smoke` job does a clean `pip install .` and boots the app on
+each — that job is the one that would have caught the 22.04 breakage, where
+`requires-python = ">=3.11"` made `pip install` refuse before a single test ran.
+
+3.9 and older are **not** supported, and `pip` now says so before installing
+anything. The floor is a hard one, not a policy: the ORM models annotate columns
+as `Mapped[str | None]`, and SQLAlchemy resolves those annotations at import
+time, so on 3.9 the very first import dies with
+
+```
+sqlalchemy.orm.exc.MappedAnnotationError: Could not resolve all types within
+mapped annotation: "Mapped[str | None]"
+```
+
+PEP 604 unions only became evaluable at runtime in 3.10.
 
 ### Optional extras
 
@@ -359,6 +388,205 @@ Expected:
 > **Never leave `mock_backend.py` running on a real deployment.** It returns
 > canned text, not inference, and a member cannot tell the difference from the
 > response shape.
+
+---
+
+## Path D — Containers: LXC and Docker
+
+Many sites run the gateway in an LXC container or in Docker rather than on a
+dedicated machine. Both work. What changes is the contract with the host, not
+the code.
+
+**The gateway itself is blind to host shape, on purpose.** It never reads
+`/proc` or `/sys`, never calls `os.cpu_count()` or `sched_getaffinity`, never
+shells out to `nproc`, `free`, `uname` or `hostname`, and has no `psutil`
+dependency. So a cgroup CPU or memory limit can never cause it to mis-detect
+anything — the classic container failure mode simply does not apply. The flip
+side is that **nothing auto-tunes**: the worker count is a constant, and on a
+small container it is your job to lower it (see *Sizing* below).
+
+### Which install path works where
+
+| | Docker | LXC with systemd | Unprivileged LXC |
+|---|---|---|---|
+| `docker/docker-compose.yml` | ✅ the intended path | — | — |
+| `sudo scripts/bootstrap.sh` | ❌ no systemd | ✅ | ⚠️ see *Hardening* |
+| `./install.sh` (venv, no service) | ✅ | ✅ | ✅ |
+
+`scripts/bootstrap.sh` installs a systemd unit and reads the first-run
+credentials back out of the journal, so it needs a running systemd. It now
+checks `/run/systemd/system` **before** it does anything and exits with the
+alternatives. It used to discover this at `systemctl daemon-reload` on the
+second-to-last line, having already created a system user, copied the tree,
+built a venv, written `.env` and dropped a unit into `/etc/systemd/system` —
+leaving a half-installed machine and a message about D-Bus.
+
+### systemd in LXC
+
+**You do not need `loginctl enable-linger`.** The unit is a *system* service
+(`User=litegate`, `WantedBy=multi-user.target`), not a user service, so linger —
+which only keeps a user manager alive after logout — has no effect on it. Advice
+to enable linger for this gateway is for a different product.
+
+The unit is heavily sandboxed, and several of those directives need privileges
+an **unprivileged** LXC container may not have. When they cannot be applied the
+service fails to start with `status=226/NAMESPACE`, and the error names the
+namespace rather than the directive that caused it:
+
+| Directive | In unprivileged LXC |
+|---|---|
+| `PrivateDevices=`, `ProtectKernelTunables=`, `ProtectKernelModules=`, `ProtectControlGroups=` | may fail the unit — these remount parts of `/proc` and `/sys` |
+| `LimitNOFILE=65535` | fails at exec if the container's hard limit is lower |
+| `MemoryMax=4G` | **silently ignored** unless the `memory` controller is delegated into the container; the host OOM killer becomes the real limit |
+| `ProtectSystem=strict`, `ProtectHome=`, `NoNewPrivileges=`, `PrivateTmp=` | work normally |
+
+Relax only what your container actually rejects, with a drop-in — never by
+editing the shipped unit, which an upgrade overwrites:
+
+```bash
+sudo systemctl edit litegate
+```
+
+```ini
+[Service]
+# Only the lines your container actually needs.
+PrivateDevices=false
+ProtectKernelTunables=false
+ProtectKernelModules=false
+ProtectControlGroups=false
+# Empty value = clear the setting inherited from the unit.
+LimitNOFILE=
+MemoryMax=
+```
+
+Then `sudo systemctl daemon-reload && sudo systemctl restart litegate`, and
+confirm with `systemd-analyze security litegate` what you gave up.
+
+If you clear `MemoryMax=`, set the ceiling on the container instead — the
+gateway has no internal memory cap of its own.
+
+### Sizing: the worker count is a constant, everywhere
+
+Four processes, hard-coded in four separate places. None of them is derived from
+the CPU count, so a 1-vCPU container still starts four:
+
+| Where | Setting |
+|---|---|
+| `deploy/systemd/litegate.service` | `--workers 4` in `ExecStart` |
+| `docker/Dockerfile` | `--workers 4` in `CMD` |
+| `docker/docker-compose.prod.yml` | `--workers ${GW_WORKERS:-8}` |
+| `app/config.py` (`GW_WORKERS`) | read **only** by the `litegate` console script |
+
+> **`GW_WORKERS` does less than it looks like it does.** It is read by
+> `app.main:run` — the `litegate` entry point — and neither the systemd unit nor
+> the image uses that entry point; both invoke `uvicorn` directly. Setting
+> `GW_WORKERS=16` in `.env` on a systemd install still gives you four. To change
+> it there, edit `ExecStart` (via `systemctl edit`). The production compose
+> overlay now passes the value through on the command line, so `GW_WORKERS` does
+> work under `docker compose -f docker-compose.yml -f docker-compose.prod.yml`.
+
+On a container with 1–2 vCPU, drop to `--workers 2` or `1`. Four uvicorn workers
+on one core buys nothing and multiplies the per-process state described next.
+
+### Per-process state: set `GW_REDIS_URL` if you run more than one worker
+
+Two things are counted **per process** unless Redis is configured:
+
+* **`max_concurrency` on an endpoint.** Without Redis each worker keeps its own
+  counter, so `max_concurrency: 1` with four workers means **four** concurrent
+  requests arriving at a backend that was told to expect one. See the note at
+  the top of `app/core/inflight.py`.
+* **The response cache** (off by default) — a hit only lands on the worker that
+  produced it.
+
+This is the one place where the container path is *better* than bare metal:
+`docker/docker-compose.yml` ships a Redis service and sets `GW_REDIS_URL`,
+while `scripts/bootstrap.sh` writes `GW_REDIS_URL=` (empty) next to
+`GW_WORKERS=4`. **A default native install is the one that oversubscribes its
+backends.** Either point `GW_REDIS_URL` at a Redis, or drop to one worker.
+
+Quota counters are *not* affected: they are a single atomic
+`UPDATE ... SET n = n + :x` in the database and are correct with any number of
+workers, Redis or not.
+
+### Read-only filesystems
+
+Two directories are written at runtime:
+
+| Path | Written when | Must survive a restart |
+|---|---|---|
+| `data/` | an admin saves a provider API key (`data/secrets.json`), tool mirroring, and the SQLite database if you use one | **yes** |
+| `config/models/` | an admin adds, edits, enables or disables a model in the console | yes (or keep the registry in git) |
+
+Under `docker-compose.prod.yml` the container runs with `read_only: true`. A
+named volume at `/app/data` is now declared in `docker-compose.yml`, so provider
+keys persist and are writable; without it, saving a key failed with nothing but
+*"An internal error occurred."* Both write paths now report the real cause and
+the fix instead:
+
+```
+Cannot save the provider key: the directory is on a read-only mount (/app/data).
+· Docker: `read_only: true` needs a writable mount for the data directory —
+  add a named volume or a tmpfs at /app/data
+· systemd install: add that path to ReadWritePaths= in
+  /etc/systemd/system/litegate.service ...
+```
+
+**Do not use a `tmpfs` for `data/`** — `secrets.json` holds provider API keys and
+must outlive the container.
+
+The registry is mounted `:ro` in `docker-compose.yml` on purpose (a compromised
+container cannot rewrite which backends it routes to), so the console's *Save*
+is greyed out and *Preview YAML* is the workflow. Note the asymmetry: the
+systemd install leaves `config/` **writable** by default and offers
+`REGISTRY_READONLY=1` to opt out. Same product, opposite defaults.
+
+### Networking
+
+* **The address printed at the end of `bootstrap.sh` is the container's own.**
+  It comes from `hostname -I`; inside a container that is the veth or bridge
+  address, which is usually not reachable from anywhere but the host. The script
+  now says so when it detects a container. Reach the console through the host's
+  port forward.
+* **Backends are resolved from inside the container.** The sample registry points
+  at `dgx01`/`dgx02`/`dgx03`; a Docker container has its own resolver and will
+  not find them. `docker-compose.yml` adds
+  `extra_hosts: ["host.docker.internal:host-gateway"]`, which covers backends on
+  the Docker host but not LAN-resident DGX nodes — use IP addresses or a
+  resolvable FQDN. `bootstrap.sh` disables the samples at install time; the image
+  ships them enabled, so a first `docker compose up` logs resolver errors until
+  you point them at real machines.
+* **Client IPs behind a proxy.** `uvicorn` only honours `X-Forwarded-For` from
+  peers it trusts. The systemd unit and the image both pass
+  `--forwarded-allow-ips '*'`, which is right when only the proxy can reach the
+  port. The `litegate` console script now takes the same setting from
+  `GW_FORWARDED_ALLOW_IPS` (default `127.0.0.1`, matching uvicorn). In a
+  container the reverse proxy is a *different* container, so its address is on
+  the bridge network, not loopback — leave the default there and every admin
+  audit row records the proxy instead of the caller.
+
+### Shutdown and streaming
+
+`deploy/systemd/litegate.service` allows `TimeoutStopSec=30` so in-flight
+streaming responses can finish. Docker's default grace period is **10 s**, and
+the shutdown path spends up to 5 s of it draining billing finalizers, so a long
+completion was cut mid-token on every `docker compose restart`.
+`docker-compose.yml` now sets `stop_grace_period: 30s` to match. If you run the
+image with plain `docker run`, pass `--stop-timeout 30`.
+
+`tini` is the image's entrypoint, which matters because `--workers 4` makes
+uvicorn a supervisor with forked children; it reaps them and forwards SIGTERM.
+The application installs no signal handlers of its own and makes no assumption
+about being PID 1.
+
+### Backups from inside the image
+
+`scripts/backup.sh` and `scripts/restore.sh` are copied into the image but
+**cannot run there**: the runtime stage installs only `curl` and `tini`, so
+neither `sqlite3` nor `pg_dump` exists. Back up from the host instead — dump
+Postgres with a `postgres:16-alpine` sidecar (`docker compose exec postgres
+pg_dump ...`) and copy the SQLite file out with `docker cp`. On a native install
+both tools are present and the scripts work as documented in §6.
 
 ---
 
@@ -814,16 +1042,30 @@ rather than take it on faith.
 
 ### Testing against a real PostgreSQL
 
-The test suite does **not** require PostgreSQL. Most of the portability checks
-compare compiled SQL and run on any machine. To also exercise a real server:
+The test suite does **not** require PostgreSQL. SQLite is the default, every
+test behaves exactly the way it always has, and `pytest` on a fresh checkout
+needs no database server at all.
+
+Set `GW_TEST_POSTGRES_URL` and **the whole suite** runs against that server
+instead — not just the portability checks in `tests/test_postgres_support.py`:
 
 ```bash
 GW_TEST_POSTGRES_URL=postgresql+asyncpg://litegate:PASSWORD@localhost:5432/litegate_test \
-  .venv/bin/python -m pytest tests/test_postgres_support.py
+  .venv/bin/python -m pytest -q
 ```
 
-Without that variable those tests skip with a reason. They never fail for the
-absence of a database. **Use a throwaway database — they drop every table.**
+Without that variable nothing changes and the PostgreSQL-only tests skip with a
+reason. They never fail for the absence of a database. **Use a throwaway
+database — every table is emptied before every test, and some tests drop them.**
+
+A few tests are marked `sqlite_only` (WAL mode, the busy timeout, the size of
+the local-file pool) and skip on PostgreSQL: they assert things that are about
+SQLite, not about the gateway.
+
+How each test is isolated from the next — why it is a TRUNCATE per test rather
+than the usual transaction-rolled-back-per-test, and how pooled connections are
+kept from crossing event loops — is written down at the top of
+`tests/conftest.py`. Read that before changing those fixtures.
 
 ---
 

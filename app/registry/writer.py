@@ -129,7 +129,6 @@ def write_model(config_dir: Path, definition: ModelDefinition) -> Path:
     lands mid-write can never observe a half-written file.
     """
     path = model_path(config_dir, definition.alias)
-    path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(path, render_yaml(definition), definition.alias)
     log.info("wrote model definition %s", path)
     return path
@@ -137,6 +136,13 @@ def write_model(config_dir: Path, definition: ModelDefinition) -> Path:
 
 def _atomic_write(path: Path, content: str, alias: str) -> None:
     try:
+        # Creating the directory is part of the write, so it has to sit inside
+        # this guard. On a read-only mount `config/models/` may not exist at all
+        # - a volume that supplies only gateway.yaml, or GW_CONFIG_DIR pointed at
+        # a fresh :ro mount - and an unguarded mkdir raised EROFS one frame above
+        # the handler below, so the admin got "An internal error occurred" rather
+        # than the read-only-mount message this function exists to produce.
+        path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{alias}.", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
