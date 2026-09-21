@@ -1,0 +1,32 @@
+# ติดตั้งโค้ดใหม่ทับของเดิม — ถูกสั่งโดย litegate-update.path เท่านั้น
+#
+# รันเป็น root เพราะต้องเขียน `/opt/litegate/app` (ซึ่ง service ตัวจริงเขียนไม่ได้
+# โดยตั้งใจ — ดู `ProtectSystem=strict` ใน litegate.service) และต้อง restart service
+#
+# **ไม่มี `[Install]` โดยตั้งใจ** — unit นี้ต้องไม่ขึ้นเองตอนบูต และไม่ควรมีใครสั่งตรง
+# นอกจาก path unit · ขอบเขตงานทั้งหมดอยู่ในสคริปต์ซึ่งจำกัดตัวเองไว้แล้ว:
+# แตะเฉพาะ `app/` · ไม่ดาวน์โหลดอะไร · ล้มแล้วกู้คืนของเดิม
+[Unit]
+Description=Apply a LiteGate update in place
+Documentation=file:///opt/litegate/docs/DEPLOYMENT.md
+# git pull ตอนเครือข่ายยังไม่ขึ้นจะค้างรอ timeout เปล่า ๆ — กันไว้ได้ฟรี
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/litegate/scripts/self_update.sh
+# อัปเดตที่ค้างต้องจบ ไม่ใช่ค้างตลอดไปแล้วกดปุ่มอีกไม่ได้
+TimeoutStartSec=900
+StandardOutput=journal
+StandardError=journal
+
+# ── ขอบเขต ─────────────────────────────────────────────────────────────────
+# ต้องเป็น root เพื่อเขียน app/ และ restart แต่ไม่ต้องการอย่างอื่นเลย
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true

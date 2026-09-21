@@ -306,3 +306,82 @@ def _body(response: httpx.Response) -> dict:
     except ValueError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+# ── กดปุ่มอัปเดต ─────────────────────────────────────────────────────────────
+#
+# เกตเวย์รันเป็น `litegate` ที่ไม่มี sudo และ `ProtectSystem=strict` ทำให้
+# `/opt/litegate/app` เป็น read-only สำหรับตัวมันเอง — **และนั่นคือการออกแบบที่ถูก**
+# ถ้าเปิดให้แอปเขียนโค้ดตัวเองได้ ช่องโหว่ใด ๆ ก็กลายเป็นของถาวร
+#
+# สิ่งที่แอปทำได้คือ **แตะไฟล์คำขอใน `data/`** ซึ่งเขียนได้อยู่แล้ว · `litegate-update.path`
+# เห็นแล้วสั่ง `litegate-update.service` ไปทำงานในฐานะ root · แอปไม่ได้สิทธิ์เพิ่มเลย
+# และสั่งได้อย่างเดียวคือ "อัปเดต" — **เนื้อในไฟล์ไม่เคยถูกอ่านเป็นคำสั่ง**
+
+STATE_DIRNAME = "data"
+REQUEST_NAME = "update.request"
+FORCE_NAME = "update.force"
+STATUS_NAME = "update.status"
+LOG_NAME = "update.log"
+
+# สถานะที่แปลว่างานจบแล้ว — คอนโซลหยุด poll เมื่อเห็นค่าเหล่านี้
+FINAL_STATES = {"ok", "failed", "rolled-back", "needs-deps", "no-source"}
+
+
+def state_dir() -> Path:
+    """โฟลเดอร์ที่ service เขียนได้จริง (ตรงกับ `ReadWritePaths` ใน unit)"""
+    return REPO_ROOT / STATE_DIRNAME
+
+
+def updates_are_wired() -> bool:
+    """ปุ่มกดได้ไหม — ต้องมีทั้งสคริปต์และ path unit ที่เฝ้าคำขออยู่
+
+    เครื่องที่ติดตั้งก่อนจะมีกลไกนี้ยังไม่มีไฟล์พวกนั้น · ปุ่มที่กดแล้วเงียบไปเฉย ๆ
+    แย่กว่าปุ่มที่ไม่ขึ้นมาตั้งแต่แรก
+    """
+    script = REPO_ROOT / "scripts" / "self_update.sh"
+    if not script.exists():
+        return False
+    return any(Path(d, "litegate-update.path").exists()
+               for d in ("/etc/systemd/system", "/run/systemd/system", "/usr/lib/systemd/system"))
+
+
+def request_update(actor: str = "", skip_deps: bool = False) -> dict:
+    """แตะไฟล์คำขอ · ไม่รอให้จบ — งานใช้เวลาเป็นนาทีและเกตเวย์จะถูก restart ระหว่างนั้น
+
+    คำตอบจึงเป็น "รับคำขอแล้ว" ไม่ใช่ "อัปเดตเสร็จแล้ว" · คอนโซลถามสถานะต่อเอง
+    """
+    folder = state_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / STATUS_NAME).write_text("queued", encoding="utf-8")
+    # ผู้ดูแลยืนยันว่าลง dependency เองแล้ว — เครื่องตรวจแทนไม่ได้ว่า venv ตรงกับรุ่นใหม่
+    # (`pip install -e` ไม่ได้ทิ้งร่องรอยที่นี่) จึงต้องถามคนที่เพิ่งทำ
+    if skip_deps:
+        (folder / FORCE_NAME).write_text("1", encoding="utf-8")
+    else:
+        (folder / FORCE_NAME).unlink(missing_ok=True)
+    # เนื้อในไฟล์เป็นบันทึกให้คนอ่านเท่านั้น — สคริปต์ไม่เคยอ่านมัน
+    (folder / REQUEST_NAME).write_text(
+        f"requested_at={datetime.now(timezone.utc).isoformat()}\nby={actor or '?'}\n",
+        encoding="utf-8")
+    log.info("update requested by %s", actor or "?")
+    return {"accepted": True, "status": "queued"}
+
+
+def update_state() -> dict:
+    """สถานะล่าสุดของงานอัปเดต พร้อม log ท้าย ๆ ให้คอนโซลแสดงสด"""
+    folder = state_dir()
+    try:
+        status = (folder / STATUS_NAME).read_text(encoding="utf-8").strip()
+    except OSError:
+        status = ""
+    try:
+        lines = (folder / LOG_NAME).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        lines = []
+    return {
+        "status": status or "idle",
+        "done": status in FINAL_STATES,
+        "pending": (folder / REQUEST_NAME).exists(),
+        "log": lines[-40:],
+    }

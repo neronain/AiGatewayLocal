@@ -162,6 +162,34 @@ if [[ "${REGISTRY_READONLY:-0}" == "1" ]]; then
     warn "REGISTRY_READONLY=1 — คอนโซลจะเพิ่ม/แก้โมเดลเองไม่ได้ ใช้ Preview YAML แล้วคอมมิตลง git"
 fi
 
+# ── ปุ่ม Update ในคอนโซล ────────────────────────────────────────────────────
+#
+# เกตเวย์เขียนโค้ดของตัวเองไม่ได้ (รันเป็น ${SERVICE_USER} ไม่มี sudo · ProtectSystem=strict)
+# และนั่นคือการออกแบบที่ถูก · สองยูนิตนี้ทำให้ปุ่มมีได้โดยแอป **ไม่ได้สิทธิ์เพิ่มเลย**:
+# แอปแตะไฟล์คำขอใน data/ ที่มันเขียนได้อยู่แล้ว แล้ว path unit สั่งงานที่ต้องใช้ root ให้
+#
+# ปิดได้ด้วย GW_NO_UPDATE_BUTTON=1 — ไซต์ที่อยากให้อัปเดตผ่านมือคนเท่านั้นมีจริง
+if [[ "${GW_NO_UPDATE_BUTTON:-0}" != "1" ]]; then
+    log "Installing the console update mechanism"
+    for unit in "${SERVICE_NAME}-update.service" "${SERVICE_NAME}-update.path"; do
+        [[ -f "$REPO_DIR/deploy/systemd/$unit" ]] || continue
+        sed "s#/opt/litegate#${INSTALL_DIR}#g" "$REPO_DIR/deploy/systemd/$unit" \
+            > "/etc/systemd/system/$unit"
+    done
+    install -o root -g root -m 755 "$REPO_DIR/scripts/self_update.sh" \
+        "${INSTALL_DIR}/scripts/self_update.sh" 2>/dev/null || {
+        mkdir -p "${INSTALL_DIR}/scripts"
+        install -o root -g root -m 755 "$REPO_DIR/scripts/self_update.sh" \
+            "${INSTALL_DIR}/scripts/self_update.sh"; }
+    # สคริปต์รันเป็น root และเขียนทับโค้ดของ service — ต้องเป็นของ root เท่านั้น
+    # ไม่งั้นใครที่เข้าถึงบัญชี ${SERVICE_USER} ได้ก็แก้สิ่งที่ root จะรันได้
+    systemctl daemon-reload
+    systemctl enable --now "${SERVICE_NAME}-update.path" >/dev/null 2>&1 \
+        || warn "เปิด ${SERVICE_NAME}-update.path ไม่สำเร็จ — ปุ่ม Update จะไม่ขึ้นในคอนโซล"
+else
+    warn "GW_NO_UPDATE_BUTTON=1 — ไม่ติดตั้งกลไกอัปเดตจากคอนโซล"
+fi
+
 systemctl daemon-reload
 systemctl enable --now "$SERVICE_NAME"
 

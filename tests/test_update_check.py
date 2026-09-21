@@ -417,17 +417,73 @@ def test_the_health_check_it_prints_actually_retries_a_closed_port():
                 assert "--retry-connrefused" in line, (shape, line)
 
 
-def test_the_console_offers_the_commands_to_copy_but_never_runs_them():
-    """ปุ่มคัดลอก ไม่ใช่ปุ่ม "อัปเดตให้เลย" — และข้อนี้ต้องไม่ถูกเปลี่ยนโดยไม่ตั้งใจ
+def test_the_gateway_never_writes_its_own_code_even_with_the_update_button():
+    """ปุ่ม Update now มีได้ **โดยเกตเวย์ไม่ได้สิทธิ์เขียนโค้ดตัวเองเลย**
 
-    เกตเวย์รันเป็น `litegate` ที่ไม่มีสิทธิ์ sudo และ unit ตั้ง `ProtectSystem=strict`
-    ให้เขียนได้แค่ data/logs/config — `/opt/litegate/app` เป็น read-only สำหรับตัวมันเอง
-    **การทำปุ่มอัปเดตจริงต้องรื้อข้อนั้น** ซึ่งเปลี่ยนจุดยืนด้านความปลอดภัยของสินค้า
+    service รันเป็น `litegate` ที่ไม่มี sudo และ unit ตั้ง `ProtectSystem=strict` ให้เขียน
+    ได้แค่ `data logs config` — `/opt/litegate/app` จึง read-only สำหรับตัวมันเอง ·
+    **ถ้าเปิดให้แอปเขียนโค้ดตัวเองได้ ช่องโหว่ใด ๆ ก็กลายเป็นของถาวร**
+
+    สิ่งที่แอปทำคือแตะไฟล์คำขอใน `data/` แล้ว systemd ทำงานที่ต้องใช้ root ให้
+    เทสนี้กันไม่ให้ใครย่นทางด้วยการให้แอปเรียกสคริปต์เองหรือรัน systemctl เอง
     """
-    js = (ROOT / "app/static/app.js").read_text(encoding="utf-8")
+    code = (ROOT / "app/core/release.py").read_text(encoding="utf-8")
+    admin = (ROOT / "app/api/admin.py").read_text(encoding="utf-8")
 
-    assert "data-copy-steps" in js, "ต้องมีปุ่มคัดลอกคำสั่ง"
-    # ห้ามมี endpoint ที่สั่งให้เกตเวย์อัปเดตตัวเอง
-    assert "/admin/version/update" not in js
-    for name in ("app/api/admin.py", "app/core/release.py"):
-        assert "version/update" not in (ROOT / name).read_text(encoding="utf-8"), name
+    # ดูที่การ *สั่งให้ทำงาน* ไม่ใช่ที่คำ — `release.py` มีคำว่า systemctl อยู่แล้วเพราะ
+    # `how_to_update()` พิมพ์คำสั่งให้คนอ่าน ซึ่งคนละเรื่องกับการรันมันเอง
+    runners = ("import subprocess", "os.system", "os.popen", "os.exec",
+               "asyncio.create_subprocess")
+    for name, text in (("release.py", code), ("admin.py", admin)):
+        for danger in runners:
+            assert danger not in text, f"{name}: แอปต้องไม่รันคำสั่งเอง ({danger})"
+
+    # คำขอต้องไปอยู่ใน `data/` ซึ่งเป็นที่เดียวที่ unit อนุญาตให้ service เขียน
+    unit = (ROOT / "deploy/systemd/litegate.service").read_text(encoding="utf-8")
+    rw = next(x for x in unit.splitlines() if x.startswith("ReadWritePaths="))
+    assert "/opt/litegate/data" in rw
+    assert "/opt/litegate/app" not in rw, "app/ ต้องยังเป็น read-only สำหรับ service"
+    assert release.STATE_DIRNAME == "data"
+
+
+def test_the_updater_unit_is_not_something_anything_can_start():
+    """unit ที่รันเป็น root ต้องไม่ขึ้นเองตอนบูต และไม่ควรมีใครสั่งตรงได้นอกจาก path unit"""
+    def directives(text: str) -> str:
+        # คอมเมนต์อธิบายว่า *ทำไมถึงไม่มี* `[Install]` ต้องไม่ทำให้เทสเข้าใจผิดว่ามี
+        return "\n".join(x for x in text.splitlines() if not x.strip().startswith("#"))
+
+    svc = directives((ROOT / "deploy/systemd/litegate-update.service").read_text(encoding="utf-8"))
+    path = directives((ROOT / "deploy/systemd/litegate-update.path").read_text(encoding="utf-8"))
+
+    assert "[Install]" not in svc, "ต้องไม่ถูก enable ให้ขึ้นเองตอนบูต"
+    assert "Type=oneshot" in svc
+    assert "NoNewPrivileges=true" in svc
+    assert "Unit=litegate-update.service" in path
+    assert "PathExists=" in path
+
+
+def test_the_updater_never_downloads_anything():
+    """ไซต์ที่ตัดขาดอินเทอร์เน็ตต้องอัปเดตได้ และเกตเวย์ที่ดึงโค้ดจากเน็ตมารันเอง
+    ไม่ใช่ของที่ลูกค้าตกลงเอาไปติดตั้ง"""
+    script = (ROOT / "scripts/self_update.sh").read_text(encoding="utf-8")
+
+    assert "curl" in script, "ใช้ curl ได้เฉพาะตรวจ healthz ของตัวเอง"
+    # ต่อบรรทัดที่ถูกตัดด้วย `\` กลับก่อน ไม่งั้น URL อยู่คนละบรรทัดกับคำว่า curl
+    body = "\n".join(x for x in script.replace("\\\n", " ").splitlines()
+                      if not x.strip().startswith("#"))
+    for line in body.splitlines():
+        assert "curl" not in line or "127.0.0.1" in line, f"curl ออกนอกเครื่อง: {line}"
+    assert "wget" not in script
+    assert "pip install" not in script.replace("pip install -e", ""), "ไม่แตะ venv เอง"
+    # git pull ได้เฉพาะในโฟลเดอร์ที่ผู้ดูแลชี้มาเอง ไม่ใช่ clone ของใหม่
+    assert "git clone" not in script
+
+
+def test_the_updater_restores_the_old_code_when_a_step_fails():
+    """ขั้นตอนอัปเกรดทุกข้อใน DEPLOYMENT.md มีอยู่เพราะเคยข้ามแล้วเครื่องล่ม"""
+    script = (ROOT / "scripts/self_update.sh").read_text(encoding="utf-8")
+
+    for step in ("cp -a", "compileall", "rsync", "import app.main", "systemctl restart", "healthz"):
+        assert step in script, f"ขาดขั้นตอน: {step}"
+    assert script.count("restore") >= 3, "ต้องกู้คืนทั้งตอน import ล้มและตอน healthz ไม่ตอบ"
+    assert "--retry-connrefused" in script

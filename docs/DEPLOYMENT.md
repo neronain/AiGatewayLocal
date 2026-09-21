@@ -1787,9 +1787,61 @@ install shapes with nothing in common:
 | Copied files | neither of the above | The five-step procedure under *When the host has no checkout* |
 
 The third is what the production machines actually use, and each of its steps
-exists because skipping it once cost an outage. A button that succeeds on some
-customer machines and quietly half-succeeds on others is worse than no button,
-so the console reports and prints; a person runs.
+exists because skipping it once cost an outage.
+
+**Since 2026-09-22 the console also has an `Update now` button** that runs those
+same five steps for you — with the backup, the syntax check, the import check and
+an automatic rollback if any of them fails. What follows explains how it can exist
+without weakening the service, and how to turn it on.
+
+### The update button, and why it is built this way
+
+The gateway runs as `litegate`, which has no sudo, and its unit sets
+`ProtectSystem=strict` with `ReadWritePaths` covering only `data`, `logs` and
+`config`. **`/opt/litegate/app` is read-only to the gateway itself** — that is
+deliberate: if the application could rewrite its own code, any flaw in it would
+become permanent.
+
+So the button does not update anything. It writes a request file into `data/`,
+which the gateway can already write. A systemd path unit notices that file and
+starts a one-shot unit that does the work as root:
+
+```
+console  →  data/update.request  →  litegate-update.path  →  litegate-update.service
+            (gateway can write)      (watches)                (root, runs self_update.sh)
+```
+
+The gateway gains no new privilege, and the only thing it can ask for is "update" —
+the contents of the request file are never read as a command.
+
+**Turning it on** (bootstrap does this unless `GW_NO_UPDATE_BUTTON=1`):
+
+```bash
+sudo install -o root -g root -m 755 scripts/self_update.sh /opt/litegate/scripts/self_update.sh
+sudo install -o root -g root -m 644 deploy/systemd/litegate-update.{path,service} /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now litegate-update.path
+```
+
+Then point it at the source it should install from, in `.env`:
+
+```
+GW_UPDATE_SOURCE=/srv/AiGatewayLocal
+```
+
+**The gateway never downloads code.** The source has to be on the machine already —
+a checkout, an rsync target, a USB copy. Air-gapped sites have to be able to update,
+and a gateway that fetches code from the internet and runs it is not what the
+customer agreed to install. If the source is a git checkout the script will try
+`git pull` first, but a missing or failing `git` only skips that step.
+
+**When it stops and asks for you.** If the dependency set in the source differs
+from what is recorded as installed, the script stops with `needs-deps` and prints
+the `pip install` to run. Nothing can verify from outside that a venv matches a
+release, so after you install them the button asks you to confirm, once.
+
+The button does not appear on installs without this wiring — `POST
+/admin/version/check` returns `can_apply: false` and the console shows only the
+commands to copy. A button that quietly does nothing is worse than no button.
 
 When the host has a checkout of this repository:
 

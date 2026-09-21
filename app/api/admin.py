@@ -2189,7 +2189,48 @@ async def check_for_updates(actor: Principal = Depends(require_admin)) -> dict[s
     # วิธีอัปเดตอ่านจากดิสก์ล้วน ๆ ไม่ได้ถามใคร · ติดมาด้วยทุกคำตอบ คอนโซลจะได้บอก
     # คำสั่งที่ถูกกับที่ติดตั้งแบบนี้ได้แม้ตอนที่ตรวจไม่สำเร็จ
     result["update"] = release.how_to_update()
+    # ปุ่ม "อัปเดตเลย" จะขึ้นก็ต่อเมื่อเครื่องนี้มีกลไกรองรับจริง — เครื่องที่ติดตั้งก่อน
+    # จะมีกลไกนี้ยังไม่มีไฟล์พวกนั้น และปุ่มที่กดแล้วเงียบแย่กว่าปุ่มที่ไม่ขึ้นมาเลย
+    result["can_apply"] = release.updates_are_wired()
     return result
+
+
+@router.post("/version/update")
+async def apply_update(request: Request,
+                       actor: Principal = Depends(require_admin)) -> dict[str, Any]:
+    """สั่งให้เครื่องนี้ติดตั้งโค้ดใหม่ทับของเดิม — **ไม่รอให้จบ**
+
+    เกตเวย์เขียนโค้ดของตัวเองไม่ได้ (รันเป็น `litegate` ไม่มี sudo · unit ตั้ง
+    `ProtectSystem=strict`) และนั่นคือการออกแบบที่ถูก · สิ่งที่ทำได้คือแตะไฟล์คำขอใน
+    `data/` แล้ว `litegate-update.path` สั่งงานที่ต้องใช้ root ให้
+
+    ตอบ 202 เพราะงานใช้เวลาเป็นนาทีและ **เกตเวย์จะถูก restart ระหว่างนั้น** — คำขอนี้
+    จึงไม่มีทางได้คำตอบว่า "สำเร็จ" กลับไปทาง HTTP เดิม · คอนโซลถามสถานะต่อเอง
+    """
+    if not release.updates_are_wired():
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            "This install has no console update mechanism yet — install scripts/self_update.sh "
+            "and deploy/systemd/litegate-update.{path,service}, then enable the path unit "
+            "(docs/DEPLOYMENT.md). Until then use the commands Check for updates prints.",
+        )
+    state = release.update_state()
+    if state["pending"] or state["status"] in {"queued", "running"}:
+        # กดรัว ๆ ต้องไม่ทำให้มีงานซ้อนกัน · path unit ยิงตามจำนวนไฟล์ ไม่ใช่จำนวนการกด
+        return {"accepted": False, "status": state["status"], "reason": "มีงานอัปเดตค้างอยู่แล้ว"}
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return release.request_update(actor=getattr(actor, "external_id", "") or "admin",
+                                  skip_deps=bool((body or {}).get("skip_deps")))
+
+
+@router.get("/version/update")
+async def update_progress(actor: Principal = Depends(require_admin)) -> dict[str, Any]:
+    """สถานะงานอัปเดตล่าสุด + log ท้าย ๆ — คอนโซล poll ตัวนี้หลังกดปุ่ม"""
+    return release.update_state()
 
 
 class LmdsConnectionIn(BaseModel):

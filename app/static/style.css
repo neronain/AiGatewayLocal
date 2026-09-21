@@ -1122,3 +1122,6 @@ table tr:not(.alias-row):not(.ep-row):hover > td {
    แยกกันเพราะถ้าใช้ตัวเดียวกัน การกดปุ่มเมนูย่อยจะไปเปิดแผงที่แอปตั้งใจซ่อน
    ให้คนที่ไม่มีสิทธิ์เห็น (เช่น Backend health ที่เปิดเฉพาะ admin) */
 .subtab-off { display: none !important; }
+
+/* log ของงานอัปเดตที่กำลังวิ่ง — สูงคงที่แล้วเลื่อนเอง ไม่งั้นหน้ากระโดดทุกสองวินาที */
+.upd-log { max-height: 220px; overflow-y: auto; margin-top: 8px; font-size: 0.75rem; line-height: 1.5; }

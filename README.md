@@ -9,7 +9,7 @@ Members get an alias and a key; you keep the machines, the limits and the audit 
 
 [![CI](https://github.com/neronain/AiGatewayLocal/actions/workflows/ci.yml/badge.svg)](https://github.com/neronain/AiGatewayLocal/actions/workflows/ci.yml)
 [![version](https://img.shields.io/badge/version-1.12.1-1f5fbf)](pyproject.toml)
-[![tests](https://img.shields.io/badge/tests-880-17703f)](tests/)
+[![tests](https://img.shields.io/badge/tests-909-17703f)](tests/)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](pyproject.toml)
 [![APIs](https://img.shields.io/badge/API-OpenAI%20%C2%B7%20Anthropic-8b5cf6)](docs/API.md)
 [![license](https://img.shields.io/badge/license-MIT-17703f)](LICENSE)

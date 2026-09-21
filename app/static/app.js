@@ -183,11 +183,21 @@ function updateSteps(update, open) {
   // บรรทัดที่ขึ้นต้นด้วย # เป็นคำอธิบาย ไม่ใช่คำสั่ง — คัดลอกไปทั้งก้อนได้ไม่มีปัญหา
   // เพราะเชลล์มองเป็นคอมเมนต์ · แต่ต้องนับให้ถูกตอนบอกจำนวน
   const real = commands.filter((c) => !String(c).trim().startsWith('#')).length;
+  // ปุ่ม "อัปเดตเลย" ขึ้นเฉพาะเครื่องที่มีกลไกรองรับ (`can_apply`) — เครื่องที่ติดตั้งก่อน
+  // จะมีกลไกนี้ยังไม่มี และปุ่มที่กดแล้วเงียบแย่กว่าปุ่มที่ไม่ขึ้นมาเลย · ปุ่มคัดลอกยังอยู่
+  // เสมอ เพราะคนที่อยากรันเองต้องทำได้ตลอด
+  const apply = update.can_apply
+    ? `<button class="primary small" id="ver-apply">Update now</button>`
+    : '';
   const copy = commands.length
     ? `<div class="field" style="margin-top:8px">
+         ${apply}
          <button class="ghost small" data-copy-steps="${id}">Copy all ${real} commands</button>
-         <span class="hint">วางใน terminal ของเครื่องนี้ได้ทั้งก้อน · รันเรียงตามลำดับ</span>
-       </div>`
+         <span class="hint">${update.can_apply
+           ? 'กดปุ่มให้เครื่องทำให้ หรือก๊อปไปรันเองก็ได้'
+           : 'วางใน terminal ของเครื่องนี้ได้ทั้งก้อน · รันเรียงตามลำดับ'}</span>
+       </div>
+       <div id="ver-apply-out"></div>`
     : '';
   const inner = `<p class="hint">${esc(update.summary || '')}</p>
     <pre id="${id}">${steps}</pre>${copy}${doc}`;
@@ -229,7 +239,7 @@ function renderVersion(r) {
     return `<p><span class="pill mute">not checked</span> ${esc(r.reason || '')}</p>
       <p class="hint">เครื่องนี้รัน <code>${esc(r.current)}</code> · ดูรุ่นล่าสุดเองได้จาก
         <code>${esc(r.releases_url || '')}</code> บนเครื่องที่ต่อเน็ตได้</p>
-      ${foot}${updateSteps(r.update, false)}`;
+      ${foot}${updateSteps({ ...r.update, can_apply: r.can_apply }, false)}`;
   }
   const behind = r.status === 'behind';
   // ไม่มีวันเผยแพร่ = เลขนี้มาจากแท็ก ไม่ใช่ release · หน้าปลายทางเป็นหน้าแท็ก
@@ -242,7 +252,7 @@ function renderVersion(r) {
     : '';
   return `<p><span class="pill ${VER_TONE[r.status] || 'mute'}">${esc(VER_LABEL[r.status] || r.status)}</span>
       เครื่องนี้ <code>${esc(r.current)}</code> · ล่าสุด <code>${esc(r.latest)}</code>${published}${notes}</p>
-    ${foot}${updateSteps(r.update, behind)}`;
+    ${foot}${updateSteps({ ...r.update, can_apply: r.can_apply }, behind)}`;
 }
 
 $('ver-check').onclick = async () => {
@@ -259,6 +269,59 @@ $('ver-check').onclick = async () => {
     button.disabled = false;
   }
 };
+
+// กด Update now — สั่งแล้ว **ไม่รอคำตอบว่าสำเร็จ** เพราะเกตเวย์จะถูก restart ระหว่างทาง
+// คำขอที่ค้างอยู่จึงตายไปพร้อมกัน · ต้อง poll สถานะที่เขียนไว้ในไฟล์แทน
+//
+// ระหว่าง restart การ poll จะล้มเป็นช่วง ๆ — **นั่นคือสัญญาณว่ากำลังทำงาน ไม่ใช่ error**
+// จึงกลืนไว้แล้วลองต่อ ไม่ขึ้นแดงใส่คนที่กด
+document.addEventListener('click', async (ev) => {
+  if (!ev.target.closest('#ver-apply')) return;
+  const btn = ev.target.closest('#ver-apply');
+  const out = $('ver-apply-out');
+  if (!confirm('ติดตั้งโค้ดใหม่ทับของเดิมแล้วรีสตาร์ตเกตเวย์?\n\n'
+             + 'สำรองของเดิมไว้ก่อนเสมอ และกู้คืนให้เองถ้าขั้นไหนล้ม '
+             + '· คำขอที่กำลังวิ่งอยู่ตอนรีสตาร์ตจะขาด')) return;
+  btn.disabled = true;
+  const show = (lines, state) => {
+    out.innerHTML = `<p class="hint">สถานะ: <b>${esc(state)}</b></p>`
+      + `<pre class="upd-log">${esc((lines || []).join('\n'))}</pre>`;
+    const pre = out.querySelector('.upd-log');
+    if (pre) pre.scrollTop = pre.scrollHeight;
+  };
+  try {
+    let started = await post('/admin/version/update', {});
+    if (started.accepted === false) { show([], started.reason || started.status); btn.disabled = false; return; }
+    show([], 'queued');
+    // ~5 นาที · งานจริงใช้เวลาไม่ถึงนาที แต่เครื่องช้าหรือ git pull ผ่านลิงก์แคบมีจริง
+    for (let i = 0; i < 150; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      let state;
+      try { state = await api('/admin/version/update'); } catch { continue; }
+      show(state.log, state.status);
+      if (state.done) {
+        // เครื่องตรวจแทนไม่ได้ว่า venv ตรงกับรุ่นใหม่แล้ว — ต้องถามคนที่เพิ่งลงเอง
+        if (state.status === 'needs-deps') {
+          if (confirm('ต้องลง dependency ก่อน — คำสั่งอยู่ใน log ด้านล่าง\n\n'
+                    + 'ลงเรียบร้อยแล้วใช่ไหม? กด OK เพื่อติดตั้งต่อ')) {
+            started = await post('/admin/version/update', { skip_deps: true });
+            if (started.accepted !== false) { show([], 'queued'); i = 0; continue; }
+          }
+          break;
+        }
+        if (state.status !== 'ok') break;
+        // โหลดหน้าใหม่เพื่อให้ได้ app.js/index.html ของรุ่นใหม่จริง ๆ
+        out.insertAdjacentHTML('beforeend', '<p class="hint">เสร็จแล้ว · กำลังโหลดคอนโซลใหม่…</p>');
+        setTimeout(() => location.reload(), 2500);
+        return;
+      }
+    }
+  } catch (e) {
+    out.innerHTML = `<p><span class="pill err">${esc(e.message)}</span></p>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 /* ------------------------------------------------- นำทางบนจอแคบ */
 // เมนูอยู่ซ้ายถาวรบนจอกว้าง · จอแคบเปิดเป็นลิ้นชักทับเนื้อหา แล้วปิดเองเมื่อ
