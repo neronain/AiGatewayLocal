@@ -97,7 +97,11 @@ def test_the_refusal_points_at_suspend(client):
 
 
 def test_a_revoked_key_does_not_hold_it_open(client):
-    """เพิกถอนแล้วไม่ใช่ key ที่ยังทำงาน จึงไม่ควรกันการลบไว้ตลอดกาล"""
+    """เพิกถอนแล้วไม่ใช่ key ที่ยังทำงาน จึงไม่ควรกันการลบไว้ตลอดกาล
+
+    เคยผ่านบน SQLite เพราะ SQLite ไม่บังคับ foreign key แต่บน PostgreSQL ล้มด้วย
+    api_keys_course_id_fkey — คีย์ที่เพิกถอนแล้วยังถือ course_id ของ workspace ไว้
+    """
     ws = workspace(client)
     student = user(client, "s4")
     key = client.post("/admin/api-keys", headers=auth(client.admin_key),
@@ -106,6 +110,42 @@ def test_a_revoked_key_does_not_hold_it_open(client):
     client.delete(f"/admin/api-keys/{key['id']}", headers=auth(client.admin_key))
 
     assert remove(client, ws).status_code == 200
+
+
+def test_the_revoked_key_is_unpinned_not_deleted(client):
+    """แถวของคีย์คือบันทึกว่าเคยออกให้ใครและถอนเมื่อไร — ต้องไม่หายไปกับ workspace
+
+    ที่ต้องขาดคือ *การผูก* เท่านั้น · ยืนยันว่าแก้ด้วยการตั้ง course_id เป็น NULL
+    ไม่ใช่ลบแถวทิ้ง ซึ่งเป็นอีกวิธีที่ทำให้ FK ผ่านได้เหมือนกันแต่กลืนประวัติไปด้วย
+    """
+    ws = workspace(client)
+    student = user(client, "s5")
+    key = client.post("/admin/api-keys", headers=auth(client.admin_key),
+                      json={"user_id": student["id"], "workspace_id": ws["id"],
+                            "name": "old"}).json()
+    client.delete(f"/admin/api-keys/{key['id']}", headers=auth(client.admin_key))
+    assert remove(client, ws).status_code == 200
+
+    listed = client.get("/admin/api-keys", headers=auth(client.admin_key)).json()["data"]
+    row = next((k for k in listed if k["id"] == key["id"]), None)
+    assert row is not None, "แถวของคีย์ที่ถอนแล้วต้องยังอยู่"
+    assert row["revoked"] is True
+    assert row["workspace_id"] is None, "ต้องไม่เหลือ id ที่ชี้ไปยัง workspace ที่ลบแล้ว"
+
+
+def test_a_live_key_keeps_its_pin_when_another_workspace_goes(client):
+    """ปลดการผูกต้องแตะเฉพาะ workspace ที่กำลังลบ และเฉพาะใบที่ถอนแล้ว"""
+    doomed = workspace(client, "CS101")
+    keeper = workspace(client, "CS102")
+    student = user(client, "s6")
+    live = client.post("/admin/api-keys", headers=auth(client.admin_key),
+                       json={"user_id": student["id"], "workspace_id": keeper["id"],
+                             "name": "live"}).json()
+
+    assert remove(client, doomed).status_code == 200
+    listed = client.get("/admin/api-keys", headers=auth(client.admin_key)).json()["data"]
+    row = next(k for k in listed if k["id"] == live["id"])
+    assert row["workspace_id"] == keeper["id"]
 
 
 def test_a_manager_cannot_remove_a_workspace(client):

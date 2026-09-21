@@ -147,3 +147,60 @@ def test_a_member_cannot_delete_a_quota_policy(client, member_key):
     response = client.delete(f"/admin/quota-policies/{policy_id}", headers=auth(member_key))
     assert response.status_code in (401, 403)
     assert policy_id in _policy_ids(client)
+
+
+# ── keys that a quota policy points at ──────────────────────────────────────
+#
+# เพดานของคีย์ (scope="key") เป็น foreign key จริงบน PostgreSQL การลบคีย์ทิ้งโดยไม่
+# เก็บนโยบายไปด้วยจึงถูกปฏิเสธด้วย quota_policies_api_key_id_fkey — purge พังทั้งคำขอ
+# บน SQLite ผ่านมาตลอดเพราะไม่บังคับ FK แล้วเหลือนโยบายที่ชี้ไปยังคีย์ที่ไม่มีอยู่
+
+def _cap_key(client, key_id, max_requests=10):
+    response = client.post(
+        "/admin/quota-policies",
+        headers=auth(client.admin_key),
+        json={"scope": "key", "api_key_id": key_id, "max_requests": max_requests},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["id"]
+
+
+def test_purging_a_key_takes_its_own_ceiling_with_it(client):
+    user_id = _first_user_id(client)
+    key = _issue_key(client, user_id, "ci-token")
+    policy_id = _cap_key(client, key["id"])
+    client.delete(f"/admin/api-keys/{key['id']}", headers=auth(client.admin_key))
+
+    response = client.delete(f"/admin/api-keys/{key['id']}/purge", headers=auth(client.admin_key))
+    assert response.status_code == 200, response.text
+    assert key["id"] not in _key_ids(client)
+    # นโยบายที่เล็งไปที่คีย์ซึ่งไม่มีแล้ว จับคู่กับอะไรไม่ได้อีกเลย — เก็บไว้ก็เป็นแถวที่
+    # โผล่ในแท็บ Quota โดยชี้ไปยังคีย์ที่ไม่มีอยู่
+    assert policy_id not in _policy_ids(client)
+
+
+def test_the_sweep_takes_those_ceilings_too(client):
+    user_id = _first_user_id(client)
+    keys = [_issue_key(client, user_id, f"ci-{i}") for i in range(2)]
+    policies = [_cap_key(client, k["id"]) for k in keys]
+    for k in keys:
+        client.delete(f"/admin/api-keys/{k['id']}", headers=auth(client.admin_key))
+
+    response = client.post("/admin/api-keys/purge-revoked", headers=auth(client.admin_key))
+    assert response.status_code == 200, response.text
+    remaining = _policy_ids(client)
+    for policy_id in policies:
+        assert policy_id not in remaining
+
+
+def test_a_ceiling_on_a_live_key_survives_a_sweep(client):
+    """กวาดใบที่ถอนแล้วต้องไม่แตะเพดานของใบที่ยังใช้งานอยู่"""
+    user_id = _first_user_id(client)
+    live = _issue_key(client, user_id, "still-running")
+    kept = _cap_key(client, live["id"])
+    dead = _issue_key(client, user_id, "rotated-out")
+    client.delete(f"/admin/api-keys/{dead['id']}", headers=auth(client.admin_key))
+
+    client.post("/admin/api-keys/purge-revoked", headers=auth(client.admin_key))
+    assert kept in _policy_ids(client)
+    assert live["id"] in _key_ids(client)

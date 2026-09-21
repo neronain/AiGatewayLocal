@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import assistant_fit, lmds
@@ -576,13 +576,33 @@ async def delete_access_group(
         )
     )
     holders = int(used.scalar() or 0)
-    if holders:
+    # โควตาที่เล็งมาที่มัดนี้ก็ถือมันไว้เหมือนกัน และเดิมไม่ได้นับ · บน PostgreSQL
+    # `quota_policies.access_group_id` เป็น FK จริง การลบทั้งที่ยังมีนโยบายชี้อยู่จึงถูก
+    # ปฏิเสธกลางคันด้วย quota_policies_access_group_id_fkey แล้วผู้ดูแลได้ HTTP 500
+    # แทนคำอธิบาย (SQLite ไม่บังคับ FK จึงลบผ่าน แล้วเหลือนโยบายที่ชี้ไปยังมัดที่ไม่มีอยู่
+    # — ซึ่ง resolve_limits ตีความว่า "ไม่มีโมเดลไหนอยู่ในมัด" แล้วข้ามนโยบายนั้นไปเงียบ ๆ)
+    #
+    # ปฏิเสธ ไม่ใช่ตั้ง access_group_id เป็น NULL: ค่านั้นคือสิ่งที่ *จำกัด* ให้นโยบายนับ
+    # เฉพาะโมเดลในมัด ปลดออกเมื่อไรโควตาของมัดหนึ่งจะกลายเป็นโควตาที่ใช้กับทุกโมเดล
+    # เงียบ ๆ · และไม่ลบนโยบายทิ้งให้ด้วย เพราะนโยบายเป็นสิ่งที่คนตั้งใจเขียนไว้ ไม่ใช่
+    # ของแถมของมัด — ต่างจากเพดานของคีย์ ซึ่งหมดความหมายไปพร้อมกับคีย์ของมันจริง ๆ
+    capped = int((await session.execute(
+        select(func.count()).select_from(QuotaPolicy).where(
+            QuotaPolicy.access_group_id == group_id
+        )
+    )).scalar() or 0)
+    if holders or capped:
+        parts = []
+        if holders:
+            parts.append(f"{holders} workspace(s)")
+        if capped:
+            parts.append(f"{capped} quota policy(ies)")
         raise GatewayError(
             ErrorCode.INVALID_REQUEST,
-            f"'{group.name}' is still given to {holders} workspace(s). Take it away "
+            f"'{group.name}' is still held by {' and '.join(parts)}. Take it away "
             "from them first, or disable it — which stops it granting anything "
             "without losing the list.",
-            details={"used_by": holders},
+            details={"used_by": holders, "quota_policies": capped},
         )
 
     await session.delete(group)
@@ -725,6 +745,26 @@ async def delete_workspace(
     )
     await session.execute(
         delete(QuotaPolicy).where(QuotaPolicy.workspace_id == workspace_id)
+    )
+    # คีย์ที่ถูกเพิกถอนแล้วยังถือ course_id ของ workspace นี้ไว้ — การนับข้างบนนับเฉพาะ
+    # ใบที่ยังใช้งานได้ จึงปล่อยผ่านมาถึงตรงนี้ · ถ้าไม่ปลดการผูกก่อน PostgreSQL
+    # ปฏิเสธทั้งคำขอด้วย api_keys_course_id_fkey (SQLite ไม่บังคับ FK จึงลบผ่านแล้ว
+    # เหลือ course_id ที่ชี้ไปยัง workspace ที่ไม่มีอยู่ — เงียบกว่า แต่ผิดเหมือนกัน)
+    #
+    # ตั้งเป็น NULL ไม่ใช่ลบแถวทิ้ง: แถวคือบันทึกว่าเคยออกคีย์ใบไหนให้ใครและเพิกถอน
+    # เมื่อไร ซึ่งหน้ารายการคีย์แสดงอยู่ · และไม่มีใครอ่าน workspace ของคีย์ที่เพิกถอน
+    # แล้วเลย — auth ปฏิเสธคีย์ที่ถูกเพิกถอนก่อนจะอ่านค่านี้, access_change_report.py
+    # กรอง revoked ออกตั้งแต่ query, ส่วนคอนโซลหาชื่อจาก workspace ที่ยังอยู่จริงซึ่ง
+    # คืนค่าว่างทั้งกรณี NULL และกรณี id ค้าง · ประวัติการใช้งานไม่กระทบ เพราะ
+    # usage_logs.course_id เป็นคอลัมน์เปล่า ไม่ใช่ FK — ตั้งใจให้มันอยู่ได้นานกว่าคีย์
+    #
+    # กรอง revoked_at ไว้ทั้งที่การนับข้างบนรับประกันอยู่แล้ว เพื่อให้ race ที่มีคนออก
+    # คีย์ใบใหม่คั่นระหว่างนับกับลบ จบด้วย FK violation ที่ rollback ทั้งก้อน แทนที่จะ
+    # ปลดการผูกคีย์ที่ยังใช้งานอยู่เงียบ ๆ ซึ่งเท่ากับ *ขยาย* สิทธิ์ของใบนั้น
+    await session.execute(
+        update(ApiKey)
+        .where(ApiKey.workspace_id == workspace_id, ApiKey.revoked_at.is_not(None))
+        .values(workspace_id=None)
     )
     await session.delete(workspace)
     await audit(session, request, actor, "workspace.delete", "workspace", workspace.code)
@@ -1507,6 +1547,33 @@ async def revoke_api_key(
     return {"id": key_id, "revoked": True}
 
 
+async def _drop_key_ceilings(session: AsyncSession, key_ids: list[str]) -> int:
+    """ลบเพดานที่ตั้งไว้ให้คีย์เหล่านี้โดยเฉพาะ · คืนจำนวนที่ลบไป
+
+    นโยบาย scope="key" พูดถึงคีย์ใบเดียวเท่านั้น — ตอนสร้างห้ามใส่ user/workspace
+    มาด้วยซ้ำ · พอแถวของคีย์หายไป `resolve_key_limits` ซึ่งจับคู่ด้วย
+    `api_key_id == <id>` ก็ไม่มีทางเจอมันอีกเลย นโยบายจึงเป็นแถวที่ไม่มีผลกับอะไร
+    ทั้งสิ้น แต่ยังโผล่ในแท็บ Quota ชี้ไปยังคีย์ที่ไม่มีอยู่
+
+    บน PostgreSQL มันไม่ได้แค่รกด้วย: `quota_policies.api_key_id` เป็น FK จริง การ
+    ลบคีย์ทิ้งโดยไม่เก็บนโยบายไปด้วยจึงถูกปฏิเสธด้วย
+    `quota_policies_api_key_id_fkey` — purge พังทั้งคำขอ (SQLite ไม่บังคับ FK จึง
+    ผ่านมาตลอดโดยเหลือ api_key_id ค้างอยู่)
+
+    ลบทิ้ง ไม่ใช่ตั้ง api_key_id เป็น NULL · นโยบายของคีย์ถูกกันออกจากการคิดโควตา
+    ของคนด้วยเงื่อนไข `api_key_id IS NULL` ใน resolve_limits — ปลดค่านั้นออกเมื่อไร
+    นโยบายจะไหลเข้าไปแข่งกับนโยบายกลางที่คะแนนเท่ากัน แล้วชนะ · เพดานแคบ ๆ ของ
+    CI token หนึ่งใบจะกลายเป็นโควตาของทุกคนในระบบ ซึ่งเป็นกับดักเดียวกับที่
+    app/core/quota.py กันไว้ตั้งแต่ตอนเขียนฟีเจอร์นี้
+    """
+    if not key_ids:
+        return 0
+    result = await session.execute(
+        delete(QuotaPolicy).where(QuotaPolicy.api_key_id.in_(key_ids))
+    )
+    return int(result.rowcount or 0)
+
+
 @router.delete("/api-keys/{key_id}/purge")
 async def purge_api_key(
     key_id: str,
@@ -1539,7 +1606,9 @@ async def purge_api_key(
         )
 
     detail = f"{api_key.name or '(unnamed)'} {api_key.key_prefix}"
-    await audit(session, request, actor, "apikey.purge", "apikey", f"{key_id} {detail}")
+    dropped = await _drop_key_ceilings(session, [key_id])
+    await audit(session, request, actor, "apikey.purge", "apikey", f"{key_id} {detail}",
+                {"key_policies_removed": dropped})
     await session.delete(api_key)
     await session.commit()
     return {"id": key_id, "purged": True}
@@ -1564,12 +1633,14 @@ async def purge_revoked_api_keys(
         stmt = stmt.where(ApiKey.revoked_at < cutoff)
     keys = list((await session.execute(stmt)).scalars())
 
+    dropped = await _drop_key_ceilings(session, [k.id for k in keys])
     for api_key in keys:
         await session.delete(api_key)
     # One audit line for the sweep - a line per key would bury the log with the
     # thing being cleaned up.
     await audit(session, request, actor, "apikey.purge_revoked", "apikey",
-                f"{len(keys)} key(s), older_than_days={older_than_days}")
+                f"{len(keys)} key(s), older_than_days={older_than_days}",
+                {"key_policies_removed": dropped})
     await session.commit()
     return {"purged": len(keys)}
 
@@ -2933,7 +3004,7 @@ async def usage_by_key(
     something that finished months ago.
     """
     await state.usage.flush()
-    since = datetime.now(UTC) - timedelta(days=days)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
 
     stmt = (
         select(
@@ -2972,7 +3043,7 @@ async def usage_summary(
     state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
     await state.usage.flush()  # include in-flight buffer in the report
-    since = datetime.now(UTC) - timedelta(days=days)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
 
     stmt = (
         select(
@@ -3115,7 +3186,7 @@ async def usage_savings(
     from app.core import pricing
 
     await state.usage.flush()
-    since = datetime.now(UTC) - timedelta(days=days)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
     chosen = baseline if baseline in pricing.BASELINES else pricing.DEFAULT_BASELINE
 
     stmt = (
@@ -3199,9 +3270,8 @@ async def usage_daily(
     one step to the left.
     """
     await state.usage.flush()
-    start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
-        days=days - 1
-    )
+    midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    start = midnight - timedelta(days=days - 1)
     day = utc_date(UsageLog.ts)
     stmt = (
         select(
@@ -3239,7 +3309,7 @@ async def top_users(
     actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    since = datetime.now(UTC) - timedelta(days=days)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
     visible = await _visible_users(session, actor)
     rows = (
         await session.execute(

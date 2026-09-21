@@ -200,6 +200,33 @@ def test_an_unused_bundle_can_be_deleted(client):
                          headers=auth(client.admin_key)).status_code == 200
 
 
+def test_a_bundle_a_quota_points_at_is_not_deleted_either(client):
+    """โควตาที่เล็งมาที่มัดก็ถือมันไว้ เหมือนวิชาที่ถืออยู่
+
+    เดิมนับแต่วิชา · บน PostgreSQL `quota_policies.access_group_id` เป็น FK จริง
+    การลบจึงล้มกลางคันด้วย quota_policies_access_group_id_fkey แล้วผู้ดูแลได้ HTTP
+    500 แทนคำอธิบาย (SQLite ไม่บังคับ FK จึงลบผ่าน แล้วเหลือนโยบายที่ชี้ไปยังมัดที่
+    ไม่มีอยู่ ซึ่งเลิกมีผลเงียบ ๆ)
+    """
+    bundle = group(client, "capped-set", ["coding"]).json()
+    created = client.post("/admin/quota-policies", headers=auth(client.admin_key),
+                          json={"scope": "global", "access_group_id": bundle["id"],
+                                "max_requests": 5})
+    assert created.status_code == 201, created.text
+
+    response = client.delete(f"/admin/access-groups/{bundle['id']}",
+                             headers=auth(client.admin_key))
+    assert response.status_code == 400
+    assert response.json()["error"]["details"]["quota_policies"] == 1
+    assert "disable" in response.json()["error"]["message"].lower()
+
+    # ลบนโยบายก่อนแล้วมัดต้องลบได้ — คำปฏิเสธต้องเป็นทางที่เดินต่อได้ ไม่ใช่ทางตัน
+    client.delete(f"/admin/quota-policies/{created.json()['id']}",
+                  headers=auth(client.admin_key))
+    assert client.delete(f"/admin/access-groups/{bundle['id']}",
+                         headers=auth(client.admin_key)).status_code == 200
+
+
 def test_the_listing_says_how_many_classes_hold_each_bundle(client):
     bundle = group(client, "coding-set", ["coding"]).json()
     workspace(client, "CS101", groups=[bundle["id"]])
