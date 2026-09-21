@@ -2608,20 +2608,21 @@ async function loadAccess() {
   ];
   const all = state.cache.models || [];
   const seen = new Set();
-  const groups = MODEL_GROUPS.map(([key, title, match]) => {
+  // ชื่อ `groups` ถูกใช้ไปแล้วในฟังก์ชันนี้ (access groups) — ชนกันแล้วทั้งไฟล์ parse ไม่ผ่าน
+  const modelGroups = MODEL_GROUPS.map(([key, title, match]) => {
     const list = all.filter((m) => match(m.protocols || {}) && !seen.has(m.alias));
     list.forEach((m) => seen.add(m.alias));
     return { key, title, list };
   }).filter((g) => g.list.length);
   // โมเดลที่ไม่เข้าพวกไหนเลยต้องไม่หายไปเงียบ ๆ — ไม่งั้นติ๊กไม่ได้ทั้งที่มีอยู่ในทะเบียน
   const rest = all.filter((m) => !seen.has(m.alias));
-  if (rest.length) groups.push({ key: 'other', title: 'อื่น ๆ', list: rest });
+  if (rest.length) modelGroups.push({ key: 'other', title: 'อื่น ๆ', list: rest });
 
   const box = (m) => `<label title="${esc(m.display_name || m.alias)}">
     <input type="checkbox" class="k-model" value="${esc(m.alias)}">
     <span>${esc(m.alias)}${m.display_name && m.display_name !== m.alias
       ? `<br><span class="hint">${esc(m.display_name)}</span>` : ''}</span></label>`;
-  $('k-models').innerHTML = groups.map((g) =>
+  $('k-models').innerHTML = modelGroups.map((g) =>
     `<div class="mb-group"><div class="mb-group-hd">${esc(g.title)}</div>
        <div class="mgrid">${g.list.map(box).join('')}</div></div>`
   ).join('') || '<span class="hint">ยังไม่มีโมเดลใน registry</span>';
