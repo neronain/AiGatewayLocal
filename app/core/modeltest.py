@@ -24,6 +24,7 @@ from typing import Any
 import httpx
 
 from app.core.passwords import SESSION_COOKIE
+from app.core.tokens import CHARS_PER_TOKEN
 from app.upstream.client import join_upstream
 
 TEST_VERSION = "1.1"
@@ -679,6 +680,7 @@ class ProbeResult:
     notes: list[str] = field(default_factory=list)
     advice: list[Advice] = field(default_factory=list)
     server_kind: str = ""  # vllm | llamacpp | unknown
+    wide_chars_per_token: float | None = None   # วัดจริงจาก /tokenize ของ backend
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -896,6 +898,62 @@ def _normalize_kind(server_type: str) -> str:
     if "sglang" in t:
         return "sglang"
     return ""
+
+
+
+# ── วัดอัตราอักขระนอก ASCII ต่อ token ของ backend จริง ──────────────────────
+#
+# เกตเวย์ไม่รันโทเคนไนเซอร์เอง (PRD §13) จึงต้องเดา — แต่ "เดา" ไม่ได้แปลว่าห้ามวัด
+# แบ็กเอนด์ทุกตัวที่เรารองรับมี /tokenize อยู่แล้ว ถามครั้งเดียวตอน probe ก็ได้อัตราจริง
+# ของโมเดลตัวนั้น แล้วเก็บไว้ใช้แทนค่าสำรองกลาง
+#
+# ทำไมต้องวัด: โมเดลบนฟลีตเดียวกันต่างกันได้ 2.1 เท่า (ไทย 1.80–3.86 อักขระ/token)
+# เพราะ pre-tokenizer ของบางตัวไม่นับเครื่องหมายประสม ค่าเดียวจึงครอบไม่ได้
+#
+# สองรูปแบบคำตอบที่ต้องรองรับ — เคยพลาดมาแล้วเพราะอ่านแต่ของ vLLM:
+#   vLLM       POST /tokenize {"model","prompt"}  → {"count": N}
+#   llama.cpp  POST /tokenize {"content"}         → {"tokens": [...]}
+_RATE_PROBE = (
+    "สวัสดีครับ วันนี้อากาศดีมาก ระบบแจ้งว่าไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้ "
+    "กรุณาตรวจสอบความถูกต้องของข้อมูลก่อนกดยืนยันการทำรายการ"
+)
+
+
+async def measure_wide_rate(client: httpx.AsyncClient, base_url: str,
+                            model: str) -> tuple[float | None, str]:
+    """คืน (อัตรา, เหตุผลถ้าวัดไม่ได้) · ไม่โยน exception ออกไปให้ probe ล้ม"""
+    wide = sum(1 for ch in _RATE_PROBE if ord(ch) > 127)
+    if not wide:
+        return None, "ข้อความทดสอบไม่มีอักขระนอก ASCII"
+    for payload in ({"model": model, "prompt": _RATE_PROBE}, {"content": _RATE_PROBE}):
+        try:
+            response = await client.post(join_upstream(base_url, "/tokenize"), json=payload)
+            if response.status_code != 200:
+                continue
+            data = response.json()
+        except Exception:
+            continue
+        count = data.get("count")
+        if count is None and isinstance(data.get("tokens"), list):
+            count = len(data["tokens"])
+        if not isinstance(count, int) or count <= 0:
+            continue
+        # ตัวประมาณคิดอักขระ ASCII แยกอยู่แล้ว จึงต้องหักส่วนนั้นออกก่อน ไม่งั้น
+        # ข้อความผสมจะได้อัตราที่เจือด้วยอังกฤษ แล้วนำไปใช้กับไทยล้วนไม่ตรง
+        plain = len(_RATE_PROBE) - wide
+        ascii_tokens = plain / CHARS_PER_TOKEN
+        wide_tokens = count - ascii_tokens
+        if wide_tokens <= 0:
+            continue
+        rate = round(wide / wide_tokens, 2)
+        # ช่วงเดียวกับที่ core/tokens.wide_rate ยอมรับ — ค่านอกช่วงนี้ไม่ใช่การวัดที่
+        # เพี้ยนนิดหน่อย แต่แปลว่า backend ตอบอะไรที่เราตีความผิด (เจอตอนเขียนเทส:
+        # count=1 ให้ 508 อักขระ/token) · เก็บค่าแบบนั้นไว้แล้วติดป้ายว่า "วัดมา"
+        # แย่กว่าไม่วัดเลย เพราะคนอ่านจะเชื่อ
+        if not 0.2 <= rate <= 20.0:
+            continue
+        return rate, ""
+    return None, "backend ไม่มี /tokenize หรือตอบรูปแบบที่อ่านไม่ได้"
 
 
 async def probe_backend(
@@ -1134,5 +1192,16 @@ async def probe_backend(
     result.server_kind = _normalize_kind(server_type) or _detect_server_kind(
         result.notes, result.served_models
     )
+    if result.reachable and result.wide_chars_per_token is None:
+        async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+            rate, why = await measure_wide_rate(
+                client, base_url, result.upstream_model or upstream_model)
+        if rate:
+            result.wide_chars_per_token = rate
+            result.notes.append(
+                f"tokenizer: วัดได้ {rate} อักขระนอก ASCII ต่อ token "
+                "(ใช้แทนค่าสำรอง 1.6 ในการนับโควตาและด่าน context)")
+        elif why:
+            result.notes.append(f"tokenizer: วัดอัตราไม่ได้ — {why} · จะใช้ค่าสำรอง")
     result.advice = build_advice(result)
     return result

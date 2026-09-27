@@ -65,6 +65,17 @@ from app.registry.schema import Endpoint
 from app.state import AppState, get_state
 from app.upstream import client as upstream
 
+
+def _rate(ctx) -> float | None:
+    """อัตราอักขระนอก ASCII ต่อ token ของโมเดลที่ *เสิร์ฟจริง*
+
+    อ่านจาก ctx ตอนนั้น ไม่ใช่จำไว้ล่วงหน้า — fallback ระดับโมเดลเปลี่ยน ctx.model
+    ระหว่างคำขอได้ ถ้าจำค่าของตัวแรกไว้ ยอดที่บันทึกจะเป็นของโมเดลที่ไม่ได้รัน
+    """
+    model = getattr(ctx, "model", None)
+    spec = getattr(model, "spec", None)
+    return getattr(spec, "wide_chars_per_token", None)
+
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["retrieval"])
 
@@ -194,7 +205,7 @@ async def _serve(
     data, endpoint = await _forward(build, context, upstream_path)
 
     rewrite_model_name(data, alias)
-    usage = resolve_pooling_usage(profile, data.get("usage"))
+    usage = resolve_pooling_usage(profile, data.get("usage"), _rate(context))
     _augment_usage_payload(data, usage)
     await context.finalize(usage)
 
@@ -297,7 +308,7 @@ def _no_usage(ctx: _RequestContext) -> TokenUsage:
     ใช้ค่าประมาณของเราเพราะไม่มี usage จาก backend ให้ยึด · ติดป้าย `estimated`
     อัตโนมัติ รายงานจึงแยกออกได้ว่าแถวไหนวัดมาและแถวไหนเดา
     """
-    return resolve_pooling_usage(ctx.profile, None)
+    return resolve_pooling_usage(ctx.profile, None, _rate(ctx))
 
 
 def _augment_usage_payload(data: dict[str, Any], usage: TokenUsage) -> None:

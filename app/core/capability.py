@@ -103,7 +103,7 @@ def validate_context_budget(
     is applied before rejecting, to avoid false negatives on borderline requests.
     """
     limits = model.spec.limits
-    estimated_prompt = estimate_prompt_tokens(profile)
+    estimated_prompt = estimate_prompt_tokens(profile, model.spec.wide_chars_per_token)
     max_output = requested_max_tokens or limits.max_output_tokens
     max_output = min(max_output, limits.max_output_tokens)
 

@@ -50,6 +50,17 @@ from app.state import AppState, get_state
 from app.upstream import client as upstream
 from app.upstream.sse import DONE, format_sse, iter_sse_payloads, parse_chunk
 
+
+def _rate(ctx) -> float | None:
+    """อัตราอักขระนอก ASCII ต่อ token ของโมเดลที่ *เสิร์ฟจริง*
+
+    อ่านจาก ctx ตอนนั้น ไม่ใช่จำไว้ล่วงหน้า — fallback ระดับโมเดลเปลี่ยน ctx.model
+    ระหว่างคำขอได้ ถ้าจำค่าของตัวแรกไว้ ยอดที่บันทึกจะเป็นของโมเดลที่ไม่ได้รัน
+    """
+    model = getattr(ctx, "model", None)
+    spec = getattr(model, "spec", None)
+    return getattr(spec, "wide_chars_per_token", None)
+
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["openai"])
 
@@ -563,7 +574,7 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> FastJSONR
             hit = await cache.get(cache_key)
             if hit is not None:
                 data = hit["data"]
-                usage = resolve_usage(ctx.profile, data.get("usage"))
+                usage = resolve_usage(ctx.profile, data.get("usage"), _rate(ctx))
                 # **ต้องหักโควตาเหมือนไม่ได้แคช** ไม่งั้นถามซ้ำได้ฟรีไม่จำกัด
                 # ซึ่งเป็นช่องโหว่รายได้แบบเดียวกับที่ปิดไปใน 1.6.0 แค่คนละทาง
                 await ctx.finalize(usage)
@@ -591,7 +602,7 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> FastJSONR
                 ctx.retarget(nxt)
                 continue
             await ctx.finalize(
-                resolve_usage(ctx.profile, None),
+                resolve_usage(ctx.profile, None, _rate(ctx)),
                 status="error",
                 http_status=exc.http_status,
                 error_code=exc.code,
@@ -608,7 +619,7 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> FastJSONR
                 continue
             error = upstream.upstream_error(endpoint, response.status_code, body)
             await ctx.finalize(
-                resolve_usage(ctx.profile, None),
+                resolve_usage(ctx.profile, None, _rate(ctx)),
                 status="error",
                 http_status=error.http_status,
                 error_code=error.code,
@@ -628,7 +639,7 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> FastJSONR
 
     # The member asked for the alias; never leak the upstream repository name.
     data["model"] = alias
-    usage = resolve_usage(ctx.profile, data.get("usage"))
+    usage = resolve_usage(ctx.profile, data.get("usage"), _rate(ctx))
     _augment_usage_payload(data, usage)
     await ctx.finalize(usage)
 
@@ -768,7 +779,7 @@ async def _stream_chat(build: BuildRequest, ctx: _RequestContext) -> StreamingRe
 
                 ctx.retarget(retry)
         finally:
-            usage = resolve_usage(ctx.profile, upstream_usage)
+            usage = resolve_usage(ctx.profile, upstream_usage, _rate(ctx))
             await ctx.finalize(
                 usage,
                 ttft_ms=ttft_ms,

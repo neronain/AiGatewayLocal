@@ -49,6 +49,17 @@ from app.upstream.protocol.anthropic import (
 )
 from app.upstream.sse import DONE, format_json_sse, iter_sse_payloads, parse_chunk
 
+
+def _rate(ctx) -> float | None:
+    """อัตราอักขระนอก ASCII ต่อ token ของโมเดลที่ *เสิร์ฟจริง*
+
+    อ่านจาก ctx ตอนนั้น ไม่ใช่จำไว้ล่วงหน้า — fallback ระดับโมเดลเปลี่ยน ctx.model
+    ระหว่างคำขอได้ ถ้าจำค่าของตัวแรกไว้ ยอดที่บันทึกจะเป็นของโมเดลที่ไม่ได้รัน
+    """
+    model = getattr(ctx, "model", None)
+    spec = getattr(model, "spec", None)
+    return getattr(spec, "wide_chars_per_token", None)
+
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["anthropic"])
 
@@ -219,7 +230,7 @@ async def _complete_messages(build: BuildAttempt, ctx: _RequestContext) -> FastJ
                 ctx.retarget(nxt)
                 continue
             await ctx.finalize(
-                resolve_usage(ctx.profile, None),
+                resolve_usage(ctx.profile, None, _rate(ctx)),
                 status="error",
                 http_status=exc.http_status,
                 error_code=exc.code,
@@ -237,7 +248,7 @@ async def _complete_messages(build: BuildAttempt, ctx: _RequestContext) -> FastJ
                 endpoint, response.status_code, response.text[:2000]
             )
             await ctx.finalize(
-                resolve_usage(ctx.profile, None),
+                resolve_usage(ctx.profile, None, _rate(ctx)),
                 status="error",
                 http_status=error.http_status,
                 error_code=error.code,
@@ -260,7 +271,7 @@ async def _complete_messages(build: BuildAttempt, ctx: _RequestContext) -> FastJ
     else:
         data["model"] = alias
 
-    usage = resolve_usage(ctx.profile, data.get("usage"))
+    usage = resolve_usage(ctx.profile, data.get("usage"), _rate(ctx))
     data["usage"] = {
         "input_tokens": usage.input_tokens,
         "output_tokens": usage.output_tokens,

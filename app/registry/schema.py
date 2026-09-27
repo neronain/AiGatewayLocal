@@ -315,6 +315,13 @@ class ModelSpec(BaseModel):
     upstream_model: str
     purpose: list[Purpose] = Field(default_factory=lambda: [Purpose.GENERAL])
     limits: Limits
+    # อักขระนอก ASCII ต่อ token ของ *โมเดลตัวนี้* — ไม่ตั้ง = ใช้ค่าสำรองกลาง
+    #
+    # โมเดลบนฟลีตเดียวกันต่างกันได้ถึง 2.1 เท่า (ไทย 1.80–3.86) เพราะ pre-tokenizer
+    # ของบางตัวไม่นับเครื่องหมายประสม · ค่านี้คุมด่าน context และยอดโควตา ใส่ผิดทาง
+    # ไหนก็เจ็บ: ต่ำไป = นับเกิน ผู้ใช้ชนเพดานเร็วและถูกคิดเงินเกิน · สูงไป = นับขาด
+    # ซึ่งในงานโควตาคือช่องโหว่ · วัดจริงแล้วค่อยใส่ อย่าเดา (ดู core/tokens.wide_rate)
+    wide_chars_per_token: float | None = Field(default=None, gt=0.2, lt=20.0)
     modalities: Modalities = Field(default_factory=Modalities)
     capabilities: Capabilities = Field(default_factory=Capabilities)
     protocols: Protocols = Field(default_factory=Protocols)

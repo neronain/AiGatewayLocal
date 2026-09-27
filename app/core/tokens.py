@@ -40,6 +40,37 @@ CHARS_PER_TOKEN = 4.0          # ASCII ที่เป็นตัวอัก�
 SYMBOL_CHARS_PER_TOKEN = 1.0   # ASCII อื่น — ตัวเลข วรรคตอน เครื่องหมาย
 WIDE_CHARS_PER_TOKEN = 1.6     # นอก ASCII — ไทย จีน ญี่ปุ่น เกาหลี อีโมจิ
 
+# ── ทำไมค่าตัวนอก ASCII ต้องตั้งต่อโมเดลได้ ─────────────────────────────────
+#
+# 1.6 ข้างบนเป็น **ค่าสำรอง** ไม่ใช่ความจริงของทุกโมเดล · วัดจริงบนฟลีต 2026-09-28
+# ภาษาไทยกระจายตัว **1.80–3.86 อักขระ/token = ต่างกัน 2.1 เท่า** ระหว่างโมเดล
+# เพราะ pre-tokenizer ของบางตัวไม่นับเครื่องหมายประสม (สระบน/ล่าง วรรณยุกต์)
+# จึงฉีก "ที่" เป็น "ท" + "ี่" ส่วนตัวที่ถูกต้องนับเป็น token เดียว
+#
+# ผลของการใช้ค่าเดียว: เดาเกิน **+10%** กับโมเดลที่ tokenizer ฉีก (พอรับได้) แต่
+# **+137%** กับโมเดลที่ถูกต้อง · ค่านี้คุมทั้งด่าน context และยอดโควตา ผู้ใช้ภาษาไทย
+# บนโมเดลกลุ่มหลังจึงชนเพดานที่ ~42% ของความจุจริง และเผาโควตาเร็วกว่าที่ควร 2.4 เท่า
+#
+# ตั้งค่าได้ที่ `spec.wide_chars_per_token` ใน YAML ของโมเดล · ไม่ตั้ง = ใช้ค่าสำรอง
+# วัดเองได้ด้วย `lg-measure-tokens` หรือดูวิธีใน docs/OPERATIONS.md
+
+
+def wide_rate(rate: float | None) -> float:
+    """อัตราที่จะใช้จริง — ค่าของโมเดลถ้ามี ไม่มีก็ค่าสำรอง
+
+    กันค่าที่เป็นไปไม่ได้ออกให้หมดตรงนี้ที่เดียว: 0 หรือติดลบจะทำให้หารพัง และค่าที่
+    สูงเกินจริงคือการนับต่ำกว่าจริง ซึ่งในงานโควตาคือช่องโหว่ ไม่ใช่แค่ความคลาดเคลื่อน
+    """
+    if rate is None:
+        return WIDE_CHARS_PER_TOKEN
+    try:
+        value = float(rate)
+    except (TypeError, ValueError):
+        return WIDE_CHARS_PER_TOKEN
+    if not 0.2 <= value <= 20.0:
+        return WIDE_CHARS_PER_TOKEN
+    return value
+
 # Tile model, matching how most vision encoders bill: the image is covered by
 # 512x512 tiles, each worth TILE_TOKENS, plus a fixed thumbnail pass.
 TILE_SIZE = 512
@@ -77,7 +108,7 @@ def estimate_visual_tokens(profile: RequestProfile) -> int:
     return sum(estimate_image_tokens(img) for img in profile.images)
 
 
-def estimate_chars(text: str) -> int:
+def estimate_chars(text: str, rate: float | None = None) -> int:
     """ประมาณ token ของข้อความชิ้นเดียว — ตัวเดียวกับที่ `estimate_text_tokens` ใช้
 
     มีไว้ให้ฝั่งที่ถือ *ตัวข้อความ* อยู่ (เช่นด่านตรวจ context ต่อชิ้นของ /v1/rerank)
@@ -91,10 +122,10 @@ def estimate_chars(text: str) -> int:
     letters = len(plain) - symbols
     return (int(letters / CHARS_PER_TOKEN)
             + int(symbols / SYMBOL_CHARS_PER_TOKEN)
-            + int(wide / WIDE_CHARS_PER_TOKEN))
+            + int(wide / wide_rate(rate)))
 
 
-def estimate_text_tokens(profile: RequestProfile) -> int:
+def estimate_text_tokens(profile: RequestProfile, rate: float | None = None) -> int:
     """อักขระที่ต้องเดา บวกกับ token ที่ไม่ต้องเดา
 
     `pretokenized_tokens` ไม่ใช่ค่าประมาณ: /v1/embeddings รับ token id ตรง ๆ ได้
@@ -107,12 +138,12 @@ def estimate_text_tokens(profile: RequestProfile) -> int:
     plain = max(0, profile.text_chars - wide - symbols)
     return (int(plain / CHARS_PER_TOKEN)
             + int(symbols / SYMBOL_CHARS_PER_TOKEN)
-            + int(wide / WIDE_CHARS_PER_TOKEN)
+            + int(wide / wide_rate(rate))
             + profile.pretokenized_tokens)
 
 
-def estimate_prompt_tokens(profile: RequestProfile) -> int:
-    return estimate_text_tokens(profile) + estimate_visual_tokens(profile)
+def estimate_prompt_tokens(profile: RequestProfile, rate: float | None = None) -> int:
+    return estimate_text_tokens(profile, rate) + estimate_visual_tokens(profile)
 
 
 @dataclass
@@ -131,7 +162,8 @@ class TokenUsage:
         return self.input_tokens + self.output_tokens
 
 
-def resolve_usage(profile: RequestProfile, upstream_usage: dict | None) -> TokenUsage:
+def resolve_usage(profile: RequestProfile, upstream_usage: dict | None,
+                  rate: float | None = None) -> TokenUsage:
     """Turn a backend usage object (or its absence) into the split we store.
 
     OpenAI-shaped backends report `prompt_tokens` / `completion_tokens`;
@@ -162,14 +194,15 @@ def resolve_usage(profile: RequestProfile, upstream_usage: dict | None) -> Token
             )
 
     return TokenUsage(
-        text_input_tokens=estimate_text_tokens(profile),
+        text_input_tokens=estimate_text_tokens(profile, rate),
         visual_input_tokens=visual_estimate,
         output_tokens=0,
         accounting="estimated",
     )
 
 
-def resolve_pooling_usage(profile: RequestProfile, upstream_usage: dict | None) -> TokenUsage:
+def resolve_pooling_usage(profile: RequestProfile, upstream_usage: dict | None,
+                          rate: float | None = None) -> TokenUsage:
     """การนับของ /v1/embeddings และ /v1/rerank — เส้นทางที่ **ไม่มี output token เลย**
 
     แยกจาก `resolve_usage` เพราะกติกาการอ่าน `total_tokens` ต่างกันจนใช้ตัวเดียวกันไม่ได้:
@@ -200,7 +233,7 @@ def resolve_pooling_usage(profile: RequestProfile, upstream_usage: dict | None) 
             )
 
     return TokenUsage(
-        text_input_tokens=estimate_text_tokens(profile),
+        text_input_tokens=estimate_text_tokens(profile, rate),
         visual_input_tokens=0,
         output_tokens=0,
         accounting="estimated",
