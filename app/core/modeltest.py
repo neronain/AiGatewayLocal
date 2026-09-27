@@ -1004,6 +1004,24 @@ async def probe_backend(
                 result.notes.append("context window unknown; set it manually")
 
         model = result.upstream_model
+
+        # วัดอัตราโทเคนไนเซอร์ **ตรงนี้ ก่อนแตะอะไรที่หนักกว่านี้**
+        #
+        # เคสจริง 2026-09-28: ขั้นทดสอบ tools ทำให้ EngineCore ของ Nemotron ตายทั้ง
+        # คอนเทนเนอร์ (vLLM ตอบ 500 แล้ว force kill) · ตอนนั้นการวัดยังอยู่ท้ายฟังก์ชัน
+        # จึงได้ "วัดไม่ได้" ทั้งที่ /tokenize ตอบปกติมาตลอดจนถึงวินาทีก่อนหน้า
+        #
+        # /tokenize เป็นคำสั่งอ่านอย่างเดียวและเบาที่สุดในชุดนี้ — ไม่มีเหตุผลให้รอคิวหลัง
+        # ขั้นที่ทำให้ backend ล้มได้
+        rate, why = await measure_wide_rate(client, base_url, model)
+        if rate:
+            result.wide_chars_per_token = rate
+            result.notes.append(
+                f"tokenizer: วัดได้ {rate} อักขระนอก ASCII ต่อ token "
+                "(ใช้แทนค่าสำรอง 1.6 ในการนับโควตาและด่าน context)")
+        elif why:
+            result.notes.append(f"tokenizer: วัดอัตราไม่ได้ — {why} · จะใช้ค่าสำรอง")
+
         chat_url = join_upstream(base_url, "/v1/chat/completions")
 
         async def try_chat(payload: dict[str, Any]) -> httpx.Response | None:
@@ -1192,16 +1210,5 @@ async def probe_backend(
     result.server_kind = _normalize_kind(server_type) or _detect_server_kind(
         result.notes, result.served_models
     )
-    if result.reachable and result.wide_chars_per_token is None:
-        async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
-            rate, why = await measure_wide_rate(
-                client, base_url, result.upstream_model or upstream_model)
-        if rate:
-            result.wide_chars_per_token = rate
-            result.notes.append(
-                f"tokenizer: วัดได้ {rate} อักขระนอก ASCII ต่อ token "
-                "(ใช้แทนค่าสำรอง 1.6 ในการนับโควตาและด่าน context)")
-        elif why:
-            result.notes.append(f"tokenizer: วัดอัตราไม่ได้ — {why} · จะใช้ค่าสำรอง")
     result.advice = build_advice(result)
     return result

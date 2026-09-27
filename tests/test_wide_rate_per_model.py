@@ -120,3 +120,31 @@ async def test_a_nonsense_answer_is_rejected_not_stored():
         async with _client(lambda r, p=payload: httpx.Response(200, json=p)) as c:
             rate, why = await measure_wide_rate(c, "http://x", "m")
         assert rate is None, payload
+
+
+# ── ลำดับสำคัญ: วัดก่อนขั้นที่ทำ backend ล้มได้ ─────────────────────────────
+#
+# เคสจริง 2026-09-28: probe Nemotron แล้วขั้นทดสอบ tools ทำให้ EngineCore ตาย
+# ทั้งคอนเทนเนอร์ (vLLM ตอบ 500 แล้ว force kill) · ตอนนั้นการวัดอยู่ท้ายฟังก์ชัน
+# จึงได้ "วัดไม่ได้" ทั้งที่ /tokenize ตอบปกติจนถึงวินาทีก่อนหน้า
+def test_the_rate_is_measured_before_the_probes_that_can_kill_a_backend():
+    import inspect
+
+    from app.core import modeltest
+
+    src = inspect.getsource(modeltest.probe_backend)
+    measure = src.index("measure_wide_rate(client")
+    for risky, label in ((src.index('"/v1/chat/completions"'), "chat"),
+                         (src.index("tools ->"), "tools"),
+                         (src.index("png_data_url()"), "vision")):
+        assert measure < risky, f"ต้องวัดก่อนขั้น {label}"
+
+
+def test_a_failed_measurement_is_reported_not_swallowed():
+    """วัดไม่ได้ต้องขึ้นใน notes — ไม่ใช่เงียบแล้วปล่อยให้คนเดาว่าทำไมไม่มีค่า"""
+    import inspect
+
+    from app.core import modeltest
+
+    src = inspect.getsource(modeltest.probe_backend)
+    assert "วัดอัตราไม่ได้" in src
