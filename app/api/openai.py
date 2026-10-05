@@ -14,7 +14,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Collection
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -43,7 +43,7 @@ from app.core.multimodal import RequestProfile, profile_openai_request
 from app.core.quota import Consumption
 from app.core.routing import RETRYABLE_ERRORS, is_retryable_status
 from app.core.rules import fallback_models, resolve_route
-from app.core.tokens import TokenUsage, estimate_prompt_tokens, resolve_usage
+from app.core.tokens import TokenUsage, resolve_usage
 from app.db.session import get_session, release_connection
 from app.registry.schema import Endpoint, ModelDefinition
 from app.state import AppState, get_state
@@ -69,6 +69,41 @@ CHAT_PATH = "/v1/chat/completions"
 # Addresses one request to one backend. Called once per attempt, because the
 # upstream model name and the API key belong to the machine, not the request.
 BuildRequest = Callable[[Endpoint], tuple[dict[str, Any], dict[str, str]]]
+
+# เลือกเครื่องของโมเดลหนึ่ง โดยข้ามเครื่องที่ลองแล้ว · แต่ละ surface เลือกไม่เหมือนกัน:
+# /v1/messages กับ /v1/responses รับได้ทั้งเครื่องที่พูด protocol นั้นเองและเครื่องที่ต้องแปล
+# จึงต้องเป็นฟังก์ชันของ surface ไม่ใช่ `router.select(..., protocol)` ตรง ๆ
+SelectEndpoint = Callable[[ModelDefinition, Collection[str]], Endpoint]
+
+
+def select_or_fall_back(
+    state: AppState,
+    model: ModelDefinition,
+    profile: RequestProfile,
+    protocol: str,
+    select: SelectEndpoint,
+    request_id: str,
+) -> tuple[ModelDefinition, Endpoint]:
+    """เครื่องที่จะรับคำขอนี้ และโมเดลที่เครื่องนั้นเสิร์ฟ
+
+    endpoint failover แก้ "เครื่องนี้ล่ม" · ตรงนี้แก้ "ทุกเครื่องของ alias นี้ล่ม" ซึ่งเดิม
+    จบที่ 503 ทั้งที่โมเดลเทียบเท่าอาจว่างอยู่อีกเครื่อง · ตัวสำรองต้องรับคำขอรูปนี้ได้จริง
+    (ดู rules.fallback_models) ไม่งั้นข้าม
+    """
+    try:
+        return model, select(model, ())
+    except GatewayError:
+        for candidate in fallback_models(state.registry.snapshot, model, profile, protocol):
+            try:
+                endpoint = select(candidate, ())
+            except GatewayError:
+                continue
+            log.warning(
+                "no endpoint for %s; falling back to %s (request %s)",
+                model.alias, candidate.alias, request_id,
+            )
+            return candidate, endpoint
+        raise
 
 
 @router.get("/v1/models")
@@ -174,7 +209,6 @@ async def run_chat(
             allowed,
             profile=draft,
             protocol="openai",
-            prompt_tokens=estimate_prompt_tokens(draft),
             perf=state.perf,
         )
         if auto_choice is None:
@@ -212,8 +246,9 @@ async def run_chat(
         model = decision.model
 
     validate_model_capabilities(model, profile)
-
-    effective_max_tokens = validate_context_budget(model, profile, requested_max)
+    # ตรงนี้คือ "ปฏิเสธ prompt ที่ยาวเกิน" · เพดานคำตอบที่จะส่งไปจริงคิดใหม่ต่อโมเดลที่เสิร์ฟ
+    # (context.output_cap) เพราะ fallback เปลี่ยนโมเดลได้หลังบรรทัดนี้
+    validate_context_budget(model, profile, requested_max)
 
     limits = await state.quota.resolve_limits(
         session, principal.user_id, principal.workspace_id, alias
@@ -233,24 +268,12 @@ async def run_chat(
     # See app/db/session.py: release_connection.
     await release_connection(session)
 
-    try:
-        endpoint = state.router.select(model, profile, "openai")
-    except GatewayError:
-        # endpoint failover แก้ "เครื่องนี้ล่ม" · ตรงนี้แก้ "ทุกเครื่องของ alias นี้ล่ม"
-        # ซึ่งเดิมจบที่ 503 ทั้งที่โมเดลเทียบเท่าอาจว่างอยู่อีกเครื่อง
-        for candidate in fallback_models(state.registry.snapshot, model):
-            try:
-                endpoint = state.router.select(candidate, profile, "openai")
-            except GatewayError:
-                continue
-            log.warning(
-                "no endpoint for %s; falling back to %s (request %s)",
-                model.alias, candidate.alias, request_id,
-            )
-            model = candidate
-            break
-        else:
-            raise
+    def select(target: ModelDefinition, exclude: Collection[str]) -> Endpoint:
+        return state.router.select(target, profile, "openai", exclude=exclude)
+
+    model, endpoint = select_or_fall_back(
+        state, model, profile, "openai", select, request_id
+    )
 
     # Rebuilt per attempt rather than once: the upstream model name and the API
     # key are properties of the machine, so a request that fails over has to be
@@ -258,14 +281,11 @@ async def run_chat(
     def build(target: Endpoint) -> tuple[dict[str, Any], dict[str, str]]:
         # อ่านจาก context ไม่ใช่ตัวแปรปิด: fallback ระดับโมเดลเปลี่ยน ctx.model ได้
         # ระหว่างทาง ถ้ายังยึดตัวเดิมจะส่งชื่อ upstream ผิดไปให้เครื่องใหม่
-        active = context.model
         payload = dict(body)
-        payload["model"] = upstream_model_for(active, target)
-        if body.get("max_tokens") or body.get("max_completion_tokens"):
-            payload.pop("max_completion_tokens", None)
-            payload["max_tokens"] = min(
-                effective_max_tokens, active.spec.limits.max_output_tokens
-            )
+        payload["model"] = upstream_model_for(context.model, target)
+        # ส่งเพดานไปเสมอ แม้ client ไม่ได้ขอ — ดู _RequestContext.output_cap
+        payload.pop("max_completion_tokens", None)
+        payload["max_tokens"] = context.output_cap()
         return payload, upstream.upstream_headers(target, dict(request.headers))
 
     client_agent = request.headers.get("user-agent", "")[:128]
@@ -285,6 +305,8 @@ async def run_chat(
         started=started,
         client_agent=client_agent,
         protocol="openai",
+        requested_max_tokens=requested_max,
+        select=select,
     )
 
     if body.get("stream"):
@@ -367,6 +389,8 @@ class _RequestContext:
         client_agent: str,
         protocol: str,
         allow_model_fallback: bool = True,
+        requested_max_tokens: int | None = None,
+        select: SelectEndpoint | None = None,
     ) -> None:
         self.state = state
         self.principal = principal
@@ -374,7 +398,16 @@ class _RequestContext:
         # alias ที่สมาชิกขอ — ไม่เปลี่ยนตามการจัดเส้นทางภายใน · ทั้ง response ที่ตอบกลับ
         # และการบันทึกโควตาต้องยึดตัวนี้ ไม่งั้นบิลของสมาชิกจะขึ้นกับท่อของแอดมิน
         # และ client ที่ตรวจชื่อโมเดลที่ echo กลับมาจะพัง
+        #
+        # **ใช้กับเรื่องของสมาชิกเท่านั้น** · ทุกอย่างที่เป็นเรื่องของ *เครื่อง* — จองช่อง
+        # คืนช่อง รายงานสำเร็จ/ล้มเหลว — ต้องใช้ `self.model.alias` (ตัวที่เสิร์ฟจริง) เพราะ
+        # endpoint เป็นของโมเดลนั้น · เคยใช้ตัวนี้แทน ทราฟฟิกที่ถูก reroute หรือ fallback จึง
+        # ได้ตัวนับอีกกอง และ llama.cpp 1 slot ได้รับ 2 คำขอ (ตรวจพบ 2026-10-05)
         self.requested_alias = requested_alias or model.alias
+        # ใบจองช่องบน backend · สร้างเองต่อคำขอ ไม่ใช้ request_id เพราะตัวนั้นรับมาจาก
+        # `x-request-id` ของ client ได้ — ค่าซ้ำ = ใบจองใบเดียวกันในที่เก็บที่ทุก worker ใช้ร่วม
+        # ตัวนับไม่ขยับ และ release ของตัวใดตัวหนึ่งคืนช่องของทุกตัว
+        self.lease = uuid.uuid4().hex
         self.endpoint = endpoint
         self.profile = profile
         self.limits_window = limits_window
@@ -393,6 +426,10 @@ class _RequestContext:
         # RAG ที่ "ยังทำงาน" แต่ค้นเจอแต่ของมั่ว และไม่มี error ให้ใครเห็นเลย
         # (ดู app/api/retrieval.py — ที่นั่นตั้งค่านี้เป็น False)
         self.allow_model_fallback = allow_model_fallback
+        # ที่ client ขอมา (None = ไม่ได้ระบุ) — เก็บค่าดิบไว้ ไม่ใช่ค่าที่ clamp แล้ว เพราะ
+        # เพดานขึ้นกับโมเดลที่เสิร์ฟ และโมเดลนั้นเปลี่ยนได้ระหว่างคำขอ (ดู output_cap)
+        self.requested_max_tokens = requested_max_tokens
+        self._select_endpoint = select
         # Which backends this request has already burned. Not a count: the same
         # machine must never be handed the request twice, and it stays healthy
         # for two more strikes after the first failure.
@@ -404,6 +441,37 @@ class _RequestContext:
     def elapsed_ms(self) -> int:
         return int((time.perf_counter() - self.started) * 1000)
 
+    def _select(self, model: ModelDefinition, exclude: Collection[str] = ()) -> Endpoint:
+        """เลือกเครื่องด้วยวิธีของ surface ที่คำขอเข้ามา — ตัวเดียวกับที่ใช้เลือกครั้งแรก
+
+        เดิม failover เรียก `router.select(..., self.protocol)` ตรง ๆ · บน /v1/messages กับ
+        /v1/responses ค่านั้นคือ "anthropic"/"responses" ซึ่งตรงกับเครื่องที่พูด protocol
+        นั้นเองเท่านั้น โมเดลที่เสิร์ฟผ่านตัวแปล (endpoint พูดแต่ openai — คือเกือบทุกตัวที่
+        Claude Code ใช้อยู่) จึง **ไม่เคย failover ไปเครื่องที่สองเลย** ทั้งที่ chat ทำได้
+        """
+        if self._select_endpoint is not None:
+            return self._select_endpoint(model, exclude)
+        return self.state.router.select(model, self.profile, self.protocol, exclude=exclude)
+
+    def output_cap(self) -> int:
+        """`max_tokens` ที่จะส่งให้ backend — ของโมเดลที่เสิร์ฟ *ตอนนี้*
+
+        สองเรื่องที่ทำให้ต้องคิดตรงนี้ ไม่ใช่คิดครั้งเดียวตอนต้นคำขอ:
+
+        **ส่งเสมอ แม้ client ไม่ได้ขอ** · `limits.max_output_tokens` คือเพดานที่แค็ตตาล็อก
+        โชว์ว่า "Max output N" · /v1/messages กับ /v1/responses ใส่ให้มาตลอด แต่
+        /v1/chat/completions เคยใส่เฉพาะเมื่อ client ส่ง `max_tokens` มา — ไม่ส่งมา = backend
+        เขียนได้จนเต็ม context: คำขอเดียวกินโควตา output ทั้งก้อน (โควตาตรวจก่อน บันทึกทีหลัง)
+        และถือ slot ของ llama.cpp ไว้เป็นนาที · เพดานที่ข้ามได้ด้วยการไม่ส่งฟิลด์ไม่ใช่เพดาน
+
+        โมเดล reasoning: token ที่ใช้คิดนับอยู่ในเพดานเดียวกัน ตั้ง `max_output_tokens`
+        ให้พอทั้งคิดและตอบ ไม่งั้นได้ content ว่างกับ finish_reason "length"
+
+        **คิดใหม่เมื่อโมเดลเปลี่ยน** · fallback พาไปโมเดลที่หน้าต่างแคบกว่าได้ · เพดานที่
+        clamp ไว้กับโมเดลแรกจะรวมกับ prompt แล้วเกินหน้าต่างของตัวสำรอง และถูกปฏิเสธ
+        """
+        return validate_context_budget(self.model, self.profile, self.requested_max_tokens)
+
     def another_endpoint(self) -> Endpoint | None:
         """A backend for this alias that has not been tried yet, or None.
 
@@ -413,22 +481,20 @@ class _RequestContext:
         """
         self.tried.add(self.endpoint.name)
         try:
-            return self.state.router.select(
-                self.model, self.profile, self.protocol, exclude=self.tried
-            )
+            return self._select(self.model, self.tried)
         except GatewayError:
             pass
         if not self.allow_model_fallback:
             return None
         # เครื่องของ alias นี้หมดแล้ว — ยังไม่ยอมแพ้ถ้ามีโมเดลสำรองที่รับได้
         # ยังอยู่ก่อนไบต์แรกเสมอ (ผู้เรียกเป็นคนคุม) คนใช้จึงไม่มีทางเห็นคำตอบซ้ำครึ่งอัน
-        for candidate in fallback_models(self.state.registry.snapshot, self.model):
+        for candidate in fallback_models(
+            self.state.registry.snapshot, self.model, self.profile, self.protocol
+        ):
             if candidate.alias in self.exhausted:
                 continue
             try:
-                endpoint = self.state.router.select(
-                    candidate, self.profile, self.protocol
-                )
+                endpoint = self._select(candidate)
             except GatewayError:
                 self.exhausted.add(candidate.alias)
                 continue
@@ -591,13 +657,13 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> FastJSONR
                 )
 
     while True:
-        endpoint = ctx.endpoint
+        endpoint, served = ctx.endpoint, ctx.model.alias
         payload, headers = build(endpoint)
-        await state.router.acquire(alias, endpoint, ctx.request_id)
+        await state.router.acquire(served, endpoint, ctx.lease)
         try:
             response = await upstream.post_json(endpoint, CHAT_PATH, payload, headers)
         except GatewayError as exc:
-            state.router.report_failure(alias, endpoint, exc.message)
+            state.router.report_failure(served, endpoint, exc.message)
             if exc.code in RETRYABLE_ERRORS and (nxt := ctx.another_endpoint()):
                 ctx.retarget(nxt)
                 continue
@@ -609,11 +675,11 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> FastJSONR
             )
             raise
         finally:
-            await state.router.release(alias, endpoint, ctx.request_id)
+            await state.router.release(served, endpoint, ctx.lease)
 
         if response.status_code >= 400:
             body = response.text[:2000]
-            state.router.report_http_error(alias, endpoint, response.status_code)
+            state.router.report_http_error(served, endpoint, response.status_code)
             if is_retryable_status(response.status_code) and (nxt := ctx.another_endpoint()):
                 ctx.retarget(nxt)
                 continue
@@ -626,7 +692,7 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> FastJSONR
             )
             raise error
 
-        state.router.report_success(alias, endpoint)
+        state.router.report_success(served, endpoint)
         break
 
     try:
@@ -699,7 +765,7 @@ async def _stream_chat(build: BuildRequest, ctx: _RequestContext) -> StreamingRe
 
         try:
             while True:
-                endpoint = ctx.endpoint
+                endpoint, served = ctx.endpoint, ctx.model.alias
                 payload, headers = build(endpoint)
                 # Ask for a final usage chunk so accounting stays authoritative.
                 # If the caller did not want it, it is stripped before
@@ -713,14 +779,14 @@ async def _stream_chat(build: BuildRequest, ctx: _RequestContext) -> StreamingRe
                 }
 
                 retry: Endpoint | None = None
-                await state.router.acquire(alias, endpoint, ctx.request_id)
+                await state.router.acquire(served, endpoint, ctx.lease)
                 try:
                     async with upstream.stream_json(
                         endpoint, CHAT_PATH, payload, headers
                     ) as response:
                         if response.status_code >= 400:
                             body = await upstream.read_error_body(response)
-                            state.router.report_http_error(alias, endpoint, response.status_code)
+                            state.router.report_http_error(served, endpoint, response.status_code)
                             if not emitted and is_retryable_status(response.status_code):
                                 retry = ctx.another_endpoint()
                             if retry is None:
@@ -733,7 +799,7 @@ async def _stream_chat(build: BuildRequest, ctx: _RequestContext) -> StreamingRe
                                 yield format_sse(DONE)
                                 return
                         else:
-                            state.router.report_success(alias, endpoint)
+                            state.router.report_success(served, endpoint)
                             async for _event, data in iter_sse_payloads(response.aiter_lines()):
                                 if data.strip() == DONE:
                                     continue
@@ -759,7 +825,7 @@ async def _stream_chat(build: BuildRequest, ctx: _RequestContext) -> StreamingRe
                             return
 
                 except GatewayError as exc:
-                    state.router.report_failure(alias, endpoint, exc.message)
+                    state.router.report_failure(served, endpoint, exc.message)
                     if not emitted and exc.code in RETRYABLE_ERRORS:
                         retry = ctx.another_endpoint()
                     if retry is None:
@@ -769,11 +835,11 @@ async def _stream_chat(build: BuildRequest, ctx: _RequestContext) -> StreamingRe
                         return
                 except Exception as exc:  # client disconnect, backend reset, ...
                     log.exception("stream failed for request %s", ctx.request_id)
-                    state.router.report_failure(alias, endpoint, str(exc))
+                    state.router.report_failure(served, endpoint, str(exc))
                     status, error_code, http_status = "aborted", ErrorCode.UPSTREAM_ERROR, 502
                     return
                 finally:
-                    await state.router.release(alias, endpoint, ctx.request_id)
+                    await state.router.release(served, endpoint, ctx.lease)
 
                 ctx.retarget(retry)
         finally:

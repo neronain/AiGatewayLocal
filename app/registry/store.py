@@ -12,6 +12,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 from pydantic import ValidationError
@@ -104,6 +105,14 @@ def load_snapshot(config_dir: Path) -> RegistrySnapshot:
             gateway = GatewayConfig.model_validate(_load_yaml(gateway_path))
         except (ValidationError, ValueError) as exc:
             errors.append(f"gateway.yaml: {exc}")
+        if "rate_limit_defaults" in gateway.model_fields_set:
+            # warning ไม่ใช่ error: ไฟล์ยังใช้ได้ทุกบรรทัด แค่บล็อกนี้ไม่ได้ทำอะไร และ
+            # คนที่อ่านไฟล์ควรรู้ (เหตุผลเต็มอยู่ที่ schema.RateLimitDefaults)
+            log.warning(
+                "gateway.yaml: rate_limit_defaults is not enforced and never was - "
+                "remove it. Per-person limits are quota policies (max_requests_per_minute, "
+                "max_tokens_per_minute); per-backend limits are an endpoint's max_concurrency."
+            )
     else:
         errors.append(f"gateway.yaml not found in {config_dir}, using built-in defaults")
 
@@ -255,3 +264,31 @@ class RegistryStore:
 def endpoint_key(alias: str, endpoint: Endpoint) -> str:
     """Stable identifier used by health tracking and usage logs."""
     return f"{alias}:{endpoint.name}"
+
+
+def slot_key(endpoint: Endpoint, upstream_model: str) -> str:
+    """ตัวตนของ *ช่องที่ backend มีให้* — คีย์ของตัวนับคำขอที่กำลังวิ่ง
+
+    `max_concurrency` เป็นคุณสมบัติของ process ที่เสิร์ฟ ไม่ใช่ของชื่อที่สมาชิกเรียก ·
+    คีย์เดิมคือ `endpoint_key` (alias + ชื่อ endpoint) alias สองตัวที่ชี้ llama.cpp
+    1 slot ตัวเดียวกันจึงได้ตัวนับคนละกอง และ backend ได้รับ 2 คำขอ
+
+    **ตัดสินแล้ว (2026-10-05): แชร์ด้วย server + ชื่อโมเดลฝั่ง upstream ไม่ใช่ server อย่างเดียว**
+
+    server เดียวเสิร์ฟหลายโมเดลได้ (Ollama · llama-swap · ผู้ให้บริการภายนอกที่ทุก alias
+    ชี้ `https://api.x.com/v1` เดียวกัน) — รวมด้วย base_url อย่างเดียวจะทำให้ alias ทุกตัว
+    ของผู้ให้บริการรายเดียวแย่งเพดานกองเดียวกัน ซึ่งผิดไปอีกทาง · ข้อแลกคือ server ที่ไม่สนใจ
+    ชื่อโมเดล (llama.cpp ตัวเดียวที่ถูกเรียกด้วยสองชื่อ) จะยังนับแยก — ตั้ง `upstream_model`
+    ของสอง alias ให้ตรงกัน ซึ่งเป็นค่าที่ปุ่ม Detect อ่านมาให้อยู่แล้ว
+
+    เพดานยังเป็นของ endpoint ที่ขอจอง: alias ที่ตั้ง `max_concurrency` ต่ำกว่าจะถูกบอกให้รอ
+    ก่อน เมื่อยอดรวมของ backend ถึงค่าของมัน — ใช้กันช่องไว้ให้ alias อื่นได้โดยตั้งใจ
+
+    base_url เขียนได้หลายแบบสำหรับเครื่องเดียว (`/` ท้าย · `/v1` ท้าย · ตัวพิมพ์ของ host)
+    จึงต้องทำให้เป็นรูปเดียวก่อนเทียบ ไม่งั้นคนที่พิมพ์ต่างกันนิดเดียวก็กลับไปนับแยก
+    """
+    parts = urlsplit(endpoint.base_url.strip())
+    path = parts.path.rstrip("/")
+    if path.endswith("/v1"):
+        path = path[:-3]
+    return f"{parts.scheme.lower()}://{parts.netloc.lower()}{path}|{upstream_model}"

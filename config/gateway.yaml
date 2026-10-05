@@ -36,9 +36,10 @@ quota_defaults:
   max_output_tokens: 500000
   max_images: 100
 
-rate_limit_defaults:
-  requests_per_minute: 60
-  concurrent_requests: 4
+# Burst limits are not set here. Per person, group or key they are quota policies
+# (max_requests_per_minute, max_tokens_per_minute - console: Quotas); per backend
+# they are the endpoint's max_concurrency. A `rate_limit_defaults` block used to
+# sit here and was never read by anything; one left in an older file is ignored.
 
 # ---------------------------------------------------------------------------
 # Access. Does being in a workspace decide which models you may call?

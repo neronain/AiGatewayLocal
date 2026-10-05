@@ -126,6 +126,21 @@ per request. At request time the resolved target must clear the *same* capabilit
 gate: an image bound for a text-only target keeps the request where it started,
 so the error names the alias the member actually asked for.
 
+`fallback` targets clear the same gates as the model that was asked for — API
+surface, capabilities, and context window, each measured with the target's own
+tokenizer rate. A target that cannot take the request is skipped, and the caller
+gets the original failure (the machine was down, or full), which is the true
+one, instead of a `400` from a model they never chose. The output ceiling is
+recomputed for whichever model ends up serving, because a fallback can have a
+narrower window.
+
+**What follows the served model, and what follows the requested alias.** The
+member's side — response `model`, `x-litegate-model`, usage row, quota — stays
+with the alias they asked for. The machine's side — the in-flight slot, success
+and failure reports, `max_output_tokens`, the tokenizer rate — follows the model
+that actually serves, because the endpoint belongs to that model. Counting a
+rerouted request under the requested alias gave a 1-slot backend two counters.
+
 ---
 
 ## Modules

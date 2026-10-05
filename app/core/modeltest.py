@@ -27,13 +27,30 @@ from app.core.passwords import SESSION_COOKIE
 from app.core.tokens import CHARS_PER_TOKEN
 from app.upstream.client import join_upstream
 
-TEST_VERSION = "1.1"
+TEST_VERSION = "1.2"
 
 # Tests whose feature name maps onto a capability flag. When the model declares
 # the flag false the test is not applicable - recording it as a failure would
 # report a correctly-configured model as DEGRADED.
 _REQUIRES_TOOLS = {"MODEL-004", "MODEL-005", "MODEL-008"}
 _REQUIRES_VISION = {"MODEL-006", "MODEL-007"}
+
+# โมเดล reasoning ใช้ token คิดจากงบเดียวกับคำตอบ · งบ 16 ที่พอสำหรับ "OK" ถูกใช้หมดไปกับ
+# การคิดก่อนจะได้ตอบ แล้วคืน content ว่างกับ finish_reason "length" · งบนี้ให้เฉพาะโมเดลที่
+# ประกาศ `capabilities.reasoning` — ตัวที่ตอบสั้นได้อยู่แล้วไม่ควรได้สิทธิ์เขียนยาวตอนพัง
+REASONING_BUDGET = 1024
+
+# MODEL-003 เติม prompt เท่านี้ของหน้าต่างที่ประกาศไว้ · เดิม 25% — ทะเบียนที่ประกาศเกินจริง
+# 2 เท่ายังผ่าน เพราะ 25% ของที่ประกาศคือ 50% ของที่ backend มีให้จริง
+#
+# เกินครึ่งคือเส้นที่มีความหมาย: ความผิดพลาดที่เจอจริงคือเอา `--ctx-size` ของ llama.cpp
+# (ก้อนรวม) มาประกาศเป็นค่าต่อคำขอ ทั้งที่มันถูกหารด้วย `--parallel` — เกินจริงเป็นจำนวนเต็ม
+# เท่า (2, 4, ...) เสมอ · prompt ที่เกินครึ่งถูกปฏิเสธในทุกกรณีนั้น
+#
+# ไม่เติมถึง 90% โดยตั้งใจ: backend ต้องอ่าน prompt ทั้งก้อนก่อนตอบ และบน llama.cpp 1 slot
+# นั่นคือช่องเดียวของโมเดลถูกถือไว้ตลอดเวลานั้น · 60% จับความผิดที่เกิดจริงได้ครบในราคา
+# สองในสาม · ไม่ใช่ 55% เพราะต้องเหลือระยะให้ tokenizer ที่นับประโยคตัวเติมได้น้อยกว่าที่คาด
+LONG_CONTEXT_FILL = 0.6
 
 
 # ---------------------------------------------------------------------------
@@ -205,16 +222,44 @@ class ModelTestSuite:
         caps = await self.capabilities()
         return bool(caps["capabilities"].get(capability))
 
+    async def _budget(self, tokens: int) -> int:
+        """`max_tokens` ของเทสที่ต้องอ่าน *คำตอบ* — เผื่อที่คิดให้โมเดล reasoning"""
+        if not await self._declares("reasoning"):
+            return tokens
+        caps = await self.capabilities()
+        return min(max(tokens, REASONING_BUDGET), int(caps.get("max_output_tokens") or tokens))
+
+    async def _empty_reply(self, choice: dict[str, Any], budget: int) -> str:
+        """ทำไมคำตอบถึงว่าง — บอกให้ถึงสิ่งที่ต้องไปแก้ ไม่ใช่แค่ว่ามันว่าง"""
+        message = choice.get("message") or {}
+        finish = choice.get("finish_reason")
+        thought = any(message.get(name) for name in ("reasoning_content", "reasoning"))
+        if not (thought and finish == "length"):
+            return f"empty reply (finish_reason={finish})"
+        note = f"empty reply: the model spent all {budget} tokens reasoning (finish_reason=length)"
+        if await self._declares("reasoning"):
+            return note + " - raise limits.max_output_tokens or lower its reasoning effort"
+        return note + " - declare capabilities.reasoning so tests and clients budget for it"
+
     # -- tests -----------------------------------------------------------
     async def model_001(self) -> TestResult:
+        budget = await self._budget(16)
         started = time.perf_counter()
         response = await self._chat(
-            messages=[{"role": "user", "content": "Reply with exactly: OK"}], max_tokens=16
+            messages=[{"role": "user", "content": "Reply with exactly: OK"}],
+            max_tokens=budget,
         )
         elapsed = int((time.perf_counter() - started) * 1000)
         if response.status_code != 200:
             return TestResult("MODEL-001", "chat", "fail", elapsed, _describe_error(response))
-        content = response.json()["choices"][0]["message"].get("content")
+        choice = response.json()["choices"][0]
+        content = choice["message"].get("content")
+        # HTTP 200 ไม่ใช่คำตอบ · เดิมบรรทัดนี้รายงาน pass พร้อมข้อความ `replied ''` —
+        # โมเดล reasoning ที่ไม่เคยตอบอะไรสักคำจึงได้ป้ายเขียวบนคอนโซล
+        if not (content.strip() if isinstance(content, str) else content):
+            return TestResult(
+                "MODEL-001", "chat", "fail", elapsed, await self._empty_reply(choice, budget)
+            )
         return TestResult("MODEL-001", "chat", "pass", elapsed, f"replied {content!r}"[:200])
 
     async def model_002(self) -> TestResult:
@@ -252,27 +297,56 @@ class ModelTestSuite:
 
     async def model_003(self) -> TestResult:
         caps = await self.capabilities()
-        target = max(int(caps["context_window"] * 0.25), 512)
+        window = int(caps["context_window"])
+        target = max(int(window * LONG_CONTEXT_FILL), 512)
         filler = "The quick brown fox jumps over the lazy dog. " * (target // 10)
         started = time.perf_counter()
-        response = await self._chat(
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"{filler}\n\nHow many times did the word 'fox' appear? "
-                    "Answer with a number only.",
-                }
-            ],
-            max_tokens=32,
-        )
+        try:
+            response = await self._chat(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"{filler}\n\nHow many times did the word 'fox' appear? "
+                        "Answer with a number only.",
+                    }
+                ],
+                max_tokens=32,
+            )
+        except httpx.TimeoutException:
+            # ช้าไม่ใช่ปฏิเสธ · backend ที่อ่าน prompt ยาวไม่ทันเวลายังไม่ได้บอกอะไรเรื่องหน้าต่าง
+            elapsed = int((time.perf_counter() - started) * 1000)
+            return TestResult(
+                "MODEL-003", "long_context", "degraded", elapsed,
+                f"no answer within {self.timeout:.0f}s for a ~{target:,}-token prompt - "
+                "the window was neither confirmed nor refused",
+            )
         elapsed = int((time.perf_counter() - started) * 1000)
         if response.status_code != 200:
             return TestResult(
                 "MODEL-003", "long_context", "fail", elapsed, _describe_error(response)
             )
-        used = response.json().get("usage", {}).get("prompt_tokens", 0)
+        # ผ่านเฉพาะเมื่อ *backend เอง* ยืนยันว่ารับ prompt เกินครึ่งหน้าต่างเข้าไปจริง ·
+        # เดิมรายงาน pass จาก HTTP 200 อย่างเดียว — รวมถึง "0 prompt tokens accepted"
+        usage = response.json().get("usage") or {}
+        used = int(usage.get("prompt_tokens") or 0)
+        measured = (usage.get("litegate") or {}).get("accounting") == "upstream"
+        share = f"{used / window:.0%} of the declared {window:,}-token window"
+        if not measured:
+            return TestResult(
+                "MODEL-003", "long_context", "degraded", elapsed,
+                "accepted, but the backend reported no usage - how much of the window "
+                "this exercised is unknown",
+            )
+        if used * 2 <= window:
+            return TestResult(
+                "MODEL-003", "long_context", "degraded", elapsed,
+                f"accepted, but only {used:,} prompt tokens reached the backend ({share}) - "
+                "too little to vouch for the window",
+            )
         return TestResult(
-            "MODEL-003", "long_context", "pass", elapsed, f"{used} prompt tokens accepted"
+            "MODEL-003", "long_context", "pass", elapsed,
+            f"{used:,} prompt tokens accepted ({share}; a window over-declared 2x or more "
+            "would have refused this)",
         )
 
     async def model_004(self) -> TestResult:
@@ -293,7 +367,7 @@ class ModelTestSuite:
                     },
                 }
             ],
-            max_tokens=128,
+            max_tokens=await self._budget(128),
         )
         elapsed = int((time.perf_counter() - started) * 1000)
         if response.status_code != 200:
@@ -324,7 +398,7 @@ class ModelTestSuite:
                     },
                 }
             ],
-            max_tokens=256,
+            max_tokens=await self._budget(256),
         )
         elapsed = int((time.perf_counter() - started) * 1000)
         if response.status_code != 200:
@@ -347,7 +421,7 @@ class ModelTestSuite:
                     ],
                 }
             ],
-            max_tokens=128,
+            max_tokens=await self._budget(128),
         )
         elapsed = int((time.perf_counter() - started) * 1000)
         if response.status_code != 200:
@@ -371,7 +445,7 @@ class ModelTestSuite:
                     ],
                 },
             ],
-            max_tokens=128,
+            max_tokens=await self._budget(128),
         )
         elapsed = int((time.perf_counter() - started) * 1000)
         if response.status_code != 200:
@@ -398,7 +472,7 @@ class ModelTestSuite:
                     },
                 }
             ],
-            max_tokens=128,
+            max_tokens=await self._budget(128),
         )
         if first.status_code != 200:
             return TestResult("MODEL-008", "agent_loop", "fail", 0, _describe_error(first))
@@ -417,7 +491,7 @@ class ModelTestSuite:
                     "content": "print('hello world')",
                 },
             ],
-            max_tokens=128,
+            max_tokens=await self._budget(128),
         )
         elapsed = int((time.perf_counter() - started) * 1000)
         if second.status_code != 200:
@@ -434,7 +508,7 @@ class ModelTestSuite:
         has_tools = await self._declares("tools")
         payload: dict[str, Any] = {
             "model": self.model,
-            "max_tokens": 128,
+            "max_tokens": await self._budget(128),
             "system": "You are a coding assistant.",
             "messages": [{"role": "user", "content": "Say OK."}],
         }
@@ -469,6 +543,19 @@ class ModelTestSuite:
         if body.get("type") != "message" or not body.get("content"):
             return TestResult(
                 "MODEL-009", "claude_code", "degraded", elapsed, "unexpected response shape"
+            )
+        # ตัวแปลเติม `{"type": "text", "text": ""}` ให้เมื่อโมเดลไม่ได้ตอบอะไร — รูปร่างถูก
+        # แต่ Claude Code ได้คำตอบว่าง · ต้องมีข้อความจริงหรือ tool call จริงอย่างน้อยหนึ่งอัน
+        said_something = any(
+            isinstance(block, dict)
+            and (block.get("type") == "tool_use" or (block.get("text") or "").strip())
+            for block in body["content"]
+        )
+        if not said_something:
+            return TestResult(
+                "MODEL-009", "claude_code", "fail", elapsed,
+                f"empty reply (stop_reason={body.get('stop_reason')}) - "
+                "a reasoning model can spend the whole max_tokens thinking",
             )
         if not has_tools:
             return TestResult(

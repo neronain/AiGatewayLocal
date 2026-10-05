@@ -148,3 +148,147 @@ def test_a_failed_measurement_is_reported_not_swallowed():
 
     src = inspect.getsource(modeltest.probe_backend)
     assert "วัดอัตราไม่ได้" in src
+
+
+# ── ทุกที่ที่ประมาณ token ต้องใช้อัตราของโมเดลตัวที่กำลังถูกถามถึง ───────────────
+#
+# 0667ea7 ให้ด่าน context กับยอดโควตาใช้ `wide_chars_per_token` ของโมเดลแล้ว · ตรวจ
+# 2026-10-05 พบว่ายังเหลือสี่จุดที่ใช้ค่าสำรองกลาง (1.6) — กฎ routing · `model="auto"` ·
+# ตอนจบสตรีมของ /v1/messages · /v1/messages/count_tokens · ผลคือระบบเดียวกันนับคำขอ
+# เดียวกันได้สองขนาด แล้วสองส่วนตัดสินสวนกัน
+def _thai(chars: int) -> str:
+    return "ก" * chars
+
+
+def _registry(**models):
+    """ทะเบียนจากโมเดลจริงใน config/ ที่แก้ limits / อัตรา / routing ตามที่เทสต้องการ"""
+    from pathlib import Path
+
+    from app.registry.schema import ModelDefinition
+    from app.registry.store import RegistrySnapshot, load_snapshot
+
+    base = load_snapshot(Path(__file__).resolve().parent.parent / "config")
+    built = {}
+    for alias, spec in models.items():
+        data = base.get("coding").model_dump(mode="python")
+        data["metadata"] = {**data["metadata"], "alias": alias}
+        data["spec"] = {**data["spec"], "routing": {}, **spec}
+        built[alias] = ModelDefinition.model_validate(data)
+    return RegistrySnapshot(gateway=base.gateway, models=built)
+
+
+def _profile_of(text: str):
+    from app.core.multimodal import profile_openai_request
+    from app.registry.schema import VisionPolicy
+
+    return profile_openai_request(
+        {"model": "x", "messages": [{"role": "user", "content": text}]}, VisionPolicy())
+
+
+def test_overflow_is_not_triggered_for_a_prompt_the_model_itself_can_hold():
+    """ไทย 100,000 อักขระบนโมเดลที่วัดได้ 3.86 = ~26k token — พอสำหรับหน้าต่าง 32,768
+
+    เดิมกฎ routing นับด้วย 1.6 ได้ 62,500 แล้วส่งคำขอไปตัวใหญ่ ทั้งที่ด่าน context (ซึ่งใช้
+    3.86) บอกว่าตัวเล็กรับได้ — ตัวใหญ่ถูกกินช่องโดยงานที่ไม่จำเป็นต้องใช้มัน
+    """
+    from app.core.rules import resolve_route
+
+    snapshot = _registry(
+        good={"limits": {"context_tokens": 32768}, "wide_chars_per_token": 3.86,
+              "routing": {"overflow": "wide"}},
+        wide={"limits": {"context_tokens": 262144}},
+    )
+    decision = resolve_route(
+        snapshot, snapshot.get("good"), _profile_of(_thai(100_000)), "openai")
+    assert decision.model.alias == "good", decision
+
+
+def test_overflow_is_triggered_when_the_models_own_tokenizer_makes_the_prompt_too_long():
+    """ทิศที่เจ็บกว่า: ไทย 50,000 อักขระบนโมเดลที่ tokenizer ฉีก (1.0) = 50k token
+
+    กฎ routing เคยนับด้วย 1.6 ได้ 31,250 "พอดีหน้าต่าง 32,768" จึงไม่ส่งต่อ — แล้วด่าน
+    context ซึ่งนับด้วย 1.0 ก็ตอบ 400 ให้คำขอที่มีโมเดลกว้างกว่ารอรับอยู่
+    """
+    from app.core.capability import validate_context_budget
+    from app.core.errors import GatewayError
+    from app.core.rules import resolve_route
+
+    snapshot = _registry(
+        torn={"limits": {"context_tokens": 32768}, "wide_chars_per_token": 1.0,
+              "routing": {"overflow": "wide"}},
+        wide={"limits": {"context_tokens": 262144}, "wide_chars_per_token": 1.0},
+    )
+    profile = _profile_of(_thai(50_000))
+    with pytest.raises(GatewayError):
+        validate_context_budget(snapshot.get("torn"), profile, None)   # ด่านจริงปฏิเสธตัวเล็ก
+
+    decision = resolve_route(snapshot, snapshot.get("torn"), profile, "openai")
+    assert decision.model.alias == "wide", "กฎต้องเห็นขนาดเดียวกับด่าน แล้วส่งต่อก่อนถึงด่าน"
+
+
+def test_auto_keeps_a_model_whose_tokenizer_makes_the_prompt_fit():
+    from app.core import auto
+    from app.core.perf import PerfStore
+
+    snapshot = _registry(
+        good={"limits": {"context_tokens": 32768}, "wide_chars_per_token": 3.86})
+    choice = auto.choose(list(snapshot.models.values()), profile=_profile_of(_thai(100_000)),
+                         protocol="openai", perf=PerfStore())
+    assert choice is not None and choice.model.alias == "good"
+
+
+def test_auto_never_picks_a_model_the_context_gate_will_then_refuse():
+    """`auto` เลือกตัวที่ด่านถัดไปปฏิเสธ = ผู้ใช้ได้ 400 จากคำขอที่ไม่ได้ระบุโมเดลด้วยซ้ำ"""
+    from app.core import auto
+    from app.core.capability import validate_context_budget
+    from app.core.perf import PerfStore
+
+    snapshot = _registry(
+        torn={"limits": {"context_tokens": 32768}, "wide_chars_per_token": 1.0},
+        wide={"limits": {"context_tokens": 262144}, "wide_chars_per_token": 1.0},
+    )
+    profile = _profile_of(_thai(50_000))
+    choice = auto.choose(list(snapshot.models.values()), profile=profile,
+                         protocol="openai", perf=PerfStore())
+    assert choice.ranked == ("wide",), choice
+    validate_context_budget(choice.model, profile, None)        # ต้องไม่โยน
+
+
+CODING = "http://dgx03:8000"       # coding · wide_chars_per_token 1.89 · แปล /v1/messages
+PROMPT = _thai(18_900)             # 10,000 token ที่อัตรา 1.89 · 11,812 ที่ค่าสำรอง 1.6
+
+
+def _auth(key: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {key}"}
+
+
+def test_count_tokens_answers_with_the_models_own_rate(client, member_key):
+    """Claude Code ใช้ตัวเลขนี้ตัดสินว่าจะย่อบทสนทนาเมื่อไร — ต้องตรงกับที่ด่าน context นับ"""
+    answer = client.post("/v1/messages/count_tokens", headers=_auth(member_key), json={
+        "model": "coding", "messages": [{"role": "user", "content": PROMPT}]})
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["input_tokens"] == 10_000
+
+
+def test_an_anthropic_stream_without_backend_usage_is_billed_at_the_models_rate(
+        client, member_key):
+    """backend ไม่รายงาน usage ในสตรีม → เกตเวย์ประมาณเอง · ต้องประมาณด้วยอัตราของโมเดล
+
+    ทางไม่สตรีมกับอีกสอง surface ทำถูกอยู่แล้ว — เหลือตอนจบสตรีมของ /v1/messages ที่เดียว
+    ที่ยังใช้ 1.6 ผู้ใช้ภาษาไทยบน Claude Code จึงถูกหักโควตาเกิน 18% เฉพาะเมื่อสตรีม
+    """
+    import respx
+
+    stream = b'data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
+    with respx.mock:
+        respx.post(f"{CODING}/v1/chat/completions").mock(return_value=httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=stream))
+        with client.stream("POST", "/v1/messages", headers=_auth(member_key), json={
+                "model": "coding", "max_tokens": 16, "stream": True,
+                "messages": [{"role": "user", "content": PROMPT}]}) as reply:
+            assert reply.status_code == 200
+            reply.read()
+
+    rows = client.get("/admin/usage/quota", headers=_auth(client.admin_key)).json()["data"]
+    used = next(row["used"] for row in rows if row["used"]["requests"])
+    assert used["input_tokens"] == 10_000, used

@@ -75,8 +75,19 @@ def _can_serve(
     return True
 
 
-def _fits(model: ModelDefinition, prompt_tokens: int) -> bool:
-    return prompt_tokens <= model.spec.limits.context_tokens * CONTEXT_TOLERANCE
+def _prompt_tokens(model: ModelDefinition, profile: RequestProfile) -> int:
+    """ขนาด prompt *ตามที่โมเดลตัวนี้จะนับ* — ด้วยอัตรา tokenizer ของมันเอง
+
+    ต้องเป็นตัวเลขเดียวกับที่ `validate_context_budget` ใช้ตัดสิน · เดิมที่นี่ใช้ค่าสำรองกลาง
+    (1.6) กับทุกโมเดล กฎ routing กับด่าน context จึงเห็นคำขอเดียวกันเป็นสองขนาด: ข้อความไทย
+    บนโมเดลที่วัดได้ 3.86 ถูกมองว่า "ล้น" แล้วส่งไปตัวใหญ่ ทั้งที่ด่านจริงบอกว่าพอ
+    """
+    return estimate_prompt_tokens(profile, model.spec.wide_chars_per_token)
+
+
+def _fits(model: ModelDefinition, profile: RequestProfile) -> bool:
+    limit = model.spec.limits.context_tokens * CONTEXT_TOLERANCE
+    return _prompt_tokens(model, profile) <= limit
 
 
 def resolve_route(
@@ -91,7 +102,6 @@ def resolve_route(
     Falls back to the requested model whenever a rule cannot be honoured, so a
     misconfigured target degrades to today's behaviour instead of an outage.
     """
-    prompt_tokens = estimate_prompt_tokens(profile)
     current = model
     visited = {model.alias}
     hops: list[str] = []
@@ -106,7 +116,7 @@ def resolve_route(
         if (
             small
             and not hops  # only from the alias the member asked for
-            and prompt_tokens < small.under_tokens
+            and _prompt_tokens(current, profile) < small.under_tokens
             and (
                 small.max_output_tokens is None
                 or requested_max_tokens is None
@@ -114,7 +124,7 @@ def resolve_route(
             )
         ):
             target_alias, why = small.target, "small-prompt"
-        elif rules.overflow and not _fits(current, prompt_tokens):
+        elif rules.overflow and not _fits(current, profile):
             target_alias, why = rules.overflow, "overflow"
 
         if target_alias is None or target_alias in visited:
@@ -139,11 +149,11 @@ def resolve_route(
 
         # An overflow target that is no wider than what we have solves nothing and
         # would only move the 400 somewhere more confusing.
-        if why == "overflow" and not _fits(candidate, prompt_tokens):
+        if why == "overflow" and not _fits(candidate, profile):
             log.warning(
                 "overflow target '%s' is too small for ~%d tokens - keeping '%s'",
                 target_alias,
-                prompt_tokens,
+                _prompt_tokens(candidate, profile),
                 current.alias,
             )
             break
@@ -156,12 +166,24 @@ def resolve_route(
     return RouteDecision(model=current, reason=reason, hops=tuple(hops))
 
 
-def fallback_models(snapshot, model: ModelDefinition) -> list[ModelDefinition]:
+def fallback_models(
+    snapshot,
+    model: ModelDefinition,
+    profile: RequestProfile | None = None,
+    protocol: str | None = None,
+) -> list[ModelDefinition]:
     """Other models to try when no endpoint of `model` can take the request.
 
     Endpoint failover already covers "this machine is down". This covers "every
     machine behind this alias is down", which today is a 503 even when an
     equivalent model is idle on another node.
+
+    ให้ `profile` กับ `protocol` มาด้วย แล้วตัวสำรองต้องผ่าน **ด่านชุดเดียวกับที่ตัวแรก
+    ผ่านมา** — surface · capability · ขนาด context · เดิมด่านพวกนี้ตรวจกับโมเดลที่ขอครั้ง
+    เดียวตอนต้นคำขอ ตัวสำรองไม่เคยถูกตรวจเลย: `coding` (262,144) ล้มไปตัว 131,072 พร้อม
+    prompt 200k แล้วไปถูกปฏิเสธที่ backend · คำขอที่มี tools ล้มไปโมเดลที่ไม่มี tools ก็ถูก
+    ส่งไปทั้งอย่างนั้น · ตัวที่รับไม่ได้ถูกข้าม ผู้เรียกจึงได้ความล้มเหลวเดิมของโมเดลที่ขอ
+    (เครื่องล่ม/เต็ม) ซึ่งเป็นเรื่องจริง ไม่ใช่ 400 จากโมเดลที่เขาไม่ได้เลือก
     """
     out: list[ModelDefinition] = []
     seen = {model.alias}
@@ -170,8 +192,19 @@ def fallback_models(snapshot, model: ModelDefinition) -> list[ModelDefinition]:
             continue
         seen.add(alias)
         candidate = snapshot.get(alias)
-        if candidate is not None:
-            out.append(candidate)
+        if candidate is None:
+            continue
+        if profile is not None and protocol is not None and not (
+            _can_serve(candidate, profile, protocol) and _fits(candidate, profile)
+        ):
+            log.warning(
+                "fallback '%s' of '%s' cannot take this request (surface, capability "
+                "or context) - skipped",
+                alias,
+                model.alias,
+            )
+            continue
+        out.append(candidate)
     return out
 
 

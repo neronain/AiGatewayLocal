@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from app.core.capability import endpoint_supports
 from app.core.multimodal import RequestProfile
 from app.core.perf import ModelPerf, PerfStore
-from app.core.tokens import estimate_prompt_tokens  # noqa: F401  (ผู้เรียกส่งค่ามาให้)
+from app.core.tokens import estimate_prompt_tokens
 from app.registry.schema import ModelDefinition
 
 log = logging.getLogger(__name__)
@@ -52,8 +52,15 @@ def _serves(model: ModelDefinition, profile: RequestProfile, protocol: str) -> b
     return any(endpoint_supports(e, profile, protocol) for e in model.spec.endpoints)
 
 
-def _fits(model: ModelDefinition, prompt_tokens: int) -> bool:
+def _fits(model: ModelDefinition, profile: RequestProfile) -> bool:
+    """นับด้วยอัตรา tokenizer ของโมเดลตัวนั้น — ตัวเลขเดียวกับที่ด่าน context จะใช้ตัดสิน
+
+    เดิมผู้เรียกประมาณครั้งเดียวด้วยค่าสำรองกลาง (1.6) แล้วส่งตัวเลขเดียวมาเทียบกับทุกโมเดล ·
+    ภาษาไทยต่างกันได้ 2.1 เท่าระหว่างโมเดล: ตัวที่ tokenizer ดีถูกตัดทิ้งทั้งที่รับได้ และตัวที่
+    tokenizer ฉีกถูกเลือกทั้งที่ด่านถัดไปจะปฏิเสธ — `auto` จึงตอบ 400 กับคำขอที่มีโมเดลรับไหว
+    """
     limit = model.spec.limits.context_tokens or 0
+    prompt_tokens = estimate_prompt_tokens(profile, model.spec.wide_chars_per_token)
     return not limit or prompt_tokens + _HEADROOM_TOKENS <= limit
 
 
@@ -62,12 +69,11 @@ def candidates(
     *,
     profile: RequestProfile,
     protocol: str,
-    prompt_tokens: int,
 ) -> list[ModelDefinition]:
     """โมเดลที่รับคำขอรูปนี้ได้จริง — กรองด้วยข้อเท็จจริง ไม่ใช่ความชอบ"""
     return [
         m for m in models
-        if m.alias != ALIAS and _serves(m, profile, protocol) and _fits(m, prompt_tokens)
+        if m.alias != ALIAS and _serves(m, profile, protocol) and _fits(m, profile)
     ]
 
 
@@ -87,7 +93,6 @@ def choose(
     *,
     profile: RequestProfile,
     protocol: str,
-    prompt_tokens: int,
     perf: PerfStore,
     strategy: str = "fastest",
 ) -> AutoChoice | None:
@@ -95,7 +100,7 @@ def choose(
 
     `models` ต้องถูกกรองสิทธิ์มาแล้วโดยผู้เรียก — โมดูลนี้ไม่รู้จักสมาชิกและไม่ควรรู้
     """
-    pool = candidates(models, profile=profile, protocol=protocol, prompt_tokens=prompt_tokens)
+    pool = candidates(models, profile=profile, protocol=protocol)
     if not pool:
         return None
 
@@ -117,7 +122,6 @@ def explain(
     *,
     profile: RequestProfile,
     protocol: str,
-    prompt_tokens: int,
     perf: PerfStore,
     strategy: str = "fastest",
 ) -> list[dict]:
@@ -125,8 +129,7 @@ def explain(
 
     ใช้ตัวจัดอันดับตัวเดียวกับ `choose` เพื่อไม่ให้คำอธิบายกับของจริงเพี้ยนจากกัน
     """
-    choice = choose(models, profile=profile, protocol=protocol,
-                    prompt_tokens=prompt_tokens, perf=perf, strategy=strategy)
+    choice = choose(models, profile=profile, protocol=protocol, perf=perf, strategy=strategy)
     if choice is None:
         return []
     by_alias = {m.alias: m for m in models}

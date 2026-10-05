@@ -193,6 +193,14 @@ curl -X POST $GW/v1/chat/completions \
 `accounting` is `upstream` (backend-reported) or `estimated` — see
 [PRD §8.3](PRD.md#fr-37--visual-token-accounting--p1).
 
+**`max_tokens`** — the model's `limits.max_output_tokens` (shown as *Max output*
+in the catalogue) is sent to the backend on every request. Name a smaller
+`max_tokens` (or `max_completion_tokens`) and you get that; name a larger one,
+or none at all, and you get the ceiling — reduced further when the prompt
+leaves less room than that in the context window. `/v1/messages` and
+`/v1/responses` behave the same way. For a reasoning model the tokens it spends
+thinking come out of the same allowance.
+
 **Streaming** — set `"stream": true`. Standard OpenAI SSE. The gateway always
 asks the backend for a final usage chunk so accounting stays accurate; if you did
 not set `stream_options.include_usage`, that chunk is stripped before it reaches
@@ -270,8 +278,23 @@ message_start → content_block_start → content_block_delta* → content_block
               → message_delta → message_stop
 ```
 
-Anthropic-only features with no OpenAI equivalent (extended thinking, citations,
-cache control) are dropped when translating and never fabricated on the way back.
+Anthropic-only features with no OpenAI equivalent (citations, cache control) are
+dropped when translating and never fabricated on the way back.
+
+**Thinking.** A reasoning model behind an OpenAI backend returns its chain of
+thought in `reasoning_content` (`reasoning` on newer vLLM). When the request
+enables thinking — `"thinking": {"type": "enabled", ...}`, which Claude Code
+sends on its own — the gateway returns it as `thinking` blocks ahead of the
+text, and as `thinking_delta` events when streaming. Without that field no
+thinking block is returned, as with Anthropic's own API, so
+`content[0].text` keeps working for callers that never asked. `signature` is
+always `""`: there is no Anthropic signature to give, and the gateway does not
+invent one. `thinking` blocks sent back in a later request are dropped.
+
+This matters most when a reply runs out of `max_tokens` while still thinking:
+the answer is `stop_reason: "max_tokens"` with a thinking block and no text. A
+caller that did not ask for thinking sees an empty text block — raise
+`max_tokens` (and the model's `limits.max_output_tokens`).
 
 `x-litegate-protocol` tells you which path served the request:
 `anthropic-native` or `anthropic-via-openai`.
@@ -424,7 +447,8 @@ machines serving the same alias still happens.
 ### `POST /v1/messages/count_tokens`
 
 Pre-flight estimate. Uses the gateway's estimator, not the model's tokenizer —
-treat it as approximate.
+treat it as approximate. It is the same estimate, at the model's own
+`wide_chars_per_token`, that the context check applies to the real request.
 
 ```json
 { "input_tokens": 1465,
@@ -1002,7 +1026,7 @@ the schema has no column for it (PRD §11).
 | `GET /healthz` | none | Liveness. Always 200 while the process runs |
 | `GET /readyz` | none | Readiness. 503 until the registry is loaded, the DB answers, and ≥1 backend is healthy |
 | `GET /metrics` | network-restricted | Prometheus |
-| `GET /v1/health/endpoints` | admin | Per-endpoint health, in-flight, failure counts |
+| `GET /v1/health/endpoints` | admin | Per-endpoint health, in-flight, failure counts. `in_flight` is the count on the **backend**; `shares_slots_with` lists the other `alias:endpoint` entries on the same server and upstream model, which show the same number |
 | `POST /v1/health/probe` | admin | Probe every backend immediately |
 
 ```json

@@ -459,6 +459,22 @@ class QuotaDefaults(BaseModel):
 
 
 class RateLimitDefaults(BaseModel):
+    """**รับไว้เพื่อให้ไฟล์เก่าโหลดได้ — ไม่มีอะไรบังคับใช้ค่าในนี้ และไม่เคยมี**
+
+    `gateway.yaml` ที่แจกไปกับทุกการติดตั้งเคยมีบล็อก `rate_limit_defaults` (60 คำขอ/นาที ·
+    4 คำขอพร้อมกันต่อคน) ซึ่งอ่านแล้วเชื่อว่าเกตเวย์คุมให้ · ตรวจ 2026-10-05: ไม่มีโค้ดบรรทัด
+    ไหนอ่านมันเลย
+
+    เลือก **เลิกประกาศ** ไม่ใช่เริ่มบังคับ: เปิดบังคับตอนนี้คือเกตเวย์ที่อัปเดตแล้วเริ่มตอบ 429
+    ด้วยตัวเลขตัวอย่างที่ไม่มีใครเลือก (ดูเหตุผลเดียวกันที่ `ResolvedLimits` ใน core/quota.py:
+    เพดานถี่ ๆ ต้องเป็นสิ่งที่มีคนตั้ง) · ลบฟิลด์ทิ้งก็ไม่ได้ — `extra="forbid"` จะทำให้
+    gateway.yaml ที่ยังมีบล็อกนี้โหลดไม่ผ่านทั้งไฟล์ แล้วนโยบายภาพกับโควตากลับไปเป็นค่าตั้งต้น
+
+    ของที่บังคับจริง: ต่อคน/กลุ่ม/key = quota policy (`max_requests_per_minute`,
+    `max_tokens_per_minute`) · ต่อ backend = `max_concurrency` ของ endpoint ·
+    `load_snapshot` เตือนใน log เมื่อไฟล์ยังมีบล็อกนี้
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     requests_per_minute: int = Field(default=60, ge=1)

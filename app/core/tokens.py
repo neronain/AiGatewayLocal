@@ -52,7 +52,8 @@ WIDE_CHARS_PER_TOKEN = 1.6     # นอก ASCII — ไทย จีน ญี�
 # บนโมเดลกลุ่มหลังจึงชนเพดานที่ ~42% ของความจุจริง และเผาโควตาเร็วกว่าที่ควร 2.4 เท่า
 #
 # ตั้งค่าได้ที่ `spec.wide_chars_per_token` ใน YAML ของโมเดล · ไม่ตั้ง = ใช้ค่าสำรอง
-# วัดเองได้ด้วย `lg-measure-tokens` หรือดูวิธีใน docs/OPERATIONS.md
+# ปุ่ม Detect ในคอนโซล (`POST /admin/models/detect`) วัดจาก tokenizer ของ backend ให้เอง
+# ด้วย `app.core.modeltest.measure_wide_rate` · วัดมือได้ตาม docs/DEPLOYMENT.md §4.1b
 
 
 def wide_rate(rate: float | None) -> float:

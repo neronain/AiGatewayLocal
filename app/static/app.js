@@ -1274,6 +1274,14 @@ document.addEventListener('change', (event) => {
   if (select) applyProviderDefaults(select);
 });
 
+// `in_flight` เป็นยอดของ backend ทั้งตัว — alias สองตัวที่ชี้เครื่องและโมเดลเดียวกันใช้ช่อง
+// ชุดเดียวกัน จึงขึ้นเลขเดียวกันพร้อมกันสองแถว · ไม่บอกว่าแชร์กัน คนอ่านจะนับเป็นสองคำขอ
+// และคนที่ปรับ Concurrent ของ alias หนึ่งจะไม่รู้ว่าอีกตัวกินช่องเดียวกันอยู่
+function sharedSlotsHint(health) {
+  const others = (health && health.shares_slots_with) || [];
+  return others.length ? `ใช้ช่องร่วมกับ ${others.join(', ')}` : '';
+}
+
 function renderHealth(report) {
   const rows = Object.values(report);
   $('health').innerHTML = `
@@ -1282,7 +1290,8 @@ function renderHealth(report) {
     ${rows.map((r) => `<tr>
       <td><code>${esc(r.model)}</code></td><td>${esc(r.endpoint)}</td><td>${esc(r.server_type)}</td>
       <td><span class="pill ${r.healthy ? 'ok' : 'err'}">${r.healthy ? 'healthy' : 'down'}</span></td>
-      <td class="num">${r.in_flight}/${r.max_concurrency}</td>
+      <td class="num">${r.in_flight}/${r.max_concurrency}${
+        sharedSlotsHint(r) ? `<div class="hint">${esc(sharedSlotsHint(r))}</div>` : ''}</td>
       <td class="num">${num(r.total_requests)}</td>
       <td class="empty">${esc((r.last_error || '').slice(0, 70))}</td></tr>`).join('')}`;
 }
@@ -1581,6 +1590,7 @@ async function loadModels() {
         <input type="number" min="1" max="4096" value="${esc(e.max_concurrency)}"
           data-tune="max_concurrency" data-model="${esc(m.alias)}" data-ep="${esc(e.name)}"></label>
       ${e.health?.in_flight ? `<span class="hint">กำลังวิ่ง ${esc(e.health.in_flight)}</span>` : ''}
+      ${sharedSlotsHint(e.health) ? `<span class="hint">${esc(sharedSlotsHint(e.health))}</span>` : ''}
       <button class="ghost small" data-ep-model="${esc(m.alias)}" data-ep="${esc(e.name)}"
         data-ep-to="${e.enabled === false ? '1' : '0'}"
         >${e.enabled === false ? 'เปิดเครื่องนี้' : 'ปิดเครื่องนี้'}</button>

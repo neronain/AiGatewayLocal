@@ -3238,14 +3238,8 @@ async def auto_preview(
         requires_tools=tools,
         text_chars=prompt_tokens * 4,
     )
-    rows = auto_mod.explain(
-        allowed, profile=profile, protocol=protocol,
-        prompt_tokens=prompt_tokens, perf=state.perf,
-    )
-    choice = auto_mod.choose(
-        allowed, profile=profile, protocol=protocol,
-        prompt_tokens=prompt_tokens, perf=state.perf,
-    )
+    rows = auto_mod.explain(allowed, profile=profile, protocol=protocol, perf=state.perf)
+    choice = auto_mod.choose(allowed, profile=profile, protocol=protocol, perf=state.perf)
     return {
         "asked": {"prompt_tokens": prompt_tokens, "vision": vision,
                   "tools": tools, "protocol": protocol},

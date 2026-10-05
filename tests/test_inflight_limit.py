@@ -143,5 +143,4 @@ async def test_router_frees_the_slot_after_release():
     await router.release("m", endpoint, "first")
     await router.acquire("m", endpoint, "second")   # ต้องไม่โยน
     # ตัวเลขที่โชว์บนหน้า admin ต้องตามความจริงด้วย ไม่ใช่ค้างหรือติดลบ
-    from app.core.routing import endpoint_key
-    assert router._state.get(endpoint_key("m", endpoint)).in_flight == 1
+    assert router.in_flight("m", endpoint) == 1

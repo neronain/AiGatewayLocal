@@ -19,12 +19,12 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from app.core.capability import endpoint_supports
+from app.core.capability import endpoint_supports, upstream_model_for
 from app.core.errors import ErrorCode, GatewayError
 from app.core.inflight import InFlightLimiter, LocalInFlightLimiter
 from app.core.multimodal import RequestProfile
 from app.registry.schema import Endpoint, ModelDefinition
-from app.registry.store import RegistryStore, endpoint_key
+from app.registry.store import RegistryStore, endpoint_key, slot_key
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +62,6 @@ class EndpointHealth:
     consecutive_successes: int = 0
     last_error: str = ""
     last_checked_at: float = 0.0
-    in_flight: int = 0
     total_requests: int = 0
     total_failures: int = 0
 
@@ -84,6 +83,13 @@ class Router:
         self._limiter: InFlightLimiter = LocalInFlightLimiter()
         self._registry = registry
         self._state = EndpointState()
+        # คำขอที่กำลังวิ่งต่อ *backend* (คีย์ = slot_key) — สุขภาพเป็นเรื่องของ alias:endpoint
+        # แต่ช่องเป็นของ process ที่เสิร์ฟ สอง alias บนเครื่องเดียวกันต้องเห็นตัวเลขเดียวกัน
+        self._in_flight: dict[str, int] = {}
+        # ใบจองที่ถืออยู่ → คีย์ที่ใช้ตอนจอง · release ต้องคืนที่เดิมเสมอ แม้ทะเบียนจะถูก
+        # แก้ระหว่างที่คำขอยังวิ่ง (เปลี่ยน base_url/upstream_model แล้วคีย์ที่คำนวณใหม่
+        # ไม่ตรงกับตอนจอง = ตัวนับค้างถาวร และ endpoint นั้น "เต็ม" ไปจนกว่าจะ restart)
+        self._held: dict[tuple[str, str], str] = {}
         self._rr: dict[str, itertools.count] = {}
         self._lock = asyncio.Lock()
         self._health_task: asyncio.Task | None = None
@@ -127,9 +133,7 @@ class Router:
             )
 
         with_capacity = [
-            e
-            for e in candidates
-            if self._state.get(endpoint_key(model.alias, e)).in_flight < e.max_concurrency
+            e for e in candidates if self.in_flight(model.alias, e) < e.max_concurrency
         ]
         if not with_capacity:
             raise GatewayError(
@@ -147,12 +151,8 @@ class Router:
         if len(tier) == 1:
             return tier[0]
         # Prefer the least-loaded endpoint; break ties by weight.
-        least = min(
-            self._state.get(endpoint_key(alias, e)).in_flight for e in tier
-        )
-        least_loaded = [
-            e for e in tier if self._state.get(endpoint_key(alias, e)).in_flight == least
-        ]
+        least = min(self.in_flight(alias, e) for e in tier)
+        least_loaded = [e for e in tier if self.in_flight(alias, e) == least]
         if len(least_loaded) == 1:
             return least_loaded[0]
         population = [e for e in least_loaded for _ in range(e.weight)]
@@ -163,8 +163,29 @@ class Router:
         """สลับไปใช้ตัวนับที่แชร์ข้าม worker — เรียกตอน start ถ้าตั้ง Redis ไว้"""
         self._limiter = limiter
 
+    def _slot(self, alias: str, endpoint: Endpoint) -> str:
+        """คีย์ของช่องบน backend ที่ `alias` ใช้ผ่าน endpoint นี้ (ดู store.slot_key)
+
+        `alias` ต้องเป็นตัวที่ *เสิร์ฟจริง* ไม่ใช่ตัวที่สมาชิกขอ — endpoint เป็นของโมเดลนั้น
+        alias ที่ทะเบียนไม่รู้จักนับแยกตามชื่อเหมือนเดิม ดีกว่าเดาว่ามันแชร์กับใคร
+        """
+        model = self._registry.snapshot.models.get(alias)
+        if model is None or not getattr(endpoint, "base_url", ""):
+            return endpoint_key(alias, endpoint)
+        return slot_key(endpoint, upstream_model_for(model, endpoint))
+
+    def in_flight(self, alias: str, endpoint: Endpoint) -> int:
+        """คำขอที่กำลังวิ่งอยู่บน backend ของ endpoint นี้ — นับรวมทุก alias ที่ใช้เครื่องเดียวกัน
+
+        ตัวเลขใน process นี้เท่านั้น: ใช้เป็นคำใบ้ตอนเลือกทางและแสดงผล · ด่านจริงคือ acquire()
+        """
+        return self._in_flight.get(self._slot(alias, endpoint), 0)
+
     async def acquire(self, alias: str, endpoint: Endpoint, lease: str) -> None:
         """จองช่องหนึ่งช่องบน endpoint นี้ — โยน CONCURRENCY_LIMIT_EXCEEDED เมื่อเต็ม
+
+        `alias` คือโมเดลที่เสิร์ฟจริง และ `lease` ต้องเป็นค่าที่เกตเวย์สร้างเองต่อคำขอ
+        (ดู _RequestContext.lease) ไม่ใช่ `x-request-id` ที่ client เลือกส่งมา
 
         **นี่คือด่านจริง** ส่วนการกรองใน select() เป็นแค่คำใบ้ตอนเลือกทาง
         เพราะระหว่าง select() กับตรงนี้มี `await` คั่นหลายจุด (อ่าน body · resolve
@@ -172,23 +193,32 @@ class Router:
         ก่อนที่ใครจะเพิ่มค่าเป็นตัวแรก · เช็คกับจองต้องเป็นก้อนเดียวที่แบ่งไม่ได้
         และก้อนนั้นต้องอยู่ตรงจุดที่กำลังจะยิง upstream จริง ๆ
         """
-        key = endpoint_key(alias, endpoint)
-        if not await self._limiter.acquire(key, endpoint.max_concurrency, lease):
+        slot = self._slot(alias, endpoint)
+        if not await self._limiter.acquire(slot, endpoint.max_concurrency, lease):
             raise GatewayError(
                 ErrorCode.CONCURRENCY_LIMIT_EXCEEDED,
                 f"All backends for '{alias}' are at capacity. Please retry shortly.",
                 retry_after=5,
                 details={"model": alias},
             )
-        state = self._state.get(key)
-        state.in_flight += 1
-        state.total_requests += 1
+        key = endpoint_key(alias, endpoint)
+        self._held[(lease, key)] = slot
+        self._in_flight[slot] = self._in_flight.get(slot, 0) + 1
+        self._state.get(key).total_requests += 1
 
     async def release(self, alias: str, endpoint: Endpoint, lease: str) -> None:
-        key = endpoint_key(alias, endpoint)
-        await self._limiter.release(key, lease)
-        state = self._state.get(key)
-        state.in_flight = max(state.in_flight - 1, 0)
+        """คืนช่อง — เรียกซ้ำได้ และคืนที่คีย์เดิมที่ใช้ตอนจองเสมอ"""
+        slot = self._held.pop((lease, endpoint_key(alias, endpoint)), None)
+        if slot is None:
+            # ไม่เคยจองสำเร็จ หรือคืนไปแล้ว — ห้ามลดตัวนับ ไม่งั้นเป็นการคืนช่องของคนอื่น
+            await self._limiter.release(self._slot(alias, endpoint), lease)
+            return
+        await self._limiter.release(slot, lease)
+        remaining = self._in_flight.get(slot, 0) - 1
+        if remaining > 0:
+            self._in_flight[slot] = remaining
+        else:
+            self._in_flight.pop(slot, None)
 
     def report_success(self, alias: str, endpoint: Endpoint) -> None:
         gateway = self._registry.snapshot.gateway
@@ -225,17 +255,27 @@ class Router:
 
     def health_report(self) -> dict[str, dict]:
         report: dict[str, dict] = {}
+        # ใครใช้ช่องชุดเดียวกันบ้าง — `in_flight` เป็นยอดของ backend ทั้งตัว สอง alias ที่ชี้
+        # เครื่องเดียวกันจึงขึ้นเลขเดียวกันพร้อมกัน ถ้าไม่บอกว่าแชร์กัน คนอ่านจะนับเป็นสองคำขอ
+        sharing: dict[str, list[str]] = {}
+        for alias, model in self._registry.snapshot.models.items():
+            for endpoint in model.spec.endpoints:
+                sharing.setdefault(self._slot(alias, endpoint), []).append(
+                    endpoint_key(alias, endpoint)
+                )
         for alias, model in self._registry.snapshot.models.items():
             for endpoint in model.spec.endpoints:
                 key = endpoint_key(alias, endpoint)
                 state = self._state.get(key)
+                slot = self._slot(alias, endpoint)
                 report[key] = {
                     "model": alias,
                     "endpoint": endpoint.name,
                     "server_type": endpoint.server_type.value,
                     "base_url": endpoint.normalized_base_url,
                     "healthy": state.healthy,
-                    "in_flight": state.in_flight,
+                    "in_flight": self._in_flight.get(slot, 0),
+                    "shares_slots_with": sorted(k for k in sharing[slot] if k != key),
                     "max_concurrency": endpoint.max_concurrency,
                     "total_requests": state.total_requests,
                     "total_failures": state.total_failures,

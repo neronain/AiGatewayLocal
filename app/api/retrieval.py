@@ -235,16 +235,16 @@ async def _forward(
     ยังไม่มีอะไรถึงผู้เรียกตรงนี้ การลองใหม่จึงมองไม่เห็นจากฝั่งเขา — เหมือน
     `_complete_chat` ทุกอย่าง ต่างแค่ว่าเมื่อเครื่องหมด จะไม่ข้ามไปโมเดลอื่น
     """
-    state, alias = ctx.state, ctx.requested_alias
+    state = ctx.state
 
     while True:
-        endpoint = ctx.endpoint
+        endpoint, served = ctx.endpoint, ctx.model.alias
         payload, headers = build(endpoint)
-        await state.router.acquire(alias, endpoint, ctx.request_id)
+        await state.router.acquire(served, endpoint, ctx.lease)
         try:
             response = await upstream.post_json(endpoint, upstream_path, payload, headers)
         except GatewayError as exc:
-            state.router.report_failure(alias, endpoint, exc.message)
+            state.router.report_failure(served, endpoint, exc.message)
             if exc.code in RETRYABLE_ERRORS and (nxt := ctx.another_endpoint()):
                 ctx.retarget(nxt)
                 continue
@@ -256,7 +256,7 @@ async def _forward(
             )
             raise
         finally:
-            await state.router.release(alias, endpoint, ctx.request_id)
+            await state.router.release(served, endpoint, ctx.lease)
 
         if response.status_code >= 400:
             # ข้อความนี้ถูกส่ง *กลับให้ผู้เรียก* ใน details.upstream_detail (ตัดที่ 500
@@ -273,7 +273,7 @@ async def _forward(
             # · ถ้าวันหนึ่งตัดสินใจปิด ต้องปิดทั้งสองทางพร้อมกัน และจุดของเส้นทางนี้คือ
             # ส่ง "" แทน body_text ตรงบรรทัดถัดไป
             body_text = response.text[:2000]
-            state.router.report_http_error(alias, endpoint, response.status_code)
+            state.router.report_http_error(served, endpoint, response.status_code)
             if is_retryable_status(response.status_code) and (nxt := ctx.another_endpoint()):
                 ctx.retarget(nxt)
                 continue
@@ -286,7 +286,7 @@ async def _forward(
             )
             raise error
 
-        state.router.report_success(alias, endpoint)
+        state.router.report_success(served, endpoint)
         break
 
     try:

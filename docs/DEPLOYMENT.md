@@ -992,10 +992,67 @@ requests the backend really serves at once (llama.cpp slots, TensorFold
 below that, extra requests queue inside the backend where the gateway cannot
 see them.
 
+**Slots belong to the backend, not to the alias.** The in-flight count is kept
+per *server + upstream model name*, so:
+
+- Traffic that a routing rule or a fallback moved to another model is counted
+  on the model that serves it. (It used to be counted under the alias the
+  member asked for, which gave a 1-slot backend a second counter.)
+- Two aliases pointing at the same `base_url` with the same `upstream_model`
+  share one count. The health table says so (`shares_slots_with`, shown as
+  "ใช้ช่องร่วมกับ …"). `http://h:8000`, `http://h:8000/` and
+  `http://h:8000/v1` are the same server.
+- Each alias still applies its own `max_concurrency` to that shared count.
+  An alias with a lower number is told to wait first, which is a way to keep
+  slots free for another alias on purpose.
+- The same server with a **different** `upstream_model` is counted separately.
+  One URL can serve several models (Ollama, llama-swap, a hosted provider);
+  sharing by URL alone would make every alias of one provider compete for a
+  single limit. The cost: a llama.cpp server ignores the model name, so two
+  aliases that call it by different names are *not* shared — give them the
+  same `upstream_model`, which is what **Detect** fills in anyway.
+
+`limits.max_output_tokens` is a ceiling on every route. The gateway sends it
+as `max_tokens` whether or not the client named one (and clamps a larger
+request to it), so a client that omits `max_tokens` cannot make the backend
+write until the context is full. **For a reasoning model the ceiling includes
+the tokens it spends thinking** — set it high enough for both, or replies come
+back empty with `finish_reason: "length"`. MODEL-001 in the test suite fails
+on exactly that.
+
 What the gateway checks is an estimate — it does not run the model's
 tokenizer — so the backend stays the final judge. When a backend refuses a
 prompt for length, the client gets `400 CONTEXT_LENGTH_EXCEEDED` with the
 backend's own numbers, and the endpoint is not counted as failing.
+
+### 4.1b The tokenizer rate — `wide_chars_per_token`
+
+The estimate counts ASCII letters at 4 characters per token and everything
+outside ASCII (Thai, CJK, emoji) at `spec.wide_chars_per_token`. Unset, that is
+1.6 — a fallback, not a fact: measured on one fleet, Thai ranges from 1.80 to
+3.86 characters per token between models. The number decides the context
+check, routing rules (`overflow`, `small_prompt`), `model: "auto"`,
+`/v1/messages/count_tokens` and what is charged to quota when a backend
+reports no usage. Too low over-counts (people hit the context limit early and
+are billed too much); too high under-counts, which is a quota hole.
+
+**Detect** measures it for you by calling the backend's `/tokenize`. To measure
+by hand, tokenize a long passage in the language your users write and divide:
+
+```bash
+TEXT='สวัสดีครับ วันนี้อากาศดีมาก ระบบแจ้งว่าไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้'
+# vLLM
+curl -s $BACKEND/tokenize -H 'Content-Type: application/json' \
+  -d "{\"model\":\"$MODEL\",\"prompt\":\"$TEXT\"}" | jq .count
+# llama.cpp
+curl -s $BACKEND/tokenize -H 'Content-Type: application/json' \
+  -d "{\"content\":\"$TEXT\"}" | jq '.tokens | length'
+```
+
+`rate = non-ASCII characters ÷ (token count − ASCII characters ÷ 4)`. Subtract
+the ASCII share first, or a mixed passage gives a rate diluted by English.
+Values outside 0.2–20 are refused. **Measure again whenever the model's
+tokenizer changes** (a tokenizer overlay roughly doubles the rate for Thai).
 
 ### 4.2 Swapping the model behind an alias
 

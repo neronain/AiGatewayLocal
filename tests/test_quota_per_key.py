@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 def auth(key: str) -> dict:
     return {"Authorization": f"Bearer {key}"}
@@ -120,6 +122,31 @@ def test_the_key_ceiling_actually_refuses_the_second_call(client):
     ).json()
     assert person["used"]["requests"] < person["limits"]["max_requests"]
     assert first.status_code in (200, 502, 503)
+
+
+@pytest.mark.parametrize("path, body", [
+    ("/v1/chat/completions", {"messages": [{"role": "user", "content": "hi"}]}),
+    ("/v1/messages", {"max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]}),
+    ("/v1/responses", {"input": "hi"}),
+], ids=["chat", "messages", "responses"])
+def test_the_key_ceiling_holds_on_every_surface(client, path, body):
+    """เพดานของ key ต้องนับทุกทางเข้า — /v1/responses เคยตรวจเพดานแต่ไม่เคยบันทึกลงกองของ key
+
+    ทางนั้นสร้าง context ของคำขอโดยไม่ส่ง `key_window` ไปด้วย ตัวนับของ key จึงเป็น 0 ตลอด
+    key ที่ตั้งเพดานไว้ใช้ผ่าน Codex ได้ไม่จำกัด (ตรวจพบ 2026-10-05)
+    """
+    _, key = _member(client, "6488888882")
+    client.post(
+        "/admin/quota-policies",
+        json={"scope": "key", "api_key_id": key["id"], "name": "หนึ่งครั้ง",
+              "window": "day", "max_requests": 1},
+        headers=auth(client.admin_key),
+    )
+    request = {"model": "coding", **body}
+    client.post(path, json=request, headers=auth(key["api_key"]))
+    second = client.post(path, json=request, headers=auth(key["api_key"]))
+    assert second.status_code == 429, second.text
+    assert "API key" in second.text
 
 
 def test_a_key_policy_does_not_change_anybody_elses_quota(client):

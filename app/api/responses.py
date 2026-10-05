@@ -19,7 +19,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Collection
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,7 +27,12 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.openai import _read_json, _RequestContext, _resolve_model
+from app.api.openai import (
+    _read_json,
+    _RequestContext,
+    _resolve_model,
+    select_or_fall_back,
+)
 from app.core import jsonio
 from app.core.auth import Principal, assert_model_permitted, authenticate
 from app.core.capability import (
@@ -40,10 +45,10 @@ from app.core.errors import ErrorCode, GatewayError
 from app.core.jsonio import FastJSONResponse
 from app.core.multimodal import profile_responses_request
 from app.core.routing import RETRYABLE_ERRORS, is_retryable_status
-from app.core.rules import fallback_models, resolve_route
+from app.core.rules import resolve_route
 from app.core.tokens import resolve_usage
 from app.db.session import get_session, release_connection
-from app.registry.schema import Endpoint
+from app.registry.schema import Endpoint, ModelDefinition
 from app.state import AppState, get_state
 from app.upstream import client as upstream
 from app.upstream.protocol.responses import (
@@ -118,9 +123,8 @@ async def create_response(
         model = decision.model
 
     validate_model_capabilities(model, profile)
-    effective_max_tokens = validate_context_budget(
-        model, profile, body.get("max_output_tokens")
-    )
+    # เพดานคำตอบที่ส่งจริงคิดใหม่ต่อโมเดลที่เสิร์ฟ (ctx.output_cap) — ตรงนี้แค่ปฏิเสธ prompt ยาวเกิน
+    validate_context_budget(model, profile, body.get("max_output_tokens"))
 
     limits = await state.quota.resolve_limits(
         session, principal.user_id, principal.workspace_id, alias
@@ -140,35 +144,22 @@ async def create_response(
     # See app/db/session.py: release_connection.
     await release_connection(session)
 
-    def _select(target):
+    def _select(target: ModelDefinition, exclude: Collection[str] = ()) -> Endpoint:
         want_native = any(
             e.enabled and e.protocols.responses for e in target.spec.endpoints
         )
         try:
             return state.router.select(
-                target, profile, "responses" if want_native else "openai"
+                target, profile, "responses" if want_native else "openai", exclude=exclude
             )
         except GatewayError:
             if not want_native:
                 raise
-            return state.router.select(target, profile, "openai")
+            return state.router.select(target, profile, "openai", exclude=exclude)
 
-    try:
-        endpoint = _select(model)
-    except GatewayError:
-        for candidate in fallback_models(state.registry.snapshot, model):
-            try:
-                endpoint = _select(candidate)
-            except GatewayError:
-                continue
-            log.warning(
-                "no endpoint for %s; falling back to %s (request %s)",
-                model.alias, candidate.alias, request_id,
-            )
-            model = candidate
-            break
-        else:
-            raise
+    model, endpoint = select_or_fall_back(
+        state, model, profile, "responses", _select, request_id
+    )
 
     ctx = _RequestContext(
         state=state,
@@ -179,15 +170,19 @@ async def create_response(
         profile=profile,
         limits_window=limits.window,
         rate_limited=limits.rate_limited,
+        key_window=key_limits.window if key_limits else "",
+        key_rate_limited=bool(key_limits and key_limits.rate_limited),
         request_id=request_id,
         started=started,
         client_agent=request.headers.get("user-agent", "")[:128],
         protocol="responses",
+        requested_max_tokens=body.get("max_output_tokens"),
+        select=_select,
     )
 
     def build(target: Endpoint) -> _Attempt:
         active = ctx.model
-        out_cap = min(effective_max_tokens, active.spec.limits.max_output_tokens)
+        out_cap = ctx.output_cap()
         if target.protocols.responses:
             payload = dict(body)
             payload["model"] = upstream_model_for(active, target)
@@ -223,16 +218,16 @@ BuildAttempt = Callable[[Endpoint], _Attempt]
 async def _complete_response(build: BuildAttempt, ctx: _RequestContext) -> FastJSONResponse:
     state, alias = ctx.state, ctx.requested_alias
     while True:
-        endpoint = ctx.endpoint
+        endpoint, served = ctx.endpoint, ctx.model.alias
         attempt = build(endpoint)
         translate = attempt.translate
-        await state.router.acquire(alias, endpoint, ctx.request_id)
+        await state.router.acquire(served, endpoint, ctx.lease)
         try:
             response = await upstream.post_json(
                 endpoint, attempt.path, attempt.payload, attempt.headers
             )
         except GatewayError as exc:
-            state.router.report_failure(alias, endpoint, exc.message)
+            state.router.report_failure(served, endpoint, exc.message)
             if exc.code in RETRYABLE_ERRORS and (nxt := ctx.another_endpoint()):
                 ctx.retarget(nxt)
                 continue
@@ -244,10 +239,10 @@ async def _complete_response(build: BuildAttempt, ctx: _RequestContext) -> FastJ
             )
             raise
         finally:
-            await state.router.release(alias, endpoint, ctx.request_id)
+            await state.router.release(served, endpoint, ctx.lease)
 
         if response.status_code >= 400:
-            state.router.report_http_error(alias, endpoint, response.status_code)
+            state.router.report_http_error(served, endpoint, response.status_code)
             if is_retryable_status(response.status_code) and (nxt := ctx.another_endpoint()):
                 ctx.retarget(nxt)
                 continue
@@ -262,7 +257,7 @@ async def _complete_response(build: BuildAttempt, ctx: _RequestContext) -> FastJ
             )
             raise error
 
-        state.router.report_success(alias, endpoint)
+        state.router.report_success(served, endpoint)
         break
 
     try:
@@ -331,20 +326,20 @@ async def _stream_response(build: BuildAttempt, ctx: _RequestContext) -> Streami
 
         try:
             while True:
-                endpoint = ctx.endpoint
+                endpoint, served = ctx.endpoint, ctx.model.alias
                 attempt = build(endpoint)
                 translate = attempt.translate
                 adapter = ResponsesStreamAdapter(alias) if translate else None
 
                 retry: Endpoint | None = None
-                await state.router.acquire(alias, endpoint, ctx.request_id)
+                await state.router.acquire(served, endpoint, ctx.lease)
                 try:
                     async with upstream.stream_json(
                         endpoint, attempt.path, attempt.payload, attempt.headers
                     ) as response:
                         if response.status_code >= 400:
                             body = await upstream.read_error_body(response)
-                            state.router.report_http_error(alias, endpoint, response.status_code)
+                            state.router.report_http_error(served, endpoint, response.status_code)
                             if not emitted and is_retryable_status(response.status_code):
                                 retry = ctx.another_endpoint()
                             if retry is None:
@@ -358,7 +353,7 @@ async def _stream_response(build: BuildAttempt, ctx: _RequestContext) -> Streami
                                 )
                                 return
                         else:
-                            state.router.report_success(alias, endpoint)
+                            state.router.report_success(served, endpoint)
 
                             async for event, data in iter_sse_payloads(response.aiter_lines()):
                                 if data.strip() == DONE:
@@ -394,7 +389,7 @@ async def _stream_response(build: BuildAttempt, ctx: _RequestContext) -> Streami
                             return
 
                 except GatewayError as exc:
-                    state.router.report_failure(alias, endpoint, exc.message)
+                    state.router.report_failure(served, endpoint, exc.message)
                     if not emitted and exc.code in RETRYABLE_ERRORS:
                         retry = ctx.another_endpoint()
                     if retry is None:
@@ -403,11 +398,11 @@ async def _stream_response(build: BuildAttempt, ctx: _RequestContext) -> Streami
                         return
                 except Exception as exc:
                     log.exception("responses stream failed for request %s", ctx.request_id)
-                    state.router.report_failure(alias, endpoint, str(exc))
+                    state.router.report_failure(served, endpoint, str(exc))
                     status, error_code, http_status = "aborted", ErrorCode.UPSTREAM_ERROR, 502
                     return
                 finally:
-                    await state.router.release(alias, endpoint, ctx.request_id)
+                    await state.router.release(served, endpoint, ctx.lease)
 
                 ctx.retarget(retry)
         finally:
