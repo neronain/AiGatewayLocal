@@ -681,6 +681,9 @@ class ProbeResult:
     advice: list[Advice] = field(default_factory=list)
     server_kind: str = ""  # vllm | llamacpp | unknown
     wide_chars_per_token: float | None = None   # วัดจริงจาก /tokenize ของ backend
+    # จำนวนคำขอที่ backend รับพร้อมกันได้จริง (llama.cpp: /props total_slots) ·
+    # None = backend ไม่บอก (vLLM/TensorFold ไม่มีตัวเลขนี้ให้อ่าน)
+    slots: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -994,14 +997,33 @@ async def probe_backend(
             return result
 
         # llama.cpp reports the real window on /props, not on /v1/models.
+        #
+        # ถาม /props เสมอ ไม่ใช่เฉพาะตอนยังไม่รู้ context — มันเป็นที่เดียวที่บอกจำนวน slot
+        # และ n_ctx ตรงนี้คือ **ต่อ slot** (= --ctx-size ÷ --parallel) ซึ่งเป็นตัวเลขที่
+        # limits.context_tokens ต้องตรงด้วย · `--ctx-size` เองเป็นก้อนรวมของทุก slot
+        #
+        # เคสจริง 2026-10-05: gemma บน spark-head ตั้ง --ctx-size 65536 --parallel 2 →
+        # /props ตอบ n_ctx 32768 · total_slots 2 · และ qwen3-6-35b-a3b บน AI-Local-ISIT
+        # มี 1 slot ขณะที่ทะเบียนตั้ง max_concurrency 8
+        try:
+            response = await client.get(join_upstream(base_url, "/props"))
+            props = response.json() if response.status_code == 200 else {}
+        except Exception:
+            props = {}
+        if isinstance(props, dict):
+            n_ctx = (props.get("default_generation_settings") or {}).get("n_ctx")
+            if isinstance(n_ctx, int) and n_ctx > 0:
+                result.context_tokens = n_ctx
+            total_slots = props.get("total_slots")
+            if isinstance(total_slots, int) and total_slots > 0:
+                result.slots = total_slots
         if result.context_tokens is None:
-            try:
-                response = await client.get(join_upstream(base_url, "/props"))
-                n_ctx = (response.json().get("default_generation_settings") or {}).get("n_ctx")
-                if isinstance(n_ctx, int):
-                    result.context_tokens = n_ctx
-            except Exception:
-                result.notes.append("context window unknown; set it manually")
+            result.notes.append("context window unknown; set it manually")
+        elif result.slots and result.slots > 1:
+            result.notes.append(
+                f"context {result.context_tokens:,} is per request: this server splits "
+                f"its pool of {result.context_tokens * result.slots:,} across "
+                f"{result.slots} slots")
 
         model = result.upstream_model
 

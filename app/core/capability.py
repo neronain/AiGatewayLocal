@@ -119,9 +119,12 @@ def validate_context_budget(
             },
         )
 
+    # ค่าประมาณอยู่ระหว่าง 100% ถึง 115% ของหน้าต่าง = "อาจจะพอดี" — ปล่อยผ่านให้ backend
+    # ตัดสิน แต่ต้องไม่ขอคำตอบเต็มเพดานไปด้วย: เดิมกรณี headroom <= 0 ไม่ถูก clamp เลย
+    # (ประมาณ 144,179 บนหน้าต่าง 131,072 ส่ง max_tokens 8192 ไปเต็ม ๆ) ซึ่งการันตีว่า
+    # backend ที่ตรวจ prompt + max_tokens จะปฏิเสธ แม้ prompt จริงจะสั้นกว่าที่ประมาณ
     headroom = limits.context_tokens - estimated_prompt
-    if headroom > 0:
-        max_output = min(max_output, max(headroom, 256))
+    max_output = min(max_output, max(headroom, 256))
     return max(max_output, 1)
 
 

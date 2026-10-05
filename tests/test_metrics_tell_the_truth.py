@@ -50,3 +50,33 @@ def test_ttft_is_exported_not_only_stored():
         __import__("app.api.openai", fromlist=["x"]).__file__, encoding="utf-8").read()
     assert "TTFT.labels(" in openai_src, "finalize ต้อง observe TTFT ออกไปจริง"
     assert "ttft_ms / 1000" in openai_src, "Prometheus ใช้หน่วยวินาที ไม่ใช่มิลลิวินาที"
+
+
+def _gauge(text: str, name: str) -> float:
+    for line in text.splitlines():
+        if line.startswith(name + " "):
+            return float(line.split()[1])
+    raise AssertionError(f"{name} ไม่อยู่ใน /metrics")
+
+
+def test_a_scrape_reports_readiness_without_anyone_calling_readyz(client):
+    """gauge ต้องถูกวัดตอน scrape — เดิมตั้งจาก /readyz เท่านั้น
+
+    เคสจริง 2026-10-05 (GW_WORKERS=4): /readyz ตอบ 8 โมเดล endpoint 2/9 ขณะที่
+    /metrics ตอบ 0 ทุกตัว · กฎเตือน `endpoints_healthy < endpoints_total` จึงไม่ดัง
+
+    ตั้งค่าหลอกไว้ก่อน เพราะ registry ของ prometheus เป็นของทั้ง process — เทสอื่นที่
+    เรียก /readyz มาก่อนจะทำให้เทสนี้ผ่านเองโดยที่โค้ดยังผิดอยู่
+    """
+    for gauge in (main_mod.READY, main_mod.ENDPOINTS_HEALTHY,
+                  main_mod.ENDPOINTS_TOTAL, main_mod.MODELS_LOADED):
+        gauge.set(-1)
+
+    scraped = client.get("/metrics").text
+    truth = client.get("/readyz").json()
+
+    assert truth["models_loaded"] > 0 and truth["endpoints_total"] > 0, "fixture ต้องมีของให้วัด"
+    assert _gauge(scraped, "litegate_models_loaded") == truth["models_loaded"]
+    assert _gauge(scraped, "litegate_endpoints_total") == truth["endpoints_total"]
+    assert _gauge(scraped, "litegate_endpoints_healthy") == truth["endpoints_healthy"]
+    assert _gauge(scraped, "litegate_ready") == (1 if truth["ready"] else 0)

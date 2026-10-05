@@ -693,6 +693,8 @@ through the secret store, so no credential travels in this body.
     "served_models": ["ucbye/Qwen3-Coder-Next-NVFP4-GB10"],
     "upstream_model": "ucbye/Qwen3-Coder-Next-NVFP4-GB10",
     "context_tokens": 262144,
+    "slots": null,
+    "wide_chars_per_token": 1.89,
     "capabilities": { "chat": true, "tools": true, "streaming": true, "vision": false },
     "protocols": { "openai": true, "anthropic": false, "responses": false },
     "server_kind": "vllm",
@@ -705,6 +707,25 @@ through the secret store, so no credential travels in this body.
 
 `confirmed` is always `false` here. It is the reminder that the next two calls
 are what make any of this real.
+
+`context_tokens` is what the backend gives **one request**: vLLM's
+`max_model_len`, or llama.cpp's per-slot `n_ctx` from `/props` (its
+`--ctx-size` divided by `--parallel`). It is the number `limits.context_tokens`
+has to match. `slots` is how many requests the backend serves at once
+(llama.cpp `total_slots`); `null` means the backend does not say. See
+[DEPLOYMENT §4.1a](DEPLOYMENT.md#41a-context-is-per-request--what-to-type-per-backend).
+
+`GET /admin/models/{alias}/advice` runs the same probe against every backend of
+a saved model and lists `drift`: capabilities that disagree, plus
+`context_tokens (per request)` when the registry declares more than the backend
+gives, and `max_concurrency (backend slots)` when an endpoint allows more
+concurrent requests than the backend has slots.
+
+**A backend that refuses a prompt for length** answers the client with
+`400 CONTEXT_LENGTH_EXCEEDED` and the backend's own message, on every route. It
+used to surface as `502 UPSTREAM_ERROR`, which clients retry instead of
+compacting. Request-level rejections (400, 413, 422) no longer count towards
+marking an endpoint unhealthy.
 
 #### `POST /admin/models/preview` — admin
 

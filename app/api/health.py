@@ -58,8 +58,19 @@ def _console_mtime() -> str | None:
     return datetime.fromtimestamp(max(stamps), tz=timezone.utc).isoformat()
 
 
-@router.get("/readyz")
-async def readyz(response: Response, state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def _readiness(state: AppState) -> dict[str, Any]:
+    """นิยามเดียวของคำว่า "พร้อม" — ใช้ทั้ง /readyz และ /metrics และตั้ง gauge ทุกครั้งที่ถูกเรียก
+
+    เดิม gauge ถูกตั้งจากใน /readyz เท่านั้น · ไม่มีใครเรียก /readyz = ไม่มีใครตั้ง และ
+    เกตเวย์รันหลาย worker ซึ่ง gauge เป็นของแต่ละ process — worker ที่ตอบ /metrics
+    จึงมักไม่ใช่ตัวที่เพิ่งตอบ /readyz
+
+    เคสจริง 2026-10-05 บน VM AiGateway (GW_WORKERS=4): /readyz ตอบ ready=true ·
+    8 โมเดล · endpoint ดี 2 จาก 9 ขณะที่ /metrics ห้ารอบติดกันตอบ ready 0 · โมเดล 0 ·
+    endpoint 0 จาก 0 — กฎเตือน `endpoints_healthy < endpoints_total` จึงไม่มีวันดัง
+    (0 < 0 เป็นเท็จ) ทั้งที่ backend ล่มอยู่ 7 ตัว · ศูนย์เพราะดีกับศูนย์เพราะไม่เคยถูกวัด
+    หน้าตาเหมือนกัน
+    """
     snapshot = state.registry.snapshot
     health = state.router.health_report()
     healthy = [k for k, v in health.items() if v["healthy"]]
@@ -72,11 +83,7 @@ async def readyz(response: Response, state: AppState = Depends(get_state)) -> di
         db_ok = False
 
     ready = bool(snapshot.models) and db_ok and bool(healthy)
-    if not ready:
-        response.status_code = 503
 
-    # Published from here rather than computed separately, so an alert and a
-    # human hitting /readyz can never disagree about whether it is ready.
     from app.main import ENDPOINTS_HEALTHY, ENDPOINTS_TOTAL, MODELS_LOADED, READY
 
     READY.set(1 if ready else 0)
@@ -92,6 +99,14 @@ async def readyz(response: Response, state: AppState = Depends(get_state)) -> di
         "endpoints_total": len(health),
         "registry_errors": snapshot.errors,
     }
+
+
+@router.get("/readyz")
+async def readyz(response: Response, state: AppState = Depends(get_state)) -> dict[str, Any]:
+    report = await _readiness(state)
+    if not report["ready"]:
+        response.status_code = 503
+    return report
 
 
 @router.get("/v1/health/endpoints")
@@ -112,5 +127,7 @@ async def probe_now(
 
 
 @router.get("/metrics")
-async def metrics() -> Response:
+async def metrics(state: AppState = Depends(get_state)) -> Response:
+    # วัดตอนถูก scrape ใน worker ตัวที่ตอบ — ไม่พึ่งว่ามีใครเรียก /readyz มาก่อน
+    await _readiness(state)
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)

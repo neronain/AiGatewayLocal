@@ -23,6 +23,24 @@ from urllib.parse import urlparse
 from app.core.errors import ErrorCode, GatewayError
 from app.registry.schema import VisionPolicy
 
+
+def _json_text(value: Any) -> str:
+    """ข้อความที่ backend จะได้รับจากโครงสร้างนี้ โดยประมาณ — ไว้นับอักขระ ไม่ได้ส่งต่อ
+
+    นิยาม tool · อาร์กิวเมนต์ที่โมเดลเรียก · ผลลัพธ์ของ tool ล้วนถูก render ลง prompt
+    โดย chat template ของ backend และกิน context เท่ากับข้อความธรรมดา
+    """
+    import json
+
+    if value is None or value == "":
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return str(value)
+
 # data:image/png;base64,AAAA...
 _DATA_URL_RE = re.compile(r"^data:(?P<mime>[\w.+-]+/[\w.+-]+)?(?P<params>;[^,]*)?,", re.I)
 
@@ -265,6 +283,9 @@ def profile_openai_request(body: dict[str, Any], policy: VisionPolicy) -> Reques
     profile.requires_streaming = bool(body.get("stream"))
     if body.get("tools") or body.get("functions") or body.get("tool_choice"):
         profile.requires_tools = True
+    # นิยาม tool ถูกส่งทุกเทิร์นและยาวได้เป็นหมื่น token — เดิมไม่ถูกนับเลย
+    profile.add_text(_json_text(body.get("tools")))
+    profile.add_text(_json_text(body.get("functions")))
 
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
@@ -281,6 +302,7 @@ def profile_openai_request(body: dict[str, Any], policy: VisionPolicy) -> Reques
             )
         if message.get("tool_calls"):
             profile.requires_tools = True
+            profile.add_text(_json_text(message.get("tool_calls")))
 
         content = message.get("content")
         if isinstance(content, str):
@@ -429,6 +451,8 @@ def profile_anthropic_request(body: dict[str, Any], policy: VisionPolicy) -> Req
     profile.requires_streaming = bool(body.get("stream"))
     if body.get("tools") or body.get("tool_choice"):
         profile.requires_tools = True
+    # นิยาม tool ของ Claude Code อย่างเดียวก็หลักหมื่น token และถูกส่งทุกเทิร์น
+    profile.add_text(_json_text(body.get("tools")))
 
     system = body.get("system")
     if isinstance(system, str):
@@ -469,10 +493,23 @@ def profile_anthropic_request(body: dict[str, Any], policy: VisionPolicy) -> Req
                 profile.images.append(_profile_anthropic_image(block, policy, path))
             elif btype in {"tool_use", "tool_result"}:
                 profile.requires_tools = True
-                # tool_result may itself carry images.
+                # เนื้อหาของ tool คือ prompt ส่วนใหญ่ของงาน agent (ไฟล์ที่อ่าน · ผลคำสั่ง)
+                #
+                # เดิมบล็อกสองชนิดนี้ถูกนับเป็น 0 อักขระ: คำขอ Anthropic ขนาด 1.77 ล้านอักขระ
+                # ถูกประมาณเป็น 290 token แล้วผ่านด่าน context ของโมเดล 131,072 ไปพังที่
+                # backend (ตรวจ 2026-10-05) · กฎ overflow ที่ใช้ค่าประมาณเดียวกันจึงไม่เคย
+                # ทำงานกับ Claude Code เลย
+                if btype == "tool_use":
+                    profile.add_text(str(block.get("name") or ""))
+                    profile.add_text(_json_text(block.get("input")))
                 nested = block.get("content")
+                if isinstance(nested, str):
+                    profile.add_text(nested)
+                # tool_result may itself carry images.
                 if isinstance(nested, list):
                     for n_idx, nested_block in enumerate(nested):
+                        if isinstance(nested_block, dict) and nested_block.get("type") == "text":
+                            profile.add_text(nested_block.get("text") or "")
                         if (
                             isinstance(nested_block, dict)
                             and nested_block.get("type") == "image"

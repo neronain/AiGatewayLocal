@@ -273,7 +273,7 @@ async def _forward(
             # · ถ้าวันหนึ่งตัดสินใจปิด ต้องปิดทั้งสองทางพร้อมกัน และจุดของเส้นทางนี้คือ
             # ส่ง "" แทน body_text ตรงบรรทัดถัดไป
             body_text = response.text[:2000]
-            state.router.report_failure(alias, endpoint, f"HTTP {response.status_code}")
+            state.router.report_http_error(alias, endpoint, response.status_code)
             if is_retryable_status(response.status_code) and (nxt := ctx.another_endpoint()):
                 ctx.retarget(nxt)
                 continue

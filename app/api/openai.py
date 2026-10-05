@@ -613,7 +613,7 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> FastJSONR
 
         if response.status_code >= 400:
             body = response.text[:2000]
-            state.router.report_failure(alias, endpoint, f"HTTP {response.status_code}")
+            state.router.report_http_error(alias, endpoint, response.status_code)
             if is_retryable_status(response.status_code) and (nxt := ctx.another_endpoint()):
                 ctx.retarget(nxt)
                 continue
@@ -720,9 +720,7 @@ async def _stream_chat(build: BuildRequest, ctx: _RequestContext) -> StreamingRe
                     ) as response:
                         if response.status_code >= 400:
                             body = await upstream.read_error_body(response)
-                            state.router.report_failure(
-                                alias, endpoint, f"HTTP {response.status_code}"
-                            )
+                            state.router.report_http_error(alias, endpoint, response.status_code)
                             if not emitted and is_retryable_status(response.status_code):
                                 retry = ctx.another_endpoint()
                             if retry is None:

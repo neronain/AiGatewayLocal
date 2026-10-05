@@ -1826,6 +1826,12 @@ async def admin_models(
                     "output": [m.value for m in model.spec.modalities.output],
                 },
                 "limits": model.spec.limits.model_dump(),
+                # กฎ round-trip เดียวกับข้างบน · ค่านี้วัดมาจาก tokenizer ของ backend และ
+                # ไม่มีช่องบนฟอร์ม — เดิมไม่ถูกคืนมา คอนโซลจึงประกอบ spec ใหม่โดยไม่มีมัน
+                # กด Save ครั้งเดียว (แม้แค่แก้ชื่อที่แสดง) = ค่าที่วัดไว้หาย กลับไปใช้ค่าสำรอง
+                # 1.6 · โมเดลที่อัตราจริง 3.86 จะถูกนับ token ไทยเกิน 2.4 เท่าและชนเพดาน
+                # context ทั้งที่ยังเหลือที่เกินครึ่ง โดยไม่มีอะไรบนหน้าจอบอก
+                "wide_chars_per_token": model.spec.wide_chars_per_token,
                 # กฎ round-trip เดียวกับข้างบน · ไม่คืน routing มาแล้วคอนโซล
                 # จะประกอบ spec ใหม่โดยไม่มีมัน = ทับ fallback เดิมหายทั้งชุด
                 # โดยที่ผู้ดูแลเห็นแค่ว่าตัวเองแก้ชื่อรุ่น
@@ -2831,6 +2837,25 @@ async def model_advice(
             if name in probe.capabilities
             and bool(declared.get(name)) != bool(probe.capabilities[name])
         ]
+        # ตัวเลขก็ drift ได้ และเจ็บกว่าความสามารถ: ทะเบียนประกาศ context ต่อคำขอ
+        # มากกว่าที่ backend ให้จริง = คำขอที่อยู่ระหว่างสองค่าผ่านด่านของเกตเวย์แล้วไปพัง
+        # ที่ backend · เกิดง่ายที่สุดกับ llama.cpp ที่ --ctx-size เป็นก้อนรวมหารด้วยจำนวน slot
+        # (ตั้ง 131072 กับ 4 slot ได้คำขอละ 32768)
+        #
+        # เตือนเฉพาะ "ประกาศเกินจริง" — ประกาศต่ำกว่าเป็นการตัดสินใจของผู้ดูแลได้
+        declared_context = model.spec.limits.context_tokens
+        if probe.context_tokens and declared_context > probe.context_tokens:
+            drift.append({
+                "capability": "context_tokens (per request)",
+                "declared": declared_context,
+                "measured": probe.context_tokens,
+            })
+        if probe.slots and endpoint.max_concurrency > probe.slots:
+            drift.append({
+                "capability": "max_concurrency (backend slots)",
+                "declared": endpoint.max_concurrency,
+                "measured": probe.slots,
+            })
         # The probe does not know what this alias is *for*. Advice that does not
         # apply to the declared intent is noise, and noise is what makes people
         # stop reading the advice at all.
@@ -2853,6 +2878,7 @@ async def model_advice(
                 "reachable": probe.reachable,
                 "measured": probe.capabilities,
                 "context_tokens": probe.context_tokens,
+                "slots": probe.slots,
                 "drift": drift,
                 "advice": relevant,
                 "notes": probe.notes,

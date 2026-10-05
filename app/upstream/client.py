@@ -213,8 +213,49 @@ async def read_error_body(response: httpx.Response) -> str:
         return ""
 
 
+# ข้อความที่ backend ใช้บอกว่า prompt (+ max_tokens) ไม่พอดีกับ context ของมัน
+#   vLLM / SGLang / TensorFold: "maximum context length is N tokens" · code context_length_exceeded
+#   llama.cpp: type "exceed_context_size_error" · "exceeds the available context size"
+_CONTEXT_OVERFLOW = re.compile(
+    r"context[ _]length|exceed_context_size|exceeds? the (available )?context"
+    r"|context window|maximum context|does not fit the context",
+    re.IGNORECASE,
+)
+
+
+def _backend_message(body: str) -> str:
+    """ข้อความของ backend เอง ตัดให้สั้น — มีตัวเลขที่ผู้ใช้ต้องใช้ตัดสินใจ (จำกัดเท่าไร ส่งมาเท่าไร)"""
+    try:
+        import json
+
+        parsed = json.loads(body)
+        error = parsed.get("error") if isinstance(parsed, dict) else None
+        if isinstance(error, dict) and isinstance(error.get("message"), str):
+            return error["message"][:300]
+        if isinstance(parsed, dict) and isinstance(parsed.get("message"), str):
+            return parsed["message"][:300]
+    except Exception:
+        pass
+    return body.strip()[:300]
+
+
 def upstream_error(endpoint: Endpoint, status_code: int, body: str) -> GatewayError:
     """Translate a backend failure into our envelope without leaking internals."""
+    # ด่าน context ของเกตเวย์เป็นค่าประมาณ (ไม่ได้รัน tokenizer ของโมเดล) backend จึงเป็น
+    # ผู้ตัดสินตัวจริง · เดิมคำตัดสินนี้กลับไปถึงผู้ใช้เป็น 502 "The model server rejected the
+    # request." ซึ่งอ่านเหมือนเซิร์ฟเวอร์พัง — agent จึง retry ซ้ำแทนที่จะย่อบทสนทนา
+    # ตอบเป็น CONTEXT_LENGTH_EXCEEDED (400) แบบเดียวกับที่ด่านของเกตเวย์เองตอบ
+    if status_code in (400, 413, 422) and _CONTEXT_OVERFLOW.search(body or ""):
+        return GatewayError(
+            ErrorCode.CONTEXT_LENGTH_EXCEEDED,
+            "The model server refused the request because the prompt plus max_tokens "
+            f"does not fit its context window. Backend said: {_backend_message(body)}",
+            details={
+                "endpoint": endpoint.name,
+                "upstream_status": status_code,
+                "upstream_detail": body[:500],
+            },
+        )
     if status_code == 404:
         message = (
             "The model is not loaded on the backend server. "

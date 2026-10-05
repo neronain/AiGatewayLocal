@@ -33,6 +33,38 @@
 
 ### แก้
 
+- **context ต่อคำขอ · slot · ก้อนรวม — ปิดทางที่ทะเบียนกับ backend ไม่ตรงกัน** (ตรวจ
+  2026-10-05) · `limits.context_tokens` คือ token ที่ **คำขอเดียว** ใช้ได้ แต่ flag ของ
+  backend แต่ละชนิดไม่ได้หมายถึงตัวเดียวกัน (llama.cpp `--ctx-size` เป็นก้อนรวมหารด้วย
+  `--parallel`) · รายละเอียดต่อ engine อยู่ที่ `docs/DEPLOYMENT.md` §4.1a
+  - **Detect ใช้ค่าที่วัดได้จริง**: ช่อง Context ของโมเดลใหม่เว้นว่าง (เดิมเติม 131072
+    มาก่อน แล้ว Detect "เติมเฉพาะช่องว่าง" จึงไม่เคยได้ใช้ค่าที่วัด) · Save ไม่รับช่องว่าง ·
+    ฟอร์มตั้งเกินที่ backend ให้ = เตือนพร้อมปุ่มใช้ค่าจริง · probe อ่าน `total_slots` ของ
+    llama.cpp และเตือนเมื่อ `max_concurrency` มากกว่าจำนวน slot
+  - **Verify ฟ้องตัวเลขที่ drift**: `context_tokens (per request)` และ
+    `max_concurrency (backend slots)` — เดิมเทียบแค่ chat/streaming/tools/vision จึงขึ้น
+    "consistent" ทั้งที่ประกาศ 131,072 บน backend ที่ให้ 32,768
+  - **ด่าน context นับงานของ tool**: นิยาม tool · `tool_use.input` · `tool_result` ·
+    `tool_calls[].arguments` เดิมถูกนับเป็น 0 อักขระ — คำขอ Anthropic 1.77 ล้านอักขระ
+    ถูกประมาณเป็น 290 token แล้วผ่านด่านของโมเดล 131,072 · กฎ `overflow` ที่ใช้ค่า
+    ประมาณเดียวกันจึงไม่เคยทำงานกับ Claude Code
+  - **backend บอกว่า prompt ยาวเกิน → `400 CONTEXT_LENGTH_EXCEEDED`** พร้อมข้อความของ
+    backend (เดิม `502 UPSTREAM_ERROR` "The model server rejected the request." ซึ่ง
+    agent อ่านเป็นเซิร์ฟเวอร์พังแล้ว retry ซ้ำ)
+  - **4xx ระดับคำขอ (400/413/422) ไม่นับเป็นความล้มเหลวของ endpoint** · เดิมผู้ใช้คนเดียว
+    ที่ส่ง prompt ยาวเกินสามครั้งติดกันทำให้ backend ที่ดีอยู่ถูกตี unhealthy ของทุกคน
+  - `max_tokens` ถูก clamp เมื่อค่าประมาณอยู่ระหว่าง 100–115% ของหน้าต่างด้วย (เดิมช่วงนี้
+    ส่งเต็มเพดาน ซึ่ง backend ที่ตรวจ prompt + max_tokens ปฏิเสธแน่นอน)
+- **Save จากคอนโซลลบ `wide_chars_per_token` ทิ้ง** · `GET /admin/models` ไม่คืนฟิลด์นี้และ
+  ฟอร์มไม่มีช่อง คอนโซลจึงประกอบ spec ใหม่โดยไม่มีมัน — แก้ชื่อที่แสดงครั้งเดียว โมเดลกลับ
+  ไปนับด้วยค่าสำรอง 1.6 · ตอนนี้พาผ่านไปเหมือน routing/managed_by และค่าที่ Detect วัดได้
+  ถูกใช้จริงตอน Save
+- **gauge ความพร้อมใน `/metrics` เป็น 0 ทั้งที่เกตเวย์ทำงานปกติ** · ถูกตั้งจากใน `/readyz`
+  เท่านั้น และแต่ละ worker เก็บของตัวเอง · บน VM จริง (`GW_WORKERS=4`) `/readyz` ตอบ
+  8 โมเดล endpoint ดี 2/9 ขณะที่ `/metrics` ตอบ 0 ทุกตัวห้ารอบติด กฎเตือน
+  `endpoints_healthy < endpoints_total` จึงไม่ดังทั้งที่ backend ล่ม 7 ตัว · ตอนนี้วัดทุกครั้ง
+  ที่ถูก scrape ใน worker ที่ตอบ
+
 - **การติดตั้งแบบ native ยังรัน 4 worker อยู่ดี ทั้งที่ 1.12.1 ประกาศว่าแก้แล้ว** ·
   `scripts/bootstrap.sh` เขียน `GW_WORKERS=1` ลง `.env` ถูกต้อง แต่
   `deploy/systemd/litegate.service` เขียน `--workers 4` ไว้ตรง ๆ และ `GW_WORKERS`

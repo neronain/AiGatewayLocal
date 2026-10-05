@@ -961,6 +961,42 @@ Only aliases whose `agent_clients.claude_code.enabled` is true will work well;
 > worker, within `GW_REGISTRY_RELOAD_SECONDS`. Use the endpoint for a fast
 > single-worker refresh; rely on the watcher (or restart) for a fleet.
 
+### 4.1a Context is per request — what to type, per backend
+
+`limits.context_tokens` is what **one request** may use, prompt plus reply. It
+is not the size of the backend's KV pool, and the flag you set on the backend
+does not mean the same thing on every engine:
+
+| Backend | Flag you set | What it is | One request gets |
+|---|---|---|---|
+| llama.cpp | `--ctx-size N --parallel S` | the **pool**, split evenly | `N ÷ S` |
+| vLLM | `--max-model-len N` | the per-request cap | `N` (the pool is a separate memory budget, `--kv-cache-memory`) |
+| SGLang | `--context-length N` | the per-request cap | `N` |
+| TensorFold | `--context N --parallel S` | per stream | `N` (pool = `N × S`) |
+
+`--ctx-size 131072 --parallel 4` serves 32,768 per request. Declaring 131,072
+lets a 60,000-token prompt through the gateway and into a backend that refuses
+it.
+
+Press **Detect** on the backend row and let it fill the field: it reads
+`max_model_len` from vLLM and the per-slot `n_ctx` from llama.cpp's `/props`,
+and shows the slot count. A new model's Context field starts empty for that
+reason, and Save refuses an empty one. If the form already holds a larger
+number than the backend gives, Detect says so and offers the measured value;
+**Verify** on the model row reports the same thing as drift
+(`context_tokens (per request)`, `max_concurrency (backend slots)`).
+
+`max_concurrency` on an endpoint is the other half: set it to the number of
+requests the backend really serves at once (llama.cpp slots, TensorFold
+`--parallel`). Above that the gateway moves to another tier or answers 429;
+below that, extra requests queue inside the backend where the gateway cannot
+see them.
+
+What the gateway checks is an estimate — it does not run the model's
+tokenizer — so the backend stays the final judge. When a backend refuses a
+prompt for length, the client gets `400 CONTEXT_LENGTH_EXCEEDED` with the
+backend's own numbers, and the endpoint is not counted as failing.
+
 ### 4.2 Swapping the model behind an alias
 
 Change `upstream_model` and `base_url`, keep the alias. No member changes
@@ -1996,31 +2032,20 @@ answered by whichever worker happened to accept the connection. Counters look
 like they go backwards between scrapes, and every absolute number is roughly a
 quarter of the truth. Treat `/metrics` as indicative in multi-worker mode.
 
-The readiness gauges are worse than merely partial, and this one can page you at
-three in the morning for nothing. `litegate_ready`,
+The readiness gauges are the exception: `litegate_ready`,
 `litegate_endpoints_healthy`, `litegate_endpoints_total` and
-`litegate_models_loaded` are set **inside the `/readyz` handler** and nowhere
-else. A worker that has never answered a `/readyz` probe has never set them, so
-they sit at the client library's default of `0`. A scrape that lands on such a
-worker therefore reports a gateway that is not ready, with no models and no
-backends — while the gateway is serving traffic normally.
+`litegate_models_loaded` are **measured on every scrape, in the worker that
+answers it** (`health._readiness`, the same function `/readyz` returns). They
+describe one worker's view — each worker probes backends on its own — but they
+are never an unmeasured `0`.
 
-Two consequences, in opposite directions:
-
-- `LiteGateNotReady` (`litegate_ready == 0`, `for: 3m`, **severity: page**) in
-  `deploy/prometheus/litegate.rules.yml` can fire on a perfectly healthy
-  gateway, because consecutive scrapes may keep landing on unprobed workers.
-- `LiteGateAllBackendsUnhealthy` is guarded by
-  `litegate_endpoints_total > 0`, and `LiteGateBackendDegraded` compares
-  `healthy < total`. On an unprobed worker both sides are `0`, so neither
-  fires — a real "no backend is healthy" outage can be masked by whichever
-  worker answers the scrape.
-
-Until `PROMETHEUS_MULTIPROC_DIR` is configured, the safe reading is: use
-`/readyz` itself (which is correct, because it computes state on the worker
-answering it) for readiness, and treat the readiness *metrics* as advisory.
-Raising `for:` on `LiteGateNotReady` reduces the false pages but does not
-remove them.
+Until 2026-10-05 they were set inside the `/readyz` handler and nowhere else, so
+a worker nobody had probed reported "not ready, 0 models, 0 of 0 backends". On
+the production VM (`GW_WORKERS=4`) `/readyz` said ready, 8 models, 2 of 9
+backends healthy while five scrapes in a row said 0 for everything.
+`LiteGateBackendDegraded` (`healthy < total`) could not fire on `0 < 0`, with
+seven backends down. If you run an older build, use `/readyz` for readiness and
+treat these four gauges as noise.
 
 **`litegate_request_duration_seconds` measures time to first header, not request
 duration.** It is observed in the `@app.middleware("http")` block in

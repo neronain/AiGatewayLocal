@@ -76,7 +76,9 @@ ERRORS = Counter("litegate_errors_total", "Gateway errors by code", ["code"])
 # Readiness as numbers, not just as a status code. `up` catches a process that
 # died; it cannot see a gateway that is running happily with an unreachable
 # database or no healthy backend to route to, which is the outage members
-# actually experience. Set from /readyz, so there is one definition of ready.
+# actually experience. Set by health._readiness on every /readyz and every
+# /metrics scrape, so there is one definition of ready and a scrape never
+# reports gauges nobody has measured yet.
 READY = Gauge("litegate_ready", "1 when the gateway is ready to serve")
 ENDPOINTS_HEALTHY = Gauge("litegate_endpoints_healthy", "Backend endpoints passing health checks")
 ENDPOINTS_TOTAL = Gauge("litegate_endpoints_total", "Backend endpoints configured")

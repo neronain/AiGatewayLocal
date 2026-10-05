@@ -68,7 +68,9 @@ spec:
       priority: 100
       weight: 1
       # One llama.cpp slot, so one request at a time keeps the full context.
-      # Raising this does not add slots on the backend; it only queues here.
+      # Raising this does not add slots on the backend: the extra requests are
+      # sent anyway and wait inside llama.cpp. Above the limit the gateway moves
+      # to a lower-priority endpoint or answers 429; it does not queue.
       max_concurrency: 1
       health_path: /health
       protocols:

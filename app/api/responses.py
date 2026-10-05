@@ -247,7 +247,7 @@ async def _complete_response(build: BuildAttempt, ctx: _RequestContext) -> FastJ
             await state.router.release(alias, endpoint, ctx.request_id)
 
         if response.status_code >= 400:
-            state.router.report_failure(alias, endpoint, f"HTTP {response.status_code}")
+            state.router.report_http_error(alias, endpoint, response.status_code)
             if is_retryable_status(response.status_code) and (nxt := ctx.another_endpoint()):
                 ctx.retarget(nxt)
                 continue
@@ -344,9 +344,7 @@ async def _stream_response(build: BuildAttempt, ctx: _RequestContext) -> Streami
                     ) as response:
                         if response.status_code >= 400:
                             body = await upstream.read_error_body(response)
-                            state.router.report_failure(
-                                alias, endpoint, f"HTTP {response.status_code}"
-                            )
+                            state.router.report_http_error(alias, endpoint, response.status_code)
                             if not emitted and is_retryable_status(response.status_code):
                                 retry = ctx.another_endpoint()
                             if retry is None:

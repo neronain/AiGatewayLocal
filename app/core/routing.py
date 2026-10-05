@@ -35,6 +35,21 @@ log = logging.getLogger(__name__)
 RETRYABLE_ERRORS = frozenset({ErrorCode.UPSTREAM_TIMEOUT, ErrorCode.UPSTREAM_UNAVAILABLE})
 
 
+# 4xx ที่เป็นคำตัดสินเรื่อง *คำขอ* ไม่ใช่เรื่องสุขภาพของเครื่อง: prompt ยาวเกิน context ·
+# body ใหญ่เกิน · พารามิเตอร์ผิด · backend ที่ตอบแบบนี้ยังมีชีวิตและทำงานถูกต้อง
+#
+# เดิมทุกสถานะ >= 400 ถูกนับเป็นความล้มเหลวของ endpoint — ผู้ใช้คนเดียวที่ส่ง prompt
+# ยาวเกินสามครั้งติดกัน (agent ที่ retry เองทำแบบนี้เป็นปกติ) จึงทำให้ backend ที่ดีอยู่
+# ถูกตีว่า unhealthy และหลุดจากการจ่ายงานของทุกคน จนกว่ารอบ health probe จะกู้กลับ
+#
+# 401/403/404 ไม่อยู่ในนี้โดยเจตนา: คีย์ผิดหรือโมเดลไม่ได้โหลดคือ backend ใช้ไม่ได้จริง
+REQUEST_FAULT_STATUSES = frozenset({400, 413, 422})
+
+
+def is_request_fault(status: int) -> bool:
+    return status in REQUEST_FAULT_STATUSES
+
+
 def is_retryable_status(status: int) -> bool:
     """502/503 mean the machine is unwell; 408 and 429 mean it is out of room."""
     return status >= 500 or status in (408, 429)
@@ -184,6 +199,12 @@ class Router:
             state.healthy = True
             state.last_error = ""
             log.info("endpoint %s:%s recovered", alias, endpoint.name)
+
+    def report_http_error(self, alias: str, endpoint: Endpoint, status: int) -> None:
+        """backend ตอบ HTTP >= 400 — นับเป็นความล้มเหลวของเครื่องเฉพาะเมื่อมันเป็นเรื่องของเครื่อง"""
+        if is_request_fault(status):
+            return
+        self.report_failure(alias, endpoint, f"HTTP {status}")
 
     def report_failure(self, alias: str, endpoint: Endpoint, error: str) -> None:
         gateway = self._registry.snapshot.gateway

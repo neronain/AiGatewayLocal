@@ -818,7 +818,7 @@ function modelGlyph(model) {
 // and it still works if the script fails.
 function modelRow(model) {
   const facts = [
-    ['Context', model.context_tokens ? `${num(model.context_tokens)} tokens` : model.context],
+    ['Context per request', model.context_tokens ? `${num(model.context_tokens)} tokens` : model.context],
     ['Max output', model.max_output_tokens ? `${num(model.max_output_tokens)} tokens` : '—'],
     ['Protocols', (model.protocols || []).join(' · ') || '—'],
     ['Images', model.supports_images ? 'ได้' : 'ไม่ได้'],
@@ -1970,8 +1970,17 @@ async function detectEndpoint(node) {
       // This backend calls it something else - that is what the override is for.
       q('ep-upstream').value = suggestion.upstream_model;
     }
-    if (suggestion.context_tokens && !Number($('m-ctx').value)) {
-      $('m-ctx').value = suggestion.context_tokens;
+    // context ที่วัดได้คือ "ต่อคำขอ" (llama.cpp: ต่อ slot) — ตัวเลขเดียวกับที่ช่องนี้หมายถึง
+    // ช่องว่าง = เติมให้ · มีค่าอยู่แล้วและมากกว่าที่ backend ให้จริง = เตือนพร้อมปุ่มใช้ค่าจริง
+    // (ไม่เขียนทับเอง: โมเดลที่มีหลาย backend ผู้ดูแลอาจตั้งใจใช้ค่าของตัวที่เล็กสุดอยู่แล้ว)
+    const measuredCtx = suggestion.context_tokens || 0;
+    const declaredCtx = Number($('m-ctx').value) || 0;
+    if (measuredCtx && !declaredCtx) $('m-ctx').value = measuredCtx;
+    const ctxOver = measuredCtx && declaredCtx > measuredCtx;
+    const slots = suggestion.slots || 0;
+    const concOver = slots && Number(q('ep-conc').value) > slots;
+    if (suggestion.wide_chars_per_token) {
+      state.cache.editingWideRate = suggestion.wide_chars_per_token;
     }
     for (const [cap, on] of Object.entries(suggestion.capabilities)) {
       if ($(`c-${cap}`)) $(`c-${cap}`).checked = on;
@@ -1986,13 +1995,38 @@ async function detectEndpoint(node) {
         streaming ${yes(suggestion.capabilities.streaming)} ·
         tools ${yes(suggestion.capabilities.tools)} ·
         vision ${yes(suggestion.capabilities.vision)}
-        ${suggestion.context_tokens ? ` · context ${num(suggestion.context_tokens)}` : ''}
+        ${measuredCtx ? ` · context ${num(measuredCtx)} per request` : ''}
+        ${slots ? ` · ${num(slots)} slot${slots > 1 ? 's' : ''}` : ''}
       </div>
+      ${ctxOver ? `<div class="banner warn" style="margin:8px 0 0">
+        The form declares ${num(declaredCtx)} context tokens, but this backend gives one request
+        ${num(measuredCtx)}. Requests longer than ${num(measuredCtx)} would pass the gateway and fail on the backend.
+        <button type="button" class="ghost small" data-use-ctx="${measuredCtx}">Use ${num(measuredCtx)}</button>
+      </div>` : ''}
+      ${concOver ? `<div class="banner warn" style="margin:8px 0 0">
+        Max concurrency for this backend is ${num(Number(q('ep-conc').value))}, but the server has
+        ${num(slots)} slot${slots > 1 ? 's' : ''}. Extra requests would queue on the backend instead of going to another machine.
+        <button type="button" class="ghost small" data-use-conc="${slots}">Use ${num(slots)}</button>
+      </div>` : ''}
       ${renderServedModels(suggestion, node)}
       ${suggestion.notes.length
         ? `<div class="hint">${suggestion.notes.map(esc).join('<br>')}</div>` : ''}
     </div>`;
     wireServedModelPicks(out, node);
+    const useCtx = out.querySelector('[data-use-ctx]');
+    if (useCtx) {
+      useCtx.onclick = () => {
+        $('m-ctx').value = useCtx.dataset.useCtx;
+        useCtx.closest('.banner').remove();
+      };
+    }
+    const useConc = out.querySelector('[data-use-conc]');
+    if (useConc) {
+      useConc.onclick = () => {
+        q('ep-conc').value = useConc.dataset.useConc;
+        useConc.closest('.banner').remove();
+      };
+    }
   } catch (e) {
     banner_in(out, 'err', e.message);
   } finally {
@@ -2114,6 +2148,7 @@ function editorValues() {
       purpose: purposes.length || keptPurposes.length
         ? [...purposes, ...keptPurposes] : ['general'],
       limits: {
+        // ว่าง = editorProblems ไม่ให้ผ่านถึงตรงนี้ · 8192 เหลือไว้ให้ปุ่ม preview เท่านั้น
         context_tokens: Number($('m-ctx').value) || 8192,
         max_output_tokens: Number($('m-out').value) || 2048,
       },
@@ -2145,6 +2180,9 @@ function editorValues() {
   if (kept.length) definition.spec.routing = Object.fromEntries(kept);
   if ($('x-claudecode').checked) {
     definition.spec.agent_clients = { claude_code: { enabled: true, tested: false } };
+  }
+  if (state.cache.editingWideRate) {
+    definition.spec.wide_chars_per_token = state.cache.editingWideRate;
   }
   return definition;
 }
@@ -2188,6 +2226,9 @@ function openEditor(model) {
   state.cache.editingCaps = model?.capabilities || {};
   state.cache.editingProtocols = model?.protocols || {};
   state.cache.editingPurpose = model?.purpose || [];
+  // อัตราอักขระต่อ token ที่วัดจาก backend — ไม่มีช่องบนฟอร์ม ต้องพาผ่านไปเหมือนกัน
+  // เดิมหายทุกครั้งที่กด Save แล้วโมเดลกลับไปนับด้วยค่าสำรอง 1.6
+  state.cache.editingWideRate = model?.wide_chars_per_token ?? null;
 
   // Null-safe: the API returns every capability flag, including ones the form
   // deliberately has no box for (audio, embedding). Without the guard the first
@@ -2198,7 +2239,9 @@ function openEditor(model) {
 
   if (!model) {
     ['m-alias', 'm-name', 'm-desc', 'm-upstream'].forEach((i) => set(i, ''));
-    set('m-ctx', 131072); set('m-out', 8192); set('m-visibility', 'member');
+    // context เว้นว่างไว้ให้ Detect เติมค่าที่วัดจาก backend — เดิมเติม 131072 มาให้ก่อน
+    // แล้ว Detect "เติมเฉพาะช่องว่าง" จึงไม่เคยได้ใช้ค่าที่วัดมาเลยสักครั้ง
+    set('m-ctx', ''); set('m-out', 8192); set('m-visibility', 'member');
     ['c-vision', 'c-tools', 'c-coding', 'c-reasoning', 'c-agentic', 'x-anthropic', 'x-claudecode']
       .forEach((i) => check(i, false));
     ['c-chat', 'c-streaming', 'x-openai', 'p-general'].forEach((i) => check(i, true));
@@ -2271,6 +2314,12 @@ function editorProblems() {
       message: 'ยังไม่ได้ใส่ Upstream model — ต้องตรงกับชื่อที่เครื่องปลายทางเสิร์ฟจริง',
     });
   }
+  if (!(Number($('m-ctx').value) > 0)) {
+    problems.push({
+      field: 'm-ctx',
+      message: 'ยังไม่ได้ใส่ Context — กด Detect ที่ backend ให้วัดค่าจริง หรือใส่จำนวน token ที่ "คำขอเดียว" ใช้ได้ (llama.cpp: --ctx-size หารด้วย --parallel)',
+    });
+  }
   const endpoints = editorValues().spec.endpoints;
   if (!endpoints.length) {
     problems.push({ field: null, message: 'ต้องมีอย่างน้อยหนึ่ง backend — กด "+ Add backend"' });
@@ -2329,7 +2378,7 @@ async function verifyModel(alias, btn) {
       <h3 style="margin:16px 0 6px">${esc(b.endpoint)}
         <span class="pill ${b.reachable ? 'ok' : 'err'}">${b.reachable ? 'reachable' : 'unreachable'}</span></h3>
       <div class="hint" style="margin-bottom:8px">${esc(b.base_url)} ·
-        ${esc(b.server_type)} · context ${b.context_tokens ? num(b.context_tokens) : 'unknown'}</div>
+        ${esc(b.server_type)} · context ${b.context_tokens ? `${num(b.context_tokens)} per request` : 'unknown'}${b.slots ? ` · ${num(b.slots)} slot${b.slots > 1 ? 's' : ''}` : ''}</div>
       ${b.drift.length ? `<div class="banner warn">Registry disagrees with the backend:
         ${b.drift.map((d) => `<div class="mono">${esc(d.capability)}: declared ${d.declared} · measured ${d.measured}</div>`).join('')}
       </div>` : ''}
