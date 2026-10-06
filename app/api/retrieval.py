@@ -297,7 +297,7 @@ async def _forward(
 
     try:
         data = jsonio.loads(response.content)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise GatewayError(
             ErrorCode.UPSTREAM_ERROR, "The model server returned a malformed response."
         ) from exc

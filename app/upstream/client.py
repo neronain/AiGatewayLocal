@@ -38,7 +38,21 @@ _STRIPPED_REQUEST_HEADERS = {
     "upgrade",
     "proxy-authorization",
     "cookie",
+    # การบีบอัดเป็นเรื่องระหว่าง *เรา* กับ backend ไม่ใช่ระหว่าง client กับ backend ·
+    # เดิม `accept-encoding: br, zstd` ของ client (Node/Bun ส่งมาเป็นปกติ) ถูกส่งต่อ แต่ httpx
+    # ของเกตเวย์ถอดได้แค่ gzip/deflate — backend ที่ทำตาม (ผู้ให้บริการคลาวด์หลัง CDN) ตอบ
+    # brotli กลับมา แล้วเราอ่านไม่ออก · ตัดออกแล้ว httpx ใส่ของมันเองเท่าที่ถอดได้จริง
+    "accept-encoding",
+    # ตัวตนและที่อยู่ของ client · ไม่ใช่ธุระของ backend และกับ backend ที่เป็นบุคคลที่สาม
+    # คือการส่งข้อมูลของสมาชิกออกนอกบ้าน (PRD §11)
+    "forwarded",
+    "x-real-ip",
+    "openai-organization",
+    "openai-project",
 }
+# เช่นเดียวกัน แต่เป็นทั้งตระกูล: `x-forwarded-for/-host/-proto` (เส้นทางที่ client มาถึงเรา)
+# และ `x-stainless-*` (SDK ของ OpenAI/Anthropic รายงาน OS · runtime · เวอร์ชันของเครื่อง client)
+_STRIPPED_REQUEST_PREFIXES = ("x-forwarded-", "x-stainless-")
 _STRIPPED_RESPONSE_HEADERS = {
     "content-length",
     "content-encoding",
@@ -127,7 +141,10 @@ def join_upstream(base: str, path: str) -> str:
 def upstream_headers(endpoint: Endpoint, incoming: dict[str, str]) -> dict[str, str]:
     """Forward safe client headers; swap in the backend's own credential."""
     headers = {
-        k: v for k, v in incoming.items() if k.lower() not in _STRIPPED_REQUEST_HEADERS
+        k: v
+        for k, v in incoming.items()
+        if k.lower() not in _STRIPPED_REQUEST_HEADERS
+        and not k.lower().startswith(_STRIPPED_REQUEST_PREFIXES)
     }
     headers["content-type"] = "application/json"
     if endpoint.api_key_env:
@@ -308,7 +325,9 @@ def parse_success(endpoint: Endpoint, response: httpx.Response) -> dict[str, Any
     """
     try:
         data = jsonio.loads(response.content)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        # UnicodeDecodeError: ไบต์ที่ไม่ใช่ UTF-8 เลย (body ที่ยังบีบอัดอยู่ · ไฟล์ไบนารี) —
+        # json ของ stdlib โยนตัวนี้ก่อนจะได้เริ่ม parse และมันไม่ใช่ JSONDecodeError
         data = None
     else:
         problem = embedded_error(endpoint, data)
