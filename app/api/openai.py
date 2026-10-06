@@ -42,6 +42,7 @@ from app.core.codexcatalog import codex_models
 from app.core.errors import ErrorCode, GatewayError
 from app.core.jsonio import FastJSONResponse
 from app.core.multimodal import RequestProfile, profile_openai_request
+from app.core.params import validate_chat_params
 from app.core.quota import Consumption
 from app.core.rules import fallback_models, resolve_route
 from app.core.tokens import OutputMeter, TokenUsage, estimate_prompt_tokens, resolve_usage
@@ -200,6 +201,8 @@ async def run_chat(
         raise GatewayError(
             ErrorCode.INVALID_REQUEST, "'model' is required.", param="model"
         )
+    # ชนิดและช่วงของพารามิเตอร์ — ก่อนทุกด่าน ก่อนจองช่อง ก่อนมีแถว usage (app/core/params.py)
+    validate_chat_params(body)
 
     # model="auto" — ให้เกตเวย์เลือกเองจากรูปร่างของคำขอ
     #

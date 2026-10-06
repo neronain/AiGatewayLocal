@@ -104,8 +104,20 @@ def validate_context_budget(
     """
     limits = model.spec.limits
     estimated_prompt = estimate_prompt_tokens(profile, model.spec.wide_chars_per_token)
-    max_output = requested_max_tokens or limits.max_output_tokens
-    max_output = min(max_output, limits.max_output_tokens)
+
+    # `n` คำตอบ = backend เขียน `max_tokens` *ต่อคำตอบ* · เพดาน `max_output_tokens` เป็นของ
+    # ทั้งคำขอ (คือสิ่งที่แค็ตตาล็อกโชว์ และสิ่งที่โควตาตรวจล่วงหน้าไม่ได้) จึงแบ่งให้แต่ละ
+    # คำตอบเท่า ๆ กัน · เดิม n=4 บนโมเดลเพดาน 16,384 ขอ output ได้ 65,536 ในคำขอเดียว
+    ceiling = limits.max_output_tokens // max(profile.choices, 1)
+    if ceiling < 1:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            f"'n' is {profile.choices}, but '{model.alias}' writes at most "
+            f"{limits.max_output_tokens:,} output tokens per request - not enough for "
+            "one token per choice. Ask for fewer choices.",
+            param="n",
+        )
+    max_output = min(requested_max_tokens or ceiling, ceiling)
 
     # Only reject when the prompt is unambiguously too long.
     if estimated_prompt > limits.context_tokens * CONTEXT_TOLERANCE:

@@ -39,6 +39,7 @@ from app.core.capability import (
 from app.core.errors import ErrorCode, GatewayError
 from app.core.jsonio import FastJSONResponse
 from app.core.multimodal import profile_anthropic_request
+from app.core.params import validate_messages_params
 from app.core.rules import resolve_route
 from app.core.tokens import OutputMeter, TokenUsage, resolve_usage
 from app.db.session import get_session, release_connection
@@ -85,6 +86,7 @@ async def messages(
     alias = body.get("model")
     if not isinstance(alias, str) or not alias:
         raise GatewayError(ErrorCode.INVALID_REQUEST, "'model' is required.", param="model")
+    validate_messages_params(body)
 
     model = await resolve_model(state, session, alias, principal)
     await assert_model_permitted(

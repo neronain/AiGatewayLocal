@@ -43,6 +43,7 @@ from app.core.capability import (
 from app.core.errors import ErrorCode, GatewayError
 from app.core.jsonio import FastJSONResponse
 from app.core.multimodal import profile_responses_request
+from app.core.params import validate_responses_params
 from app.core.rules import resolve_route
 from app.core.tokens import OutputMeter, TokenUsage, resolve_usage
 from app.db.session import get_session, release_connection
@@ -88,6 +89,7 @@ async def create_response(
     alias = body.get("model")
     if not isinstance(alias, str) or not alias:
         raise GatewayError(ErrorCode.INVALID_REQUEST, "'model' is required.", param="model")
+    validate_responses_params(body)
 
     # Codex keeps conversation state on the server with previous_response_id.
     # LiteGate stores no prompts and no responses by design (PRD §12), so there is

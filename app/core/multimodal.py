@@ -99,6 +99,11 @@ class RequestProfile:
     batch_items: int = 0
     largest_item_tokens: int = 0
 
+    # จำนวนคำตอบที่ขอในคำขอเดียว (`n` ของ chat completions) · backend เขียนคำตอบละ
+    # `max_tokens` แยกกัน เพดาน output ต่อคำขอจึงต้องหารด้วยค่านี้ — ดู
+    # `capability.validate_context_budget`
+    choices: int = 1
+
     @property
     def image_count(self) -> int:
         return len(self.images)
@@ -281,6 +286,9 @@ def profile_openai_request(body: dict[str, Any], policy: VisionPolicy) -> Reques
     """Inspect an OpenAI /v1/chat/completions body. Body is not mutated."""
     profile = RequestProfile()
     profile.requires_streaming = bool(body.get("stream"))
+    choices = body.get("n")
+    if isinstance(choices, int) and not isinstance(choices, bool) and choices > 1:
+        profile.choices = choices
     if body.get("tools") or body.get("functions") or body.get("tool_choice"):
         profile.requires_tools = True
     # นิยาม tool ถูกส่งทุกเทิร์นและยาวได้เป็นหมื่น token — เดิมไม่ถูกนับเลย
