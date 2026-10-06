@@ -205,8 +205,8 @@ def issue_session(user_id: str, epoch: int, ttl: int = SESSION_TTL_SECONDS) -> s
     """A signed, self-contained token. No server-side session table.
 
     `epoch` is the user's session_epoch, which is bumped on every password
-    change - so changing a password signs out every existing session without
-    needing anything to be stored or swept.
+    change and on every sign-out - so either one ends every existing session
+    of that account without needing anything to be stored or swept.
     """
     payload = {"sub": user_id, "epoch": epoch, "exp": int(time.time()) + ttl}
     body = _b64(json.dumps(payload, separators=(",", ":")).encode())

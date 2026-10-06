@@ -188,12 +188,58 @@ async def login(
 
 
 @router.post("/auth/logout")
-async def logout(response: Response) -> dict[str, Any]:
+async def logout(
+    request: Request,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Sign out - and make the session that was presented stop working.
+
+    This used to clear the cookie and nothing else. The token inside it stayed
+    valid until it expired on its own, up to eight hours later, so a copy of it
+    - from a shared machine, a proxy log, a browser extension - carried on
+    working after its owner had pressed "sign out" and walked away (2026-10-06:
+    the old cookie still got 200 on /admin/users).
+
+    Sessions are stateless: a signed token carrying the user's `session_epoch`,
+    with no table of live sessions to delete one row from. The only way to
+    retire a token is to move the epoch on, which retires **every** session of
+    that account, on every device - the same thing a password change does. That
+    is the honest cost of having no session table, and it errs in the safe
+    direction: signing out somewhere you did not mean to costs a sign-in,
+    staying signed in somewhere you did not know about costs the account. The
+    response and the audit row both say so.
+
+    API keys are not sessions and are not touched.
+    """
+    from types import SimpleNamespace
+
+    from app.core.passwords import read_session
+
+    ended = False
+    # Both names: the same gateway answers on http and https with one cookie
+    # jar, and a browser can be holding a session under each.
+    for name in (SESSION_COOKIE, SESSION_COOKIE_INSECURE):
+        payload = read_session(request.cookies.get(name) or "")
+        if payload is None:
+            continue
+        user = await session.get(User, payload.get("sub"))
+        # Only a session that is still good can end sessions. Otherwise a token
+        # retired last week would be a button for signing its owner out again.
+        if user is None or int(payload.get("epoch", -1)) != int(user.session_epoch or 0):
+            continue
+        user.session_epoch = int(user.session_epoch or 0) + 1
+        await audit(session, request, SimpleNamespace(user_id=user.id), "auth.logout",
+                    "user", user.id, {"all_sessions_signed_out": True})
+        ended = True
+    if ended:
+        await session.commit()
+
     # Clear both names. Signing out over one scheme should not leave a live
     # session behind on the other address of the same gateway.
     for name in (SESSION_COOKIE, SESSION_COOKIE_INSECURE):
         response.delete_cookie(name, path="/")
-    return {"signed_out": True}
+    return {"signed_out": True, "all_sessions_signed_out": ended}
 
 
 class PasswordChange(BaseModel):
