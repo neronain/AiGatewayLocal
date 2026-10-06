@@ -28,7 +28,8 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from calendar import monthrange
-from dataclasses import dataclass
+from collections.abc import Collection
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from prometheus_client import Gauge
@@ -37,7 +38,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ErrorCode, GatewayError
-from app.db.models import AccessGroup, QuotaCounter, QuotaPolicy
+from app.db.models import AccessGroup, ApiKey, Membership, QuotaCounter, QuotaPolicy
 from app.registry.schema import QuotaDefaults
 
 log = logging.getLogger(__name__)
@@ -93,10 +94,34 @@ class ResolvedLimits:
     workspace_id: str | None = None
     model_alias: str | None = None
     access_group_id: str | None = None
+    # เฉพาะเพดานของ key (source == "key") — ใบไหน
+    api_key_id: str | None = None
 
     @property
     def rate_limited(self) -> bool:
         return bool(self.max_requests_per_minute or self.max_tokens_per_minute)
+
+
+@dataclass
+class PolicyBook:
+    """ทุกอย่างที่ต้องรู้เพื่อตอบว่า "นโยบายไหนผูกคำขอของคนนี้ได้บ้าง" — อ่านครั้งเดียว
+
+    ทางเดินของคำขอถามแค่ว่านโยบายไหนชนะสำหรับ (คน, workspace ของ key, โมเดล) ชุดเดียว
+    หน้าจอของผู้ดูแลต้องตอบคำถามที่กว้างกว่า: ชุดไหนบ้างที่เป็นไปได้ และแต่ละชุดใครชนะ
+    หน้าที่แสดงคนสองร้อยคนจะถามฐานข้อมูลซ้ำสองร้อยรอบไม่ได้ จึงอ่านมาทั้งเล่มแล้วคิดในหน่วยความจำ
+    ด้วยตรรกะตัวเดียวกับทางเดินของคำขอ (`QuotaService._winner`)
+    """
+
+    # นโยบายของคน (ไม่รวมเพดานของ key) ที่เปิดอยู่และยังไม่หมดอายุ เรียงตามลำดับตัดสิน
+    policies: list[QuotaPolicy] = field(default_factory=list)
+    # มัดที่มีนโยบายเล็งอยู่ → โมเดลในมัด (เฉพาะมัดที่เปิดอยู่)
+    bundles: dict[str, set[str]] = field(default_factory=dict)
+    # api_key_id → เพดานของใบนั้น
+    ceilings: dict[str, list[QuotaPolicy]] = field(default_factory=dict)
+    # user_id → key ที่ยังใช้ได้ (ไม่ถูกเพิกถอน ไม่หมดอายุ)
+    keys: dict[str, list[ApiKey]] = field(default_factory=dict)
+    # user_id → workspace ที่เป็นสมาชิก
+    memberships: dict[str, set[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -790,6 +815,16 @@ class QuotaService:
         คำขอหนึ่งคำขออยู่ใต้นโยบายเดียว และ **ถูกนับลงกองของนโยบายนั้น** (`subject`)
         — กองของเป้าหมายที่มันเล็ง ไม่ใช่กองรวมของคน
         """
+        policies = await self._person_policies(session)
+        # Only the bundles some policy actually points at, and only when the
+        # alias could match one - a deployment with no bundle quotas asks nothing.
+        bundles = await self._bundles(session, policies) if model_alias else {}
+        return self._limits_of(
+            self._winner(policies, bundles, user_id, workspace_id, model_alias), user_id
+        )
+
+    @staticmethod
+    async def _person_policies(session: AsyncSession) -> list[QuotaPolicy]:
         now = datetime.now(timezone.utc)
         result = await session.execute(
             # นโยบายของ key ไม่เกี่ยวกับการคิดโควตาของคน · ถ้าไม่กันไว้ นโยบายที่ตั้ง
@@ -804,22 +839,38 @@ class QuotaService:
         # An expired policy is skipped rather than deleted: the row is the record
         # of what was granted and when, which is the first thing anyone asks
         # afterwards.
-        policies = [
+        return [
             p for p in result.scalars()
             if p.expires_at is None or _aware(p.expires_at) > now
         ]
 
-        # Only the bundles some policy actually points at, and only when the
-        # alias could match one - a deployment with no bundle quotas asks nothing.
-        bundles: dict[str, set[str]] = {}
+    @staticmethod
+    async def _bundles(
+        session: AsyncSession, policies: list[QuotaPolicy]
+    ) -> dict[str, set[str]]:
         wanted = {p.access_group_id for p in policies if p.access_group_id}
-        if wanted and model_alias:
-            rows = await session.execute(
-                select(AccessGroup.id, AccessGroup.models).where(
-                    AccessGroup.id.in_(wanted), AccessGroup.enabled.is_(True)
-                )
+        if not wanted:
+            return {}
+        rows = await session.execute(
+            select(AccessGroup.id, AccessGroup.models).where(
+                AccessGroup.id.in_(wanted), AccessGroup.enabled.is_(True)
             )
-            bundles = {gid: set(models or []) for gid, models in rows}
+        )
+        return {gid: set(models or []) for gid, models in rows}
+
+    @staticmethod
+    def _winner(
+        policies: list[QuotaPolicy],
+        bundles: dict[str, set[str]],
+        user_id: str,
+        workspace_id: str | None,
+        model_alias: str,
+    ) -> QuotaPolicy | None:
+        """นโยบายที่ผูกคำขอของ (คน, workspace ของ key, โมเดล) ชุดนี้ · None = ค่าตั้งต้น
+
+        ไม่แตะฐานข้อมูล — ทางเดินของคำขอและหน้าจอของผู้ดูแลเรียกตัวเดียวกันนี้ จึงไม่มีวัน
+        ที่หน้าจอบอกกฎหนึ่งแล้วคำขอถูกตัดสินด้วยอีกกฎหนึ่ง
+        """
 
         def score(policy: QuotaPolicy) -> int:
             if policy.api_key_id:
@@ -851,8 +902,10 @@ class QuotaService:
             current = score(policy)
             if current > best_score:
                 best, best_score = policy, current
+        return best if best_score >= 0 else None
 
-        if best is None or best_score < 0:
+    def _limits_of(self, best: QuotaPolicy | None, user_id: str) -> ResolvedLimits:
+        if best is None:
             d = self._defaults
             return ResolvedLimits(
                 window=d.window,
@@ -885,6 +938,22 @@ class QuotaService:
             access_group_id=best.access_group_id,
         )
 
+    def _ceiling_of(self, policy: QuotaPolicy, api_key_id: str) -> ResolvedLimits:
+        return ResolvedLimits(
+            window=policy.window,
+            max_requests=policy.max_requests,
+            max_input_tokens=policy.max_input_tokens,
+            max_output_tokens=policy.max_output_tokens,
+            max_images=policy.max_images,
+            source="key",
+            max_requests_per_minute=policy.max_requests_per_minute or 0,
+            max_tokens_per_minute=policy.max_tokens_per_minute or 0,
+            policy_id=policy.id,
+            policy_name=policy.name or "",
+            subject=self.key_subject(api_key_id),
+            api_key_id=api_key_id,
+        )
+
     async def resolve_key_limits(
         self, session: AsyncSession, api_key_id: str
     ) -> KeyLimits | None:
@@ -913,25 +982,9 @@ class QuotaService:
         if not policies:
             return None
         # นโยบายของ key มีไว้เพื่อ *จำกัด* — ตั้งไว้กี่อันก็ต้องผ่านทุกอัน ไม่มีอันไหนแทนอันไหน
-        subject = self.key_subject(api_key_id)
         return KeyLimits(
-            subject=subject,
-            ceilings=[
-                ResolvedLimits(
-                    window=p.window,
-                    max_requests=p.max_requests,
-                    max_input_tokens=p.max_input_tokens,
-                    max_output_tokens=p.max_output_tokens,
-                    max_images=p.max_images,
-                    source="key",
-                    max_requests_per_minute=p.max_requests_per_minute or 0,
-                    max_tokens_per_minute=p.max_tokens_per_minute or 0,
-                    policy_id=p.id,
-                    policy_name=p.name or "",
-                    subject=subject,
-                )
-                for p in policies
-            ],
+            subject=self.key_subject(api_key_id),
+            ceilings=[self._ceiling_of(p, api_key_id) for p in policies],
         )
 
     async def check_key(self, api_key_id: str, limits: KeyLimits) -> None:
@@ -1089,6 +1142,226 @@ class QuotaService:
                 subject, window, delta, exc_info=True,
             )
 
+    # ------------------------------------------------------------------
+    # หน้าจอของผู้ดูแล: นโยบายทุกตัวที่ผูกคำขอของคนคนหนึ่งได้
+    # ------------------------------------------------------------------
+    async def load_book(
+        self, session: AsyncSession, user_ids: Collection[str]
+    ) -> PolicyBook:
+        """อ่านนโยบาย มัด เพดานของ key · key และการเป็นสมาชิกของคนกลุ่มนี้ — ครั้งเดียว"""
+        now = datetime.now(timezone.utc)
+        policies = await self._person_policies(session)
+        book = PolicyBook(policies=policies, bundles=await self._bundles(session, policies))
+        if not user_ids:
+            return book
+
+        keys = await session.execute(
+            select(ApiKey)
+            .where(ApiKey.user_id.in_(user_ids), ApiKey.revoked_at.is_(None))
+            .order_by(ApiKey.created_at, ApiKey.id)
+        )
+        for key in keys.scalars():
+            if key.expires_at is None or _aware(key.expires_at) > now:
+                book.keys.setdefault(key.user_id, []).append(key)
+
+        key_ids = [k.id for held in book.keys.values() for k in held]
+        if key_ids:
+            ceilings = await session.execute(
+                select(QuotaPolicy)
+                .where(QuotaPolicy.enabled.is_(True), QuotaPolicy.api_key_id.in_(key_ids))
+                .order_by(QuotaPolicy.created_at, QuotaPolicy.id)
+            )
+            for policy in ceilings.scalars():
+                if policy.expires_at is None or _aware(policy.expires_at) > now:
+                    book.ceilings.setdefault(policy.api_key_id, []).append(policy)
+
+        members = await session.execute(
+            select(Membership.user_id, Membership.workspace_id).where(
+                Membership.user_id.in_(user_ids)
+            )
+        )
+        for user_id, workspace_id in members:
+            book.memberships.setdefault(user_id, set()).add(workspace_id)
+        return book
+
+    def binding(
+        self,
+        book: PolicyBook,
+        user_id: str,
+        *,
+        only_key: str | None = None,
+        only_workspace: str | None = None,
+    ) -> list[ResolvedLimits]:
+        """ทุกชุดลิมิตที่ผูกคำขอของคนนี้ได้ — แต่ละชุดมีกองของตัวเอง
+
+        คำขอของคนคนหนึ่งไม่ได้อยู่ใต้กฎเดียว: key ที่ออกให้ workspace อยู่ใต้นโยบายของ
+        workspace นั้น · โมเดลที่มีนโยบายเจาะจงอยู่ใต้นโยบายนั้น · และ key ที่มีเพดานต้อง
+        ผ่านเพดานของตัวเองด้วย · หน้าจอเคยถามแค่ชุดเดียว (ไม่มี workspace ไม่มีโมเดล) —
+        สมาชิกที่ติดนโยบาย "CS101: 1 ครั้งต่อเดือน" จึงถูกแสดงว่าอยู่ใต้ค่าตั้งต้น 500 ครั้ง
+        ต่อวัน (ตรวจพบ 2026-10-06)
+
+        ไล่ทุกชุด (workspace ของ key ที่คนนี้ถือ × โมเดลที่มีนโยบายเล็ง) ผ่าน `_winner`
+        ตัวเดียวกับทางเดินของคำขอ แล้วเก็บผู้ชนะที่ไม่ซ้ำกัน · ชุดแรกเสมอคือ "ไม่มี
+        workspace ไม่มีโมเดลเจาะจง" ซึ่งเป็นสิ่งที่หน้าจอเดิมแสดง
+
+        `only_key` / `only_workspace` — มุมของ key ใบเดียว (ใช้กับ /v1/me): เฉพาะ workspace
+        ของใบนั้น และเฉพาะเพดานของใบนั้น
+        """
+        held = book.keys.get(user_id, [])
+        if only_key is not None:
+            workspaces: list[str | None] = [only_workspace]
+            held = [k for k in held if k.id == only_key]
+        else:
+            workspaces = [None, *dict.fromkeys(k.workspace_id for k in held if k.workspace_id)]
+
+        aliases = [""]
+        for policy in book.policies:
+            if policy.model_alias:
+                aliases.append(policy.model_alias)
+            elif policy.access_group_id:
+                aliases.extend(sorted(book.bundles.get(policy.access_group_id, ())))
+
+        found: dict[tuple[str, str], ResolvedLimits] = {}
+        for workspace_id in workspaces:
+            for alias in dict.fromkeys(aliases):
+                winner = self._winner(book.policies, book.bundles, user_id, workspace_id, alias)
+                limits = self._limits_of(winner, user_id)
+                found.setdefault((limits.subject, limits.policy_id), limits)
+
+        lanes = list(found.values())
+        for key in held:
+            lanes.extend(self._ceiling_of(p, key.id) for p in book.ceilings.get(key.id, []))
+        return lanes
+
+    @staticmethod
+    def not_bound(book: PolicyBook, user_id: str) -> list[dict]:
+        """นโยบายของ workspace ที่คนนี้เป็นสมาชิก แต่ key บางใบของเขา **ไม่อยู่ใต้มัน**
+
+        นโยบายของ workspace ผูกเฉพาะคำขอที่มาจาก key ซึ่งออกให้ workspace นั้น — ไม่ได้
+        ผูกจากการเป็นสมาชิก · ผู้ดูแลที่ตั้ง "CS101: 1 ครั้งต่อเดือน" แล้วเห็นสมาชิกยิงได้
+        ไม่จำกัดผ่าน key ที่ออกโดยไม่ได้เลือก workspace ต้องมีอะไรบอกว่าเกิดอะไรขึ้น ·
+        (จะให้ผูกจากการเป็นสมาชิกหรือไม่ เป็นการตัดสินใจของเจ้าของงาน — ตรงนี้แค่บอกความจริง)
+        """
+        member_of = book.memberships.get(user_id, set())
+        held = book.keys.get(user_id, [])
+        notes = []
+        for policy in book.policies:
+            if not policy.workspace_id or policy.workspace_id not in member_of:
+                continue
+            if policy.user_id and policy.user_id != user_id:
+                continue
+            outside = [k for k in held if k.workspace_id != policy.workspace_id]
+            if not outside:
+                continue
+            notes.append({
+                "policy_id": policy.id,
+                "policy_name": policy.name or "",
+                "workspace_id": policy.workspace_id,
+                "keys": [
+                    {"id": k.id, "name": k.name, "key_prefix": k.key_prefix,
+                     "workspace_id": k.workspace_id}
+                    for k in outside
+                ],
+                "reason": (
+                    "A workspace policy binds only requests made with a key issued "
+                    "for that workspace. These keys were not, so this policy does "
+                    "not limit them."
+                ),
+            })
+        return notes
+
+    async def describe(self, limits: ResolvedLimits) -> dict:
+        """ชุดลิมิตหนึ่งชุด พร้อมการใช้งานจากกองของมันเอง — รูปที่หน้าจอแสดง"""
+        used = await self._store.get(limits.subject, limits.window)
+        _, end = window_bounds(limits.window)
+        caps = {
+            "max_requests": limits.max_requests,
+            "max_input_tokens": limits.max_input_tokens,
+            "max_output_tokens": limits.max_output_tokens,
+            "max_images": limits.max_images,
+            "max_requests_per_minute": limits.max_requests_per_minute,
+            "max_tokens_per_minute": limits.max_tokens_per_minute,
+        }
+        spent = _used_dict(used)
+        percents = [
+            round(100 * spent[u] / caps[c])
+            for u, c in _WINDOW_DIMENSIONS
+            if caps[c] and caps[c] > 0
+        ]
+        return {
+            "source": limits.source,
+            "policy_id": limits.policy_id,
+            "policy_name": limits.policy_name,
+            "applies_to": {
+                "workspace_id": limits.workspace_id,
+                "model_alias": limits.model_alias,
+                "access_group_id": limits.access_group_id,
+                "api_key_id": limits.api_key_id,
+            },
+            # กองที่ลิมิตชุดนี้ถูกวัดด้วย — ตัวเดียวกับที่ reset รายงานว่าล้าง
+            "counter": limits.subject,
+            "window": limits.window,
+            "window_end": end.isoformat(),
+            "limits": caps,
+            "used": spent,
+            # เต็มที่สุดในสี่มิติ = ตัวที่จะหยุดเขาจริง
+            "percent": max(percents) if percents else None,
+            "exhausted": any(
+                caps[c] and spent[u] >= caps[c] for u, c in _WINDOW_DIMENSIONS
+            ),
+        }
+
+    async def overview(
+        self,
+        book: PolicyBook,
+        user_id: str,
+        *,
+        only_key: str | None = None,
+        only_workspace: str | None = None,
+    ) -> dict:
+        lanes = self.binding(book, user_id, only_key=only_key, only_workspace=only_workspace)
+        return {
+            "policies": [await self.describe(limits) for limits in lanes],
+            "not_bound": [] if only_key is not None else self.not_bound(book, user_id),
+        }
+
+    async def reset_person(
+        self, book: PolicyBook, user_id: str, *, include_keys: bool = False
+    ) -> dict:
+        """คืนโควตาให้คนคนนี้ — **ทุกกองที่ผูกคำขอของเขา** และบอกว่าล้างอะไร ไม่ล้างอะไร
+
+        เดิมล้างกองเดียว (กองของชุด "ไม่มี workspace ไม่มีโมเดล") แล้วตอบ 200 — สมาชิกที่
+        ติดนโยบายรายเดือนของ workspace ได้คำตอบ `{'window': 'day', 'cleared': {…}}` แล้วยัง
+        429 อยู่เหมือนเดิม (ตรวจพบ 2026-10-06) · ปุ่มที่บอกว่าสำเร็จโดยไม่ได้ปลดล็อกใครคือ
+        ปุ่มที่ทำให้ผู้ดูแลเลิกเชื่อหน้าจอ
+
+        เพดานของ key ไม่ถูกล้างเว้นแต่สั่ง (`include_keys`): มันเป็นข้อจำกัดของ *ใบ* — ใบทดลอง
+        50 ครั้งที่แจกคนนอกไม่ควรได้อีก 50 ครั้งเพราะมีคนกดคืนโควตาให้เจ้าของ · แต่ถูก
+        รายงานเสมอ พร้อมบอกว่าเต็มอยู่หรือไม่ เพราะถ้าเต็ม คนคนนั้นยังถูกปฏิเสธผ่านใบนั้น
+
+        ไม่กลืน error: การล้างที่ล้มเงียบ ๆ ทิ้งคนไว้ข้างนอกขณะที่หน้าจอบอกว่าเรียบร้อย
+        """
+        cleared: list[dict] = []
+        kept: list[dict] = []
+        done: set[tuple[str, str]] = set()
+        for limits in self.binding(book, user_id):
+            lane = await self.describe(limits)
+            if limits.source == "key" and not include_keys:
+                lane["reason"] = (
+                    "A ceiling on one API key is not part of the person's own "
+                    "allowance. Send include_keys=true to clear it as well."
+                )
+                kept.append(lane)
+                continue
+            if (limits.subject, limits.window) not in done:
+                done.add((limits.subject, limits.window))
+                await self._store.reset(limits.subject, limits.window)
+            if limits.rate_limited and (limits.subject, "minute") not in done:
+                done.add((limits.subject, "minute"))
+                await self._store.reset(limits.subject, "minute")
+            cleared.append(lane)
+        return {"cleared": cleared, "not_cleared": kept}
+
     async def reset(self, user_id: str, limits: ResolvedLimits) -> None:
         """Give this person their window back.
 
@@ -1116,15 +1389,28 @@ class QuotaService:
                 "max_output_tokens": limits.max_output_tokens,
                 "max_images": limits.max_images,
             },
-            "used": {
-                "requests": used.requests,
-                "text_input_tokens": used.text_input_tokens,
-                "visual_input_tokens": used.visual_input_tokens,
-                "input_tokens": used.input_tokens,
-                "output_tokens": used.output_tokens,
-                "images": used.images,
-            },
+            "used": _used_dict(used),
         }
+
+
+# (มิติของการใช้งาน, ลิมิตของหน้าต่างที่คู่กัน)
+_WINDOW_DIMENSIONS = (
+    ("requests", "max_requests"),
+    ("input_tokens", "max_input_tokens"),
+    ("output_tokens", "max_output_tokens"),
+    ("images", "max_images"),
+)
+
+
+def _used_dict(used: Consumption) -> dict[str, int]:
+    return {
+        "requests": used.requests,
+        "text_input_tokens": used.text_input_tokens,
+        "visual_input_tokens": used.visual_input_tokens,
+        "input_tokens": used.input_tokens,
+        "output_tokens": used.output_tokens,
+        "images": used.images,
+    }
 
 
 def _exhausted(name: str, used_value: int, limit: int, window: str, subject: str) -> GatewayError:

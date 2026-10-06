@@ -247,9 +247,18 @@ Identity plus remaining quota.
                 "max_output_tokens": 200000, "max_images": 50 },
     "used":   { "requests": 12, "text_input_tokens": 4310, "visual_input_tokens": 1105,
                 "input_tokens": 5415, "output_tokens": 2200, "images": 1 }
-  }
+  },
+  "quota_policies": [ { "source": "default", "window": "day", "used": { … }, … },
+                      { "source": "user", "policy_name": "coding 50/day",
+                        "applies_to": { "model_alias": "coding" }, "exhausted": true, … } ]
 }
 ```
+
+`quota` is the limit that binds this key when no particular model is named.
+`quota_policies` is every limit that can stop a request made with this key —
+that one, any policy aimed at a specific model or bundle, and this key's own
+ceilings — each with the usage of its own counter. Same shape as `policies`
+under [`GET /admin/users/{id}/quota`](#get-adminusersidquota).
 
 ---
 
@@ -656,7 +665,8 @@ network at the proxy (SEC-5).
 | GET | `/admin/api-keys?user_id=` | manager | List keys (prefix only) |
 | PATCH | `/admin/api-keys/{id}` | manager | Amend a live key — `{"days": n}` from today (`null` removes it) and/or `{"models": [...]}` replacing the scope. Either alone; neither disturbs the other |
 | DELETE | `/admin/api-keys/{id}` | manager | Revoke |
-| POST | `/admin/users/{id}/quota/reset` | **admin** | Zero this person's counter for the current window — usage records untouched |
+| GET | `/admin/users/{id}/quota` | manager | Every limit that can bind this person's requests, each with its own usage |
+| POST | `/admin/users/{id}/quota/reset` | **admin** | Zero every counter that binds this person; reports which were cleared and which were not — usage records untouched |
 | POST | `/admin/quota-policies` | admin | Create a policy — `name`, window limits, per-minute limits, `expires_in_days`, and either `model_alias` or `access_group_id` |
 | GET | `/admin/quota-policies` | manager | List policies |
 | PATCH | `/admin/quota-policies/{id}` | admin | Edit an existing policy in place: send `days` to move the expiry, and/or any of `window`, `max_requests`, `max_input_tokens`, `max_output_tokens`, `max_images`, `max_requests_per_minute`, `max_tokens_per_minute`. Scope and target are fixed — changing who a policy applies to is a new policy, not an edit |
@@ -1120,16 +1130,72 @@ A manager is held to the same bar as at issue: only models they could call
 themselves, and only for keys belonging to their own workspaces. A revoked key
 cannot be amended — revocation is meant to be final, not a detour.
 
+### `GET /admin/users/{id}/quota`
+
+A person's requests are not all bound by one rule. A request is governed by the
+most specific policy for *(person, the workspace its key was issued for, the
+model it names)*, and counted in that policy's own counter — so the view lists
+every such policy, not one.
+
+```json
+{ "user_id": "…", "source": "default", "window": "day",
+  "limits": { "max_requests": 500, … }, "used": { "requests": 3, … },
+  "policies": [
+    { "source": "default", "policy_id": "", "counter": "user:<id>", "window": "day",
+      "applies_to": { "workspace_id": null, "model_alias": null,
+                      "access_group_id": null, "api_key_id": null },
+      "limits": { … }, "used": { "requests": 3, … }, "percent": 1, "exhausted": false },
+    { "source": "workspace", "policy_id": "…", "policy_name": "CS101: 1 request a month",
+      "counter": "user:<id>:ws:<workspace>", "window": "month",
+      "applies_to": { "workspace_id": "…", "workspace_code": "CS101", … },
+      "used": { "requests": 1, … }, "percent": 100, "exhausted": true } ],
+  "not_bound": [
+    { "policy_id": "…", "workspace_code": "CS101",
+      "keys": [ { "id": "…", "name": "laptop", "key_prefix": "lg_sk_ab12" } ],
+      "reason": "A workspace policy binds only requests made with a key issued for that workspace. …" } ] }
+```
+
+* The top-level `source` … `used` fields are the first entry of `policies`: the
+  limit that applies with no workspace and no particular model. They are what
+  this endpoint has always returned.
+* `policies` adds the policy of each workspace one of the person's live keys was
+  issued for, each policy aimed at a model or a bundle, and each ceiling on one
+  of their keys (`source: "key"`). `exhausted` means a request under that policy
+  is being refused now.
+* `not_bound` names workspace policies that do **not** reach some of this
+  person's keys, although they are a member: a workspace policy binds a key
+  issued for that workspace, not membership. A policy that appears only here
+  limits none of their requests.
+
+`GET /admin/usage/quota` returns the same `policies` and `not_bound` per person.
+
 ### `POST /admin/users/{id}/quota/reset`
+
+Optional body: `{ "include_keys": true }`.
 
 ```json
 { "user_id": "…", "window": "day",
   "cleared": { "requests": 151, "input_tokens": 1630767, "output_tokens": 11033, "images": 2 },
-  "usage": { "window": "day", "limits": { … }, "used": { "requests": 0, … } } }
+  "usage": { "window": "day", "limits": { … }, "used": { "requests": 0, … } },
+  "counters_cleared": [
+    { "counter": "user:<id>", "window": "day", "source": "default", "used": { "requests": 151, … } },
+    { "counter": "user:<id>:ws:<workspace>", "window": "month", "source": "workspace",
+      "policy_name": "CS101: 1 request a month", "used": { "requests": 1, … } } ],
+  "not_cleared": [
+    { "counter": "key:<key id>", "window": "day", "source": "key", "exhausted": true,
+      "reason": "A ceiling on one API key is not part of the person's own allowance. …" } ] }
 ```
 
-Zeroes the counter for the window that currently resolves for that person, and
-the per-minute counter when a rate limit is in force. Admin only.
+Zeroes **every counter that binds this person's requests** — one per entry of
+`policies` above — and the per-minute counter of each where a rate limit is in
+force. `counters_cleared` lists each with what it held (`used`); `window`,
+`cleared` and `usage` are kept for older clients and describe the first of them.
+
+Ceilings on individual API keys are left alone unless `include_keys` is true: a
+trial key capped at 50 requests should not get 50 more because its owner's
+allowance was handed back. They are always reported in `not_cleared`, with
+`exhausted`, because a full ceiling still refuses that person through that key.
+Admin only.
 
 **Usage records are a separate ledger and are not touched** — `/admin/usage/*`
 reports the same figures afterwards. What was cleared is written to the audit

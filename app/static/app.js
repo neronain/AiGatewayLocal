@@ -2746,6 +2746,33 @@ function activityCell(a) {
     <div class="hint">${num(a.tokens)} โทเคน</div>`;
 }
 
+/* ชุดลิมิตหนึ่งชุดในภาษาคน — "ผูกอะไร" ไม่ใช่ id */
+function quotaLaneLabel(p) {
+  const t = p.applies_to || {};
+  const what = p.source === 'key'
+    ? `เพดานของ key ${t.api_key_name || t.api_key_prefix || ''}`.trim()
+    : [
+      t.workspace_id ? `วิชา ${t.workspace_code || ''}`.trim() : '',
+      t.model_alias ? `โมเดล ${t.model_alias}` : (t.access_group_id ? 'มัดโมเดล' : ''),
+    ].filter(Boolean).join(' · ') || { user: 'เฉพาะคนนี้', global: 'นโยบายกลาง',
+      default: 'ค่าตั้งต้น' }[p.source] || p.source;
+  return p.policy_name ? `${what} “${p.policy_name}”` : what;
+}
+
+/* กฎอื่นที่ผูกคนนี้ได้ นอกจากแถบหลัก · คนที่แถบหลักยังเขียวอาจติดอยู่ที่นโยบายของวิชา
+ * หรือเพดานของ key — เคยไม่มีอะไรบนหน้านี้บอกเลย (2026-10-06) */
+function quotaOthers(q) {
+  const lanes = (q.policies || []).slice(1).map((p) => `
+    <div class="hint${p.exhausted ? ' err-text' : ''}">${esc(quotaLaneLabel(p))} · ${
+      p.percent == null ? `${num(p.used.requests)} ครั้ง` : `${p.percent}%`} ของรอบ${
+      esc(p.window)}${p.exhausted ? ' · เต็มแล้ว' : ''}</div>`);
+  const loose = (q.not_bound || []).map((n) => `
+    <div class="hint" title="${esc((n.keys || []).map((k) => k.name || k.key_prefix).join(', '))}"
+      >key ${num((n.keys || []).length)} ใบไม่อยู่ใต้นโยบายของวิชา ${
+      esc(n.workspace_code || '')} — ออกโดยไม่ได้เลือกวิชานั้น</div>`);
+  return lanes.concat(loose).join('');
+}
+
 function quotaCell(q) {
   if (!q) return '<span class="hint">—</span>';
   const named = [
@@ -2757,7 +2784,7 @@ function quotaCell(q) {
 
   if (!named.length) {
     return `<span class="hint">ไม่จำกัด · ${num(q.used.requests)} ครั้งใน${
-      q.window === 'day' ? 'วันนี้' : `รอบ${esc(q.window)}นี้`}</span>`;
+      q.window === 'day' ? 'วันนี้' : `รอบ${esc(q.window)}นี้`}</span>${quotaOthers(q)}`;
   }
   const [useKey, capKey, unit] = named
     .map((n) => [...n, q.used[n[0]] / q.limits[n[1]]])
@@ -2768,7 +2795,7 @@ function quotaCell(q) {
     <div class="meter-bar"><span class="${level}" style="width:${pct}%"></span></div>
     <div class="meter-text">${num(q.used[useKey])} / ${num(q.limits[capKey])} ${unit}
       <span class="hint">${pct}%</span></div>
-  </div>`;
+  </div>${quotaOthers(q)}`;
 }
 
 async function loadAccess() {
@@ -2885,14 +2912,37 @@ async function loadAccess() {
   for (const btn of $('user-table').querySelectorAll('[data-reset-quota]')) {
     btn.onclick = async () => {
       const q = quotaOf[btn.dataset.resetQuota];
-      if (!confirm(`คืนโควตารอบ${q?.window || ''}ให้ ${btn.dataset.who}?\n\n`
-        + 'ตัวนับกลับไปเป็นศูนย์ · ประวัติการใช้งานและรายงานยังอยู่ครบ '
+      const lanes = q?.policies || [];
+      const mine = lanes.filter((p) => p.source !== 'key');
+      const ceilings = lanes.filter((p) => p.source === 'key');
+      if (!confirm(`คืนโควตาให้ ${btn.dataset.who}?\n\n`
+        + (mine.length > 1
+          ? `ล้างตัวนับทุกกองที่ผูกคนนี้ (${mine.length} กอง):\n`
+            + mine.map((p) => `  • ${quotaLaneLabel(p)} — รอบ${p.window}`).join('\n') + '\n\n'
+          : `ตัวนับรอบ${q?.window || ''}กลับไปเป็นศูนย์ · `)
+        + 'ประวัติการใช้งานและรายงานยังอยู่ครบ '
         + 'และการคืนครั้งนี้จะถูกบันทึกว่าใครเป็นคนทำ')) return;
+      // เพดานของ key เป็นข้อจำกัดของใบ ไม่ใช่โควตาของคน — ถามแยก ไม่ล้างพ่วงไปเงียบ ๆ
+      const withKeys = ceilings.length > 0 && confirm(
+        `${btn.dataset.who} มี key ที่ตั้งเพดานของตัวเองไว้ ${ceilings.length} อัน:\n`
+        + ceilings.map((p) => `  • ${quotaLaneLabel(p)}${p.exhausted ? ' (เต็มแล้ว)' : ''}`).join('\n')
+        + '\n\nตกลง = ล้างตัวนับของเพดานเหล่านี้ด้วย\nยกเลิก = คืนเฉพาะโควตาของคน');
       try {
-        const out = await post(`/admin/users/${btn.dataset.resetQuota}/quota/reset`, {});
+        const out = await post(`/admin/users/${btn.dataset.resetQuota}/quota/reset`,
+          { include_keys: withKeys });
         await loadAccess();
-        banner('error', 'ok',
-          `คืนโควตาให้ ${btn.dataset.who} แล้ว · ล้างไป ${num(out.cleared.requests)} ครั้ง`);
+        // บอกตามที่เซิร์ฟเวอร์รายงานว่าล้างจริง ไม่ใช่ตามที่ตั้งใจจะล้าง
+        const done = out.counters_cleared || [];
+        const kept = out.not_cleared || [];
+        const total = done.length
+          ? done.reduce((sum, c) => sum + (c.used?.requests || 0), 0)
+          : out.cleared.requests;
+        banner('error', kept.some((c) => c.exhausted) ? 'warn' : 'ok',
+          `คืนโควตาให้ ${btn.dataset.who} แล้ว · ล้าง ${done.length || 1} กอง รวม ${num(total)} ครั้ง`
+          + (kept.length
+            ? ` · ยังไม่ได้ล้าง: ${kept.map((c) => quotaLaneLabel(c)
+              + (c.exhausted ? ' (เต็มอยู่ — ยังถูกปฏิเสธผ่านใบนี้)' : '')).join(', ')}`
+            : ''));
       } catch (e) { showError(e.message); }
     };
   }
@@ -3303,10 +3353,12 @@ async function showQuotaFor(userId) {
         q.limits.max_requests_per_minute || q.limits.max_tokens_per_minute
           ? ` · จำกัดต่อนาที ${n(q.limits.max_requests_per_minute)} ครั้ง / ${n(q.limits.max_tokens_per_minute)} token`
           : ''}</div>
+      ${quotaOthers(q) ? `<div class="qline">กฎอื่นที่ผูกคำขอของคนนี้ได้:${quotaOthers(q)}</div>` : ''}
       <div class="qline">
         <button id="k-quota-set" class="ghost small">${
           q.source === 'user' ? 'Edit their quota' : 'Set a quota for them'}</button>
-        <span class="hint">โควตานับต่อคน ไม่ใช่ต่อ key — key ทุกใบของคนนี้ใช้กองเดียวกัน</span>
+        <span class="hint">โควตานับต่อคน ไม่ใช่ต่อ key — key ที่ออกให้วิชาใช้กองของวิชานั้น
+          และโมเดลที่มีนโยบายเจาะจงมีกองของตัวเอง</span>
       </div>`;
     $('k-quota-set').onclick = () => openQuotaFor(userId, q);
   } catch (e) {

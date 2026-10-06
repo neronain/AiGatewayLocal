@@ -8,7 +8,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Body, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +41,7 @@ from app.core.modeltest import (
     suggest_tool_parser,
 )
 from app.core.passwords import read_session_cookie
+from app.core.quota import PolicyBook
 from app.core.secrets import SecretStoreError
 from app.core.usage import clean_client_request_id
 from app.db.dialect import utc_date
@@ -435,6 +436,11 @@ async def user_quota(
 
     limits = await state.quota.resolve_limits(session, user_id, None, "")
     snapshot = await state.quota.usage_snapshot(user_id, limits)
+    # ฟิลด์ข้างล่าง (source … window_end) คือกฎของชุด "ไม่มี workspace ไม่มีโมเดลเจาะจง"
+    # ซึ่งเป็นสิ่งที่ฟอร์มออก key ใช้เติมค่าให้ล่วงหน้า · มันไม่ใช่กฎเดียวที่ผูกคนนี้ได้:
+    # `policies` คือทุกชุดลิมิตที่คำขอของเขาตกอยู่ใต้ได้ แต่ละชุดพร้อมการใช้งานของกองตัวเอง
+    book = await state.quota.load_book(session, [user_id])
+    overview = await _quota_overview(session, state, book, user_id)
     return {
         "user_id": user_id,
         "external_id": user.external_id,
@@ -455,13 +461,52 @@ async def user_quota(
         },
         "used": snapshot["used"],
         "window_end": snapshot["window_end"],
+        **overview,
     }
+
+
+async def _quota_overview(
+    session: AsyncSession,
+    state: AppState,
+    book: PolicyBook,
+    user_id: str,
+    workspace_codes: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """`QuotaService.overview` พร้อมชื่อที่คนอ่านออก — รหัสวิชาและชื่อของ key
+
+    id เป็นเลขฐานสิบหก 32 ตัวที่ไม่ได้บอกอะไรกับคนที่อ่านหน้านี้ · "นโยบายนี้ผูก key
+    ที่ออกให้ a3f9…" กับ "…ที่ออกให้ CS101" คือข้อมูลเดียวกันที่อ่านออกแค่แบบเดียว
+    """
+    overview = await state.quota.overview(book, user_id)
+    if workspace_codes is None:
+        workspace_codes = await _workspace_codes(session)
+    keys = {k.id: k for k in book.keys.get(user_id, [])}
+    for lane in overview["policies"]:
+        _name_targets(lane["applies_to"], workspace_codes, keys)
+    for note in overview["not_bound"]:
+        note["workspace_code"] = workspace_codes.get(note["workspace_id"], "")
+    return overview
+
+
+def _name_targets(target: dict[str, Any], workspace_codes: dict[str, str], keys: dict) -> None:
+    if target.get("workspace_id"):
+        target["workspace_code"] = workspace_codes.get(target["workspace_id"], "")
+    key = keys.get(target.get("api_key_id"))
+    if key is not None:
+        target["api_key_name"] = key.name
+        target["api_key_prefix"] = key.key_prefix
+
+
+async def _workspace_codes(session: AsyncSession) -> dict[str, str]:
+    rows = await session.execute(select(Workspace.id, Workspace.code))
+    return {workspace_id: code for workspace_id, code in rows}
 
 
 @router.post("/users/{user_id}/quota/reset")
 async def reset_user_quota(
     user_id: str,
     request: Request,
+    payload: dict[str, Any] | None = Body(default=None),
     actor: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
     state: AppState = Depends(get_state),
@@ -481,25 +526,62 @@ async def reset_user_quota(
     Admin only. A manager can already lift a limit for their own class through a
     quota policy; handing back a spent allowance is a different act, and it
     should be visible at the top.
+
+    **ล้างทุกกองที่ผูกคำขอของคนนี้ ไม่ใช่กองเดียว** — นโยบายของ workspace ที่ key ของเขา
+    อยู่ใต้ และนโยบายที่เล็งโมเดล/มัด มีตัวนับของตัวเอง · คำตอบบอกทีละกองว่าล้างอะไร
+    (`counters_cleared`) และกองไหนที่ยังผูกเขาอยู่แต่ **ไม่ได้ล้าง** (`not_cleared`)
+
+    เพดานของ key ไม่ถูกล้างเว้นแต่ส่ง `{"include_keys": true}` — มันเป็นข้อจำกัดของใบ
+    ไม่ใช่โควตาของคน · แต่ถูกรายงานเสมอพร้อม `exhausted` เพราะถ้าใบนั้นเต็ม คนคนนี้ยัง
+    ถูกปฏิเสธผ่านใบนั้นอยู่ และผู้ดูแลต้องรู้ก่อนจะบอกเขาว่า "คืนให้แล้ว"
     """
     user = await session.get(User, user_id)
     if user is None:
         raise GatewayError(ErrorCode.INVALID_REQUEST, "User not found.")
+    include_keys = (payload or {}).get("include_keys", False)
+    if not isinstance(include_keys, bool):
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "include_keys must be true or false.")
 
     limits = await state.quota.resolve_limits(session, user_id, None, "")
     before = await state.quota.usage_snapshot(user_id, limits)
-    await state.quota.reset(user_id, limits)
+    book = await state.quota.load_book(session, [user_id])
+    outcome = await state.quota.reset_person(book, user_id, include_keys=include_keys)
+
+    workspace_codes = await _workspace_codes(session)
+    keys = {k.id: k for k in book.keys.get(user_id, [])}
+    for lane in (*outcome["cleared"], *outcome["not_cleared"]):
+        _name_targets(lane["applies_to"], workspace_codes, keys)
 
     await audit(
         session, request, actor, "quota.reset", "user", user_id,
-        {"window": limits.window, "cleared": before["used"]},
+        {
+            "window": limits.window,
+            "cleared": before["used"],
+            # ทีละกอง — "คืนโควตาให้ใคร" ไม่พอ ต้องตามได้ว่าคืนกองไหน ยอดเท่าไร
+            "counters": [
+                {"counter": lane["counter"], "window": lane["window"],
+                 "policy_id": lane["policy_id"], "used": lane["used"]}
+                for lane in outcome["cleared"]
+            ],
+            "not_cleared": [
+                {"counter": lane["counter"], "window": lane["window"],
+                 "policy_id": lane["policy_id"]}
+                for lane in outcome["not_cleared"]
+            ],
+            "include_keys": include_keys,
+        },
     )
     await session.commit()
     return {
         "user_id": user_id,
+        # สามฟิลด์นี้คือของเดิม: กองของชุด "ไม่มี workspace ไม่มีโมเดลเจาะจง"
         "window": limits.window,
         "cleared": before["used"],
         "usage": await state.quota.usage_snapshot(user_id, limits),
+        # ของจริงทั้งหมด: แต่ละกองที่ล้าง พร้อมยอดก่อนล้าง
+        "counters_cleared": outcome["cleared"],
+        # กองที่ยังผูกคำขอของคนนี้อยู่ แต่ไม่ได้ล้าง — พร้อมเหตุผล และบอกว่าเต็มอยู่หรือไม่
+        "not_cleared": outcome["not_cleared"],
     }
 
 
@@ -3313,32 +3395,31 @@ async def quota_usage(
         stmt = stmt.where(User.id.in_(visible))
     users = list((await session.execute(stmt)).scalars())
 
+    # นโยบาย · key · การเป็นสมาชิก อ่านครั้งเดียวสำหรับทุกคนในหน้า แล้วตัดสินใน
+    # หน่วยความจำด้วยตรรกะเดียวกับทางเดินของคำขอ — ไม่ใช่หนึ่งชุด query ต่อคน
+    book = await state.quota.load_book(session, [user.id for user in users])
+    workspace_codes = await _workspace_codes(session)
+
     rows = []
     for user in users:
-        limits = await state.quota.resolve_limits(session, user.id, None, "")
-        snapshot = await state.quota.usage_snapshot(user.id, limits)
-        used, caps = snapshot["used"], snapshot["limits"]
-        # The tightest of the four is the one that will actually stop them, so
-        # that is the number worth putting on a bar.
-        percents = [
-            round(100 * used[u] / caps[c])
-            for u, c in (
-                ("requests", "max_requests"),
-                ("input_tokens", "max_input_tokens"),
-                ("output_tokens", "max_output_tokens"),
-                ("images", "max_images"),
-            )
-            if caps[c]
-        ]
+        overview = await _quota_overview(session, state, book, user.id, workspace_codes)
+        # ชุดแรกคือ "ไม่มี workspace ไม่มีโมเดลเจาะจง" — แถบที่หน้านี้วาดมาตลอด · ชุดที่
+        # เหลือ (นโยบายของ workspace ที่ key ของเขาอยู่ใต้ · นโยบายต่อโมเดล · เพดานของ
+        # key) อยู่ใน `policies` พร้อมการใช้งานของกองตัวเอง เพราะตัวที่จะหยุดเขาจริง
+        # อาจไม่ใช่ชุดแรก
+        base = overview["policies"][0]
         rows.append({
             "user_id": user.id,
             "external_id": user.external_id,
-            "window": snapshot["window"],
-            "window_end": snapshot["window_end"],
-            "source": limits.source,
-            "used": used,
-            "limits": caps,
-            "percent": max(percents) if percents else None,
+            "window": base["window"],
+            "window_end": base["window_end"],
+            "source": base["source"],
+            "used": base["used"],
+            "limits": base["limits"],
+            # The tightest of the four is the one that will actually stop them, so
+            # that is the number worth putting on a bar.
+            "percent": base["percent"],
+            **overview,
         })
     return {"data": rows}
 

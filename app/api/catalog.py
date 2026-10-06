@@ -219,6 +219,13 @@ async def me(
         session, principal.user_id, principal.workspace_id, ""
     )
     usage = await state.quota.usage_snapshot(principal.user_id, limits)
+    # `quota` คือกฎของ key ใบนี้เมื่อไม่ได้เจาะจงโมเดล · แต่โมเดลที่มีนโยบายของตัวเอง
+    # และเพดานของใบนี้เองก็หยุดคำขอได้ — คนที่ได้ 429 แล้วมาดูหน้านี้ต้องเห็นตัวที่หยุดเขา
+    book = await state.quota.load_book(session, [principal.user_id])
+    overview = await state.quota.overview(
+        book, principal.user_id,
+        only_key=principal.api_key_id or "", only_workspace=principal.workspace_id,
+    )
     # ชื่อวิชา ไม่ใช่ id — id เป็นเลขฐานสิบหก 32 ตัวที่ไม่ได้บอกอะไรกับคนที่อ่านหน้านี้
     # และเขาไม่มีทางเอาไปเทียบกับอะไรได้เลย
     workspace = None
@@ -234,4 +241,5 @@ async def me(
         "workspace_id": principal.workspace_id,
         "workspace": workspace,
         "quota": usage,
+        "quota_policies": overview["policies"],
     }
