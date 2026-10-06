@@ -93,6 +93,35 @@ class ResolvedLimits:
         return bool(self.max_requests_per_minute or self.max_tokens_per_minute)
 
 
+@dataclass
+class KeyLimits:
+    """ทุกเพดานที่ตั้งไว้บน key ใบเดียว — **แต่ละอันถูกบังคับแยกกัน**
+
+    เดิมเลือกมาอันเดียวด้วย `min(..., key=max_requests or 1 << 62)` คือ "อันที่
+    max_requests น้อยที่สุด" แล้วทิ้งที่เหลือ · key ที่มีเพดาน 1,000 ครั้ง/วัน กับอีกอัน
+    5 output token/วัน จึงถูกบังคับแค่อันแรก — เรียกสี่ครั้ง ครั้งละ 5 output token
+    ผ่านหมด (ตรวจพบ 2026-10-06) · เพดานมีไว้เพื่อจำกัด อันที่ถูกทิ้งคืออันที่ไม่ได้จำกัดอะไร
+    โดยไม่มีอะไรบอก
+
+    ทุกอันวัดกับกองเดียวกัน (`key:<id>`) ในหน้าต่างของตัวเอง
+    """
+
+    subject: str
+    ceilings: list[ResolvedLimits]
+
+    @property
+    def window(self) -> str:
+        return self.ceilings[0].window
+
+    @property
+    def windows(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(c.window for c in self.ceilings))
+
+    @property
+    def rate_limited(self) -> bool:
+        return any(c.rate_limited for c in self.ceilings)
+
+
 @dataclass(frozen=True)
 class Charge:
     """คำขอหนึ่งคำขอถูกนับลงตัวนับไหนบ้าง — ตัดสินตอนรับคำขอ ใช้ตอนคำขอจบ
@@ -705,8 +734,8 @@ class QuotaService:
 
     async def resolve_key_limits(
         self, session: AsyncSession, api_key_id: str
-    ) -> ResolvedLimits | None:
-        """เพดานของ key ใบนี้ ถ้ามีคนตั้งไว้ · ไม่มี = None
+    ) -> KeyLimits | None:
+        """เพดานของ key ใบนี้ — ทุกอันที่มีคนตั้งไว้ · ไม่มีเลย = None
 
         แยกจาก resolve_limits ของคนโดยตั้งใจ — ไม่ไปแตะตรรกะที่ทางเดินของคำขอทุกคำขอ
         ใช้อยู่ · และเมื่อไม่มีนโยบายของ key (ซึ่งคือค่าเริ่มต้นของทุก deployment)
@@ -716,10 +745,13 @@ class QuotaService:
             return None
         now = datetime.now(timezone.utc)
         result = await session.execute(
-            select(QuotaPolicy).where(
+            select(QuotaPolicy)
+            .where(
                 QuotaPolicy.enabled.is_(True),
                 QuotaPolicy.api_key_id == api_key_id,
             )
+            # ลำดับคงที่: อันที่ชนก่อนคืออันที่รายงาน และต้องเป็นอันเดิมทุกครั้ง
+            .order_by(QuotaPolicy.created_at, QuotaPolicy.id)
         )
         policies = [
             p for p in result.scalars()
@@ -727,30 +759,36 @@ class QuotaService:
         ]
         if not policies:
             return None
-        # ตั้งซ้อนกันหลายอันบนใบเดียวไม่ใช่เรื่องปกติ — เอาอันที่เข้มที่สุดไว้ก่อน
-        # เพราะนโยบายของ key มีไว้เพื่อ *จำกัด* ไม่ใช่เพื่อปลด
-        best = min(policies, key=lambda p: (p.max_requests or 1 << 62))
-        return ResolvedLimits(
-            window=best.window,
-            max_requests=best.max_requests,
-            max_input_tokens=best.max_input_tokens,
-            max_output_tokens=best.max_output_tokens,
-            max_images=best.max_images,
-            source="key",
-            max_requests_per_minute=best.max_requests_per_minute or 0,
-            max_tokens_per_minute=best.max_tokens_per_minute or 0,
-            policy_id=best.id,
-            policy_name=best.name or "",
-            subject=self.key_subject(api_key_id),
+        # นโยบายของ key มีไว้เพื่อ *จำกัด* — ตั้งไว้กี่อันก็ต้องผ่านทุกอัน ไม่มีอันไหนแทนอันไหน
+        subject = self.key_subject(api_key_id)
+        return KeyLimits(
+            subject=subject,
+            ceilings=[
+                ResolvedLimits(
+                    window=p.window,
+                    max_requests=p.max_requests,
+                    max_input_tokens=p.max_input_tokens,
+                    max_output_tokens=p.max_output_tokens,
+                    max_images=p.max_images,
+                    source="key",
+                    max_requests_per_minute=p.max_requests_per_minute or 0,
+                    max_tokens_per_minute=p.max_tokens_per_minute or 0,
+                    policy_id=p.id,
+                    policy_name=p.name or "",
+                    subject=subject,
+                )
+                for p in policies
+            ],
         )
 
-    async def check_key(self, api_key_id: str, limits: ResolvedLimits) -> Consumption:
-        """ด่านที่สอง: ใบนี้เองยังไม่เกินเพดานของมัน
+    async def check_key(self, api_key_id: str, limits: KeyLimits) -> None:
+        """ด่านที่สอง: ใบนี้เองยังไม่เกินเพดานของมัน — ทุกเพดาน
 
         เรียกหลังด่านของคนเสมอ · ข้อความที่ผู้ใช้ได้จะบอกว่าเป็นเพดานของ key ไม่ใช่
         ของตัวเขา ไม่งั้นคนที่ยังมีโควตาเหลือเยอะจะงงว่าทำไมโดนปฏิเสธ
         """
-        return await self._check_subject(self.key_subject(api_key_id), limits, subject="key")
+        for ceiling in limits.ceilings:
+            await self._check_subject(self.key_subject(api_key_id), ceiling, subject="key")
 
     async def check(self, user_id: str, limits: ResolvedLimits) -> Consumption:
         return await self._check_subject(
@@ -758,7 +796,7 @@ class QuotaService:
         )
 
     async def admit(
-        self, limits: ResolvedLimits, key_limits: ResolvedLimits | None = None
+        self, limits: ResolvedLimits, key_limits: KeyLimits | None = None
     ) -> Charge:
         """รับคำขอนี้เข้า และบอกว่ามันจะถูกนับลงกองไหนเมื่อจบ
 
@@ -769,7 +807,8 @@ class QuotaService:
         windows: list[tuple[str, str]] = [(limits.subject, limits.window)]
         minutes: list[str] = [limits.subject] if limits.rate_limited else []
         if key_limits is not None:
-            windows.append((key_limits.subject, key_limits.window))
+            # เพดานแต่ละอันมีหน้าต่างของตัวเอง — นับลงทุกหน้าต่างที่มีเพดานอ่านอยู่
+            windows.extend((key_limits.subject, window) for window in key_limits.windows)
             if key_limits.rate_limited:
                 minutes.append(key_limits.subject)
         return Charge(windows=tuple(dict.fromkeys(windows)), minutes=tuple(minutes))

@@ -231,3 +231,126 @@ def test_the_console_offers_the_hourly_window():
     page = (Path(__file__).resolve().parents[1] / "app/static/index.html").read_text()
     # ทั้งฟอร์มนโยบายหลักและกล่องเพดานของ key
     assert page.count('<option value="hour">hour</option>') >= 2
+
+
+# ── ทุกเพดานบนใบเดียวถูกบังคับ ไม่ใช่แค่อันเดียว ────────────────────────────────
+#
+# ตรวจพบ 2026-10-06: resolve_key_limits เลือกมาอันเดียวด้วย
+# `min(policies, key=max_requests or 1 << 62)` — "อันที่ max_requests น้อยที่สุด" —
+# แล้วทิ้งที่เหลือ · key ที่มีเพดาน 1,000 ครั้ง/วัน กับอีกอัน 5 output token จึงเรียกได้
+# สี่ครั้ง ครั้งละ 5 output token โดยไม่มีอะไรหยุด
+
+CODING = "http://dgx03:8000/v1/chat/completions"
+REPLY = {
+    "id": "chatcmpl-1", "object": "chat.completion", "model": "x",
+    "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"},
+                 "finish_reason": "stop"}],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+}
+
+
+@pytest.fixture
+def upstream():
+    import httpx
+    import respx
+
+    with respx.mock:
+        respx.post(CODING).mock(return_value=httpx.Response(200, json=REPLY))
+        yield
+
+
+def _ceiling(client, key, **body):
+    return client.post("/admin/quota-policies", headers=auth(client.admin_key),
+                       json={"scope": "key", "api_key_id": key["id"], **body})
+
+
+def _ceiling_row(client, key, **columns) -> None:
+    """เพดานที่เขียนลงตารางตรง ๆ — แถวแบบที่ฐานข้อมูลซึ่งใช้งานมาก่อนมีอยู่แล้ว
+    (เพดานสองอันบนใบเดียว หน้าต่างเดียวกัน) ไม่ว่า API จะยอมให้สร้างแบบนั้นอีกหรือไม่"""
+    from app.db.models import QuotaPolicy
+    from app.db.session import session_scope
+
+    async def write():
+        async with session_scope() as session:
+            session.add(QuotaPolicy(scope="key", api_key_id=key["id"], **columns))
+
+    client.portal.call(write)
+
+
+def _call(client, key):
+    return client.post("/v1/chat/completions", headers=auth(key["api_key"]),
+                       json={"model": "coding", "messages": [{"role": "user", "content": "hi"}]})
+
+
+def test_two_ceilings_on_one_key_are_both_enforced(client, upstream):
+    """เคสที่ตรวจพบ: 1,000 ครั้ง/วัน + 5 output token/วัน บนใบเดียว"""
+    _user, key = _member(client, "6499000021")
+    assert _ceiling(client, key, window="day", max_requests=1000,
+                    name="1000 requests").status_code == 201
+    _ceiling_row(client, key, window="day", max_output_tokens=5, name="5 output tokens")
+
+    assert _call(client, key).status_code == 200          # ใช้ไป 5 output token
+    refused = _call(client, key)
+
+    assert refused.status_code == 429, "เพดาน 5 output token ต้องหยุดคำขอที่สอง"
+    error = refused.json()["error"]
+    assert error["details"]["quota"] == "output token"
+    assert error["details"]["subject"] == "key"
+    assert "API key" in error["message"]
+
+
+def test_ceilings_with_different_windows_are_each_counted_in_their_own(client, upstream):
+    """100 ครั้งต่อชั่วโมง กับ 5 output token ต่อเดือน — คนละหน้าต่าง คนละตัวนับ ทั้งคู่มีผล"""
+    _user, key = _member(client, "6499000022")
+    assert _ceiling(client, key, window="hour", max_requests=100).status_code == 201
+    assert _ceiling(client, key, window="month", max_output_tokens=5).status_code == 201
+
+    assert _call(client, key).status_code == 200
+    refused = _call(client, key)
+
+    assert refused.status_code == 429
+    assert refused.json()["error"]["details"]["window"] == "month"
+
+
+def test_the_ceiling_that_is_hit_first_is_the_one_reported(client, upstream):
+    """เพดานที่ไม่ได้ตั้ง max_requests เคยถูกจัดเป็น "หลวมที่สุด" แล้วถูกทิ้ง"""
+    _user, key = _member(client, "6499000023")
+    _ceiling(client, key, window="day", max_input_tokens=15, name="15 input tokens")
+    _ceiling_row(client, key, window="day", max_requests=3, name="3 requests")
+
+    assert _call(client, key).status_code == 200          # 10 input token
+    assert _call(client, key).status_code == 200          # 20 — เกิน 15 แล้ว
+    refused = _call(client, key)
+
+    assert refused.status_code == 429
+    assert refused.json()["error"]["details"]["quota"] == "input token"
+
+
+def test_a_key_under_its_ceilings_is_not_refused(client, upstream):
+    _user, key = _member(client, "6499000024")
+    _ceiling(client, key, window="day", max_requests=10)
+    _ceiling(client, key, window="month", max_output_tokens=500)
+
+    for _ in range(4):
+        assert _call(client, key).status_code == 200
+
+
+def test_two_ceiling_windows_starting_together_do_not_double_count(
+        client, upstream, monkeypatch):
+    """วันที่ 1: เพดานรายวันกับรายเดือนเริ่มพร้อมกัน — ต้องไม่กลายเป็นตัวนับเดียวที่ถูกบวกสองรอบ"""
+    from datetime import datetime, timezone
+
+    from tests.test_quota_counter_identity import counter_rows, freeze
+
+    _user, key = _member(client, "6499000025")
+    _ceiling(client, key, window="day", max_requests=50)
+    _ceiling(client, key, window="month", max_requests=4)
+    freeze(monkeypatch, datetime(2026, 10, 1, 9, 30, tzinfo=timezone.utc))
+
+    outcomes = [_call(client, key).status_code for _ in range(5)]
+
+    assert outcomes == [200, 200, 200, 200, 429], "รายเดือนตั้งไว้ 4 — ไม่ใช่ 2"
+    first = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    rows = {name: n for (name, start), n in counter_rows(client).items()
+            if name.startswith("key:") and start == first}
+    assert rows == {f"key:{key['id']}": 4, f"key:{key['id']}@day": 4}
