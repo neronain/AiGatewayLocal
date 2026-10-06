@@ -70,7 +70,8 @@ def db(tmp_path):
         outsider = User(external_id="6400001", display_name="No group")
         student = User(external_id="6400002", display_name="In CS101")
         both = User(external_id="6400003", display_name="In both")
-        session.add_all([outsider, student, both])
+        root = User(external_id="6400000", display_name="Admin", role="admin")
+        session.add_all([outsider, student, both, root])
         session.flush()
         session.add_all([
             Membership(user_id=student.id, workspace_id=cs101.id),
@@ -87,7 +88,9 @@ def db(tmp_path):
         key(outsider, "outsider")                       # ไม่มีกลุ่ม ไม่ผูก workspace
         key(student, "student")                         # อยู่ CS101 ไม่ผูก workspace
         key(both, "both")                               # อยู่สองกลุ่ม
-        key(student, "pinned", workspace_id=art200.id)  # ผูกไว้แล้ว กลุ่มไม่ควรมีผล
+        key(student, "pinned", workspace_id=art200.id)  # ผูกวิชาที่เจ้าของไม่ได้อยู่
+        key(both, "pinned-member", workspace_id=art200.id)   # ผูกวิชาที่อยู่ — ชนะ union
+        key(root, "pinned-admin", workspace_id=art200.id)    # admin ไม่ขึ้นกับ membership
         key(student, "narrow", models=["coding"])       # จำกัดบน key อยู่แล้ว
         key(student, "gone")
         session.flush()
@@ -134,10 +137,41 @@ def test_being_in_two_groups_adds_up_rather_than_conflicts(db):
     assert after == {"coding", "vision"}
 
 
-def test_a_key_pinned_to_a_workspace_ignores_the_owners_groups(db):
-    """FR-42 · ผูกไว้ตอนออกแล้วต้องชนะ ไม่งั้นการเปลี่ยนนี้ไปแก้ของที่ตั้งใจตั้งไว้"""
+def test_a_key_pinned_to_a_workspace_wins_over_the_owners_other_groups(db):
+    """FR-42 · ผูกไว้ตอนออกแล้วต้องชนะ ไม่งั้นการเปลี่ยนนี้ไปแก้ของที่ตั้งใจตั้งไว้
+
+    เจ้าของอยู่ทั้ง CS101 และ ART200 — ไม่ผูกจะได้ union · ผูก ART200 ต้องได้แค่ vision
+    """
+    before, after = _rows(db)["pinned-member"]
+    assert before == after == {"vision"}
+
+
+def test_a_key_pinned_to_a_workspace_its_owner_is_not_in_reaches_nothing(db):
+    """ผูก ART200 แต่เจ้าของอยู่แค่ CS101 — ใบนี้หยุดทั้งใบ และรายงานต้องบอกก่อน deploy
+
+    เดิมไม่มีใครอ่าน membership ของใบที่ผูก: คนที่ถูกเอาออกจากวิชายังใช้ key ของวิชา
+    นั้นต่อได้ และออก key ให้วิชาที่เจ้าของไม่เคยอยู่ก็ได้ (ตรวจ 2026-10-06)
+    """
     before, after = _rows(db)["pinned"]
-    assert before == after == {"vision"}, "เจ้าของอยู่ CS101 แต่ key ผูก ART200"
+    assert before == {"vision"}
+    assert after == set()
+
+
+def test_the_report_names_pinned_keys_whose_owner_is_not_a_member(db, capsys, monkeypatch):
+    import json
+
+    monkeypatch.setattr(sys, "argv", ["report", "--db", str(db.url), "--json"])
+    assert report.main() == 1
+    out = json.loads(capsys.readouterr().out)
+    assert [e["label"] for e in out["pinned_owner_not_member"]] == ["pinned"]
+    assert out["pinned_owner_not_member"][0]["pinned_to"] == "ART200"
+    assert out["pinned_owner_not_member"][0]["workspaces"] == ["CS101"]
+
+
+def test_an_admins_pinned_key_is_not_counted(db):
+    """admin ไม่อยู่ใต้กติกาของ membership ข้อไหนเลย — ใบที่ผูกของ admin ยังแคบตามวิชา"""
+    before, after = _rows(db)["pinned-admin"]
+    assert before == after == {"vision"}
 
 
 def test_a_key_that_already_names_its_models_only_narrows(db):

@@ -107,6 +107,8 @@ def test_the_list_narrows_and_never_widens(client):
     # workspace อนุญาตแค่ coding
     client.post(f"/admin/workspaces/{ws['id']}/models", headers=auth(client.admin_key),
                 json={"models": ["coding"]})
+    client.post(f"/admin/workspaces/{ws['id']}/join", headers=auth(client.admin_key),
+                json={"user_id": member["id"]})
     # แต่ key ขอ gemma-vision ด้วย
     key = _issue(client, models=["coding", "gemma-vision"],
                  workspace_id=ws["id"], user_id=member["id"])

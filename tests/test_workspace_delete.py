@@ -36,6 +36,25 @@ def workspace(client, code="CS101"):
     return ws
 
 
+def pinned_key(client, ws, owner, name="lab", *, revoke=False):
+    """key ที่ผูกกับ workspace ซึ่งเจ้าของออกไปแล้ว — สภาพจริงของวิชาที่จบเทอม
+
+    ออก key ภายใต้ workspace ได้เฉพาะให้คนที่เป็นสมาชิก และการเอาคนออกไม่เพิกถอน key
+    ใบที่ผูกจึงค้างอยู่กับ workspace หลังสมาชิกหมดแล้ว ซึ่งเป็นสิ่งที่เทสกลุ่มนี้ตรวจ
+    """
+    client.post(f"/admin/workspaces/{ws['id']}/join", headers=auth(client.admin_key),
+                json={"user_id": owner["id"]})
+    key = client.post("/admin/api-keys", headers=auth(client.admin_key),
+                      json={"user_id": owner["id"], "workspace_id": ws["id"],
+                            "name": name}).json()
+    if revoke:
+        client.delete(f"/admin/api-keys/{key['id']}", headers=auth(client.admin_key))
+    gone = client.delete(f"/admin/workspaces/{ws['id']}/members/{owner['id']}",
+                         headers=auth(client.admin_key))
+    assert gone.status_code == 200, gone.text
+    return key
+
+
 def codes(client):
     return {w["code"] for w in
             client.get("/admin/workspaces", headers=auth(client.admin_key)).json()["data"]}
@@ -78,12 +97,12 @@ def test_a_workspace_with_keys_issued_for_it_is_kept(client):
     """key ที่ผูกไว้จะใช้ไม่ได้ทันทีและไม่มีอะไรบอกว่าทำไม"""
     ws = workspace(client)
     student = user(client, "s2")
-    client.post("/admin/api-keys", headers=auth(client.admin_key),
-                json={"user_id": student["id"], "workspace_id": ws["id"], "name": "lab"})
+    pinned_key(client, ws, student)
 
     response = remove(client, ws)
     assert response.status_code == 400
     assert response.json()["error"]["details"]["pinned_keys"] == 1
+    assert response.json()["error"]["details"]["members"] == 0
 
 
 def test_the_refusal_points_at_suspend(client):
@@ -104,10 +123,7 @@ def test_a_revoked_key_does_not_hold_it_open(client):
     """
     ws = workspace(client)
     student = user(client, "s4")
-    key = client.post("/admin/api-keys", headers=auth(client.admin_key),
-                      json={"user_id": student["id"], "workspace_id": ws["id"],
-                            "name": "old"}).json()
-    client.delete(f"/admin/api-keys/{key['id']}", headers=auth(client.admin_key))
+    pinned_key(client, ws, student, "old", revoke=True)
 
     assert remove(client, ws).status_code == 200
 
@@ -120,10 +136,7 @@ def test_the_revoked_key_is_unpinned_not_deleted(client):
     """
     ws = workspace(client)
     student = user(client, "s5")
-    key = client.post("/admin/api-keys", headers=auth(client.admin_key),
-                      json={"user_id": student["id"], "workspace_id": ws["id"],
-                            "name": "old"}).json()
-    client.delete(f"/admin/api-keys/{key['id']}", headers=auth(client.admin_key))
+    key = pinned_key(client, ws, student, "old", revoke=True)
     assert remove(client, ws).status_code == 200
 
     listed = client.get("/admin/api-keys", headers=auth(client.admin_key)).json()["data"]
@@ -138,9 +151,7 @@ def test_a_live_key_keeps_its_pin_when_another_workspace_goes(client):
     doomed = workspace(client, "CS101")
     keeper = workspace(client, "CS102")
     student = user(client, "s6")
-    live = client.post("/admin/api-keys", headers=auth(client.admin_key),
-                       json={"user_id": student["id"], "workspace_id": keeper["id"],
-                             "name": "live"}).json()
+    live = pinned_key(client, keeper, student, "live")
 
     assert remove(client, doomed).status_code == 200
     listed = client.get("/admin/api-keys", headers=auth(client.admin_key)).json()["data"]

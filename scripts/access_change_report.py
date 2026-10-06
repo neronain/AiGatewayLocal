@@ -119,13 +119,35 @@ def permitted_today(key, allowed, catalogue) -> set[str]:
     return reach
 
 
+def pinned_without_membership(key, members) -> bool:
+    """A key issued for a workspace its owner is not in.
+
+    Since 2026-10 such a key reaches nothing: the pin grants the workspace's
+    models only while the owner is a member of it (core/auth.permitted_aliases).
+    Before that the membership was never read, so a key issued for CS101 kept
+    working after its owner was removed from CS101 - and a key could be issued
+    for a workspace its owner had never been in.
+
+    An admin's keys are exempt, as admins are from every membership rule.
+    """
+    return bool(
+        key["workspace_id"]
+        and key["role"] != "admin"
+        and key["workspace_id"] not in members.get(key["user_id"], set())
+    )
+
+
 def permitted_under_a(key, members, allowed, catalogue) -> set[str]:
     """What it would reach if membership counted, as a union across groups.
 
-    A key pinned to a workspace keeps winning (FR-42). A key with no pin and an
-    owner in no group keeps the whole catalogue - the alternative, an empty set,
-    would lock out every key issued before workspaces were used at all.
+    A key pinned to a workspace keeps winning over the owner's other groups
+    (FR-42) - for as long as the owner is in that workspace. A key with no pin
+    and an owner in no group keeps the whole catalogue - the alternative, an
+    empty set, would lock out every key issued before workspaces were used at
+    all.
     """
+    if pinned_without_membership(key, members):
+        return set()
     if key["workspace_id"]:
         reach = set(allowed.get(key["workspace_id"], set()))
     else:
@@ -153,7 +175,7 @@ def main() -> int:
     engine = create_engine(sync_url(args.db))
     keys, members, allowed, names, catalogue = load(engine)
 
-    losers, gainers, same = [], [], []
+    losers, gainers, same, orphans = [], [], [], []
     for key in keys:
         before = permitted_today(key, allowed, catalogue)
         after = permitted_under_a(key, members, allowed, catalogue)
@@ -171,12 +193,29 @@ def main() -> int:
             "gains": sorted(after - before),
         }
         (losers if entry["loses"] else gainers if entry["gains"] else same).append(entry)
+        if pinned_without_membership(key, members):
+            orphans.append(entry)
 
     if args.json:
-        print(json.dumps({"loses": losers, "gains": gainers, "unchanged": same}, indent=2))
-        return 1 if losers else 0
+        print(json.dumps({"loses": losers, "gains": gainers, "unchanged": same,
+                          "pinned_owner_not_member": orphans}, indent=2))
+        return 1 if losers or orphans else 0
 
     print(f"\nโมเดลใน registry: {len(catalogue)} · key ที่ยังไม่ถูกเพิกถอน: {len(keys)}\n")
+
+    # แยกเป็นหัวข้อของตัวเอง และขึ้นก่อน: นี่คือ key ที่หยุดทำงาน **ทั้งใบ** ไม่ใช่แค่
+    # เสียโมเดลบางตัว และไม่ขึ้นกับว่า workspace นั้นเปิดโมเดลอะไรไว้ — เจ้าของไม่ได้เป็น
+    # สมาชิกของ workspace ที่ key ผูกอยู่ ก็คือเรียกอะไรไม่ได้เลย
+    if orphans:
+        print(f"── ผูก workspace แต่เจ้าของไม่ได้เป็นสมาชิก {len(orphans)} ใบ ───────────")
+        print("  ใบพวกนี้จะเรียกอะไรไม่ได้เลย จนกว่าจะใส่เจ้าของเข้า workspace นั้น")
+        print("  (หรือออกใบใหม่ที่ไม่ผูก) · admin ไม่ถูกนับ\n")
+        for e in orphans:
+            groups = ", ".join(e["workspaces"]) or "ไม่ได้อยู่กลุ่มไหน"
+            print(f"  {e['key']}… · {e['owner']} ({e['owner_name']}) · {e['label']}")
+            print(f"      ผูกกับ: {e['pinned_to']} · เจ้าของอยู่: {groups}\n")
+    else:
+        print("── ไม่มี key ที่ผูก workspace ซึ่งเจ้าของไม่ได้เป็นสมาชิก ─────────────\n")
 
     if losers:
         print(f"── เสียสิทธิ์ {len(losers)} ใบ ─────────────────────────────────────")
@@ -201,7 +240,7 @@ def main() -> int:
     if losers:
         print("ก่อนเปลี่ยน: ธง grandfather (FR-43) ต้องคุ้ม key พวกนี้ หรือแจ้งเจ้าของ")
         print("ก่อนถึงวันเปลี่ยน ไม่ใช่ให้ไปเจอเองตอนเรียกไม่ได้\n")
-    return 1 if losers else 0
+    return 1 if losers or orphans else 0
 
 
 if __name__ == "__main__":

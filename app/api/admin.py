@@ -18,9 +18,14 @@ from app.core import assistant_fit, lmds, release
 from app.core.audit import audit
 from app.core.auth import (
     Principal,
+    _aware,
     extract_bearer_token,
     generate_api_key,
+    is_member,
     managed_workspaces,
+    membership_counts,
+    models_via_membership,
+    normalise_role,
     permitted_aliases,
     require_admin,
     require_manager,
@@ -1138,6 +1143,27 @@ async def create_api_key(
         )
     if payload.workspace_id:
         await _assert_owns(session, actor, payload.workspace_id)
+        bound_to = await session.get(Workspace, payload.workspace_id)
+        if bound_to is None:
+            # An admin passes _assert_owns for any id, including one that names
+            # nothing. PostgreSQL then refuses the row on api_keys_course_id_fkey
+            # (HTTP 500); SQLite stores it, and the key can call nothing.
+            raise GatewayError(ErrorCode.INVALID_REQUEST, "Workspace not found.")
+        # A key issued for a workspace grants its models only while the owner is
+        # in it (core/auth.permitted_aliases). Issued to somebody outside, it is
+        # a credential that is refused on its first call with nothing on this
+        # screen having said why - the same trap as naming an alias that does
+        # not exist, caught at the same moment.
+        if membership_counts(user.role, state.registry.snapshot.gateway) and not await is_member(
+            session, payload.user_id, payload.workspace_id
+        ):
+            raise GatewayError(
+                ErrorCode.INVALID_REQUEST,
+                f"{user.external_id} is not a member of '{bound_to.code}', so a key "
+                "issued for it could call nothing. Add them to the workspace first, "
+                "or issue the key without a workspace.",
+                details={"user_id": payload.user_id, "workspace_id": payload.workspace_id},
+            )
 
     # alias ที่ไม่มีอยู่จริงบน key = key ที่เรียกอะไรไม่ได้เลย และไม่มีอะไรบอกจนกว่า
     # ผู้ใช้จะลอง · ตรวจตอนออกดีกว่าให้ไปเจอตอนใช้
@@ -1234,6 +1260,11 @@ async def create_api_key(
     }
 
 
+def _key_brief(key: ApiKey) -> dict[str, str]:
+    """Enough to recognise a key in a list. Never the key, never its hash."""
+    return {"id": key.id, "name": key.name or "", "key_prefix": key.key_prefix}
+
+
 @router.delete("/workspaces/{workspace_id}/members/{user_id}")
 async def leave(
     workspace_id: str,
@@ -1241,14 +1272,26 @@ async def leave(
     request: Request,
     actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
-    """เอาคนออกจาก workspace
+    """เอาคนออกจาก workspace — และบอกว่าการเอาออกครั้งนี้เปลี่ยนอะไรกับ key ของเขา
 
     `join` มีมาตั้งแต่ต้น แต่ไม่มีทางออก — ใส่ผิดคนแล้วแก้ไม่ได้เลยนอกจากแก้ฐานข้อมูล
     เอง และคนที่จบเทอมไปแล้วก็ยังค้างอยู่ในรายชื่อตลอดไป
 
-    key ที่ผูกกับ workspace นี้ไม่ถูกแตะ — มันหยุดใช้ quota ของ workspace เองเมื่อ
-    สิทธิ์หายไป การไปเพิกถอน key ให้ด้วยเป็นการตัดสินใจแทนผู้ใช้ในเรื่องที่กู้คืนไม่ได้
+    key ที่ออกให้ภายใต้ workspace นี้ **ไม่ถูกเพิกถอน** — เพิกถอนคือการตัดสินใจแทน
+    ผู้ใช้ในเรื่องที่กู้คืนไม่ได้ · แต่มัน **หยุดใช้งานได้** ทันทีที่เจ้าของไม่ได้เป็นสมาชิก
+    (ตรวจทุกคำขอใน `core/auth.permitted_aliases`) และกลับมาใช้ได้เองเมื่อใส่คนกลับ
+
+    ประโยคข้างบนเคยเขียนไว้ที่นี่โดยไม่เป็นความจริง: โค้ดอ่านแค่ว่า key ผูก workspace
+    ไหน ไม่เคยดูว่าเจ้าของยังอยู่ในนั้นไหม คนที่ถูกเอาออกจาก CS101 จึงยังเรียกโมเดลของ
+    CS101 ด้วย key ใบเดิมได้ต่อไปเรื่อย ๆ (ตรวจ 2026-10-06) — ผู้ดูแลเห็นชื่อหายจาก
+    รายชื่อแล้วเข้าใจว่าจบ คำตอบของ endpoint นี้จึงต้องบอกเองว่า key ใบไหนหยุด
+
+    อีกด้านหนึ่งที่ต้องบอก: คนที่ถูกเอาออกจาก workspace **สุดท้าย** ของเขากลายเป็น
+    "ไม่อยู่กลุ่มไหนเลย" ซึ่งโดยการออกแบบแปลว่าไม่มีอะไรจำกัด — key ที่ไม่ได้ผูก
+    workspace ของเขา *กว้างขึ้น* เป็นทุกโมเดลที่ role มองเห็น · `join` เตือนกรณีกลับด้าน
+    (ใส่เข้ากลุ่มว่างแล้วสิทธิ์หาย) อยู่แล้ว ฝั่งนี้เคยเงียบ
     """
     await _assert_owns(session, actor, workspace_id)
     result = await session.execute(
@@ -1259,11 +1302,87 @@ async def leave(
     membership = result.scalar_one_or_none()
     if membership is None:
         raise GatewayError(ErrorCode.INVALID_REQUEST, "That person is not in this workspace.")
+
+    person = await session.get(User, user_id)
+    snapshot = state.registry.snapshot
+    # The same question the request path asks, asked through the same function,
+    # so this report cannot describe a rule the gateway does not enforce.
+    counts = person is not None and membership_counts(person.role, snapshot.gateway)
+
+    before = await models_via_membership(session, user_id) if counts else None
     await session.delete(membership)
-    await audit(session, request, actor, "workspace.leave", "workspace",
-                workspace_id, {"user_id": user_id})
+    await session.flush()
+    after = await models_via_membership(session, user_id) if counts else None
+
+    now = utcnow()
+    live = [
+        key for key in (await session.execute(
+            select(ApiKey)
+            .where(ApiKey.user_id == user_id, ApiKey.revoked_at.is_(None))
+            .order_by(ApiKey.created_at)
+        )).scalars()
+        if key.expires_at is None or _aware(key.expires_at) > now
+    ]
+    bound = [key for key in live if key.workspace_id == workspace_id]
+    unbound = [key for key in live if key.workspace_id is None]
+    who = person.external_id if person is not None else user_id
+
+    notes: list[str] = []
+    keys_stopped = [_key_brief(key) for key in bound] if counts else []
+    if keys_stopped:
+        notes.append(
+            f"{len(keys_stopped)} key(s) issued for this workspace stopped working: "
+            + ", ".join(f"{k['name'] or '(unnamed)'} ({k['key_prefix']}…)" for k in keys_stopped)
+            + ". They are not revoked - adding the person back makes them work again."
+        )
+    elif bound:
+        # Either an admin's key or a gateway that opted out of membership rules:
+        # the key carries on, and silence here would read as "it stopped".
+        notes.append(
+            f"{len(bound)} key(s) issued for this workspace keep working: "
+            + ("an administrator's keys do not depend on membership."
+               if person is not None and normalise_role(person.role) == "admin"
+               else "membership does not decide model access on this gateway "
+                    "(membership_grants_models: false).")
+            + " Revoke them if they should stop."
+        )
+
+    # Removed from their last workspace: "in no group" means unrestricted, so
+    # this removal handed something out rather than taking something away.
+    gained: list[str] = []
+    if counts and before is not None and after is None and person is not None:
+        reachable = {m.alias for m in snapshot.visible_to(normalise_role(person.role))}
+        gained = sorted(reachable - before)
+    if gained:
+        notes.append(
+            f"{who} is now in no workspace, and somebody in no workspace is not "
+            f"limited by membership at all: they can now call {', '.join(gained)} "
+            "as well"
+            + (f", through {len(unbound)} key(s) not issued for a workspace"
+               if unbound else "")
+            + ". Put them in another workspace, narrow or revoke those keys, or "
+            "suspend the account if that is not what you meant."
+        )
+
+    await audit(session, request, actor, "workspace.leave", "workspace", workspace_id, {
+        "user_id": user_id,
+        "keys_stopped": keys_stopped,
+        "access_widened": bool(gained),
+        "models_gained": gained,
+        "keys_widened": [_key_brief(key) for key in unbound] if gained else [],
+    })
     await session.commit()
-    return {"workspace_id": workspace_id, "user_id": user_id, "status": "removed"}
+    return {
+        "workspace_id": workspace_id,
+        "user_id": user_id,
+        "status": "removed",
+        # Which credentials this just switched off. Not revoked: see above.
+        "keys_stopped": keys_stopped,
+        "access_widened": bool(gained),
+        "models_gained": gained,
+        "keys_widened": [_key_brief(key) for key in unbound] if gained else [],
+        "warning": " ".join(notes),
+    }
 
 
 @router.post("/api-keys/{key_id}/reveal")

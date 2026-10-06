@@ -85,10 +85,16 @@ def test_an_admin_is_not_scoped(client):
 
 
 def test_the_key_binding_wins_over_the_owners_groups(client):
-    """ผูก workspace ไว้ตอนออก key = เจตนาชัดเจน ห้ามให้กลุ่มของเจ้าของมาแทนที่"""
+    """ผูก workspace ไว้ตอนออก key = เจตนาชัดเจน ห้ามให้กลุ่มของเจ้าของมาแทนที่
+
+    เจ้าของอยู่ทั้งสองวิชา ซึ่งถ้าไม่ผูกจะได้ union · ใบที่ผูกกับ ART200 ต้องได้แค่ของ
+    ART200 — การผูกทำให้ *แคบลง* เหลือวิชาเดียว ไม่ใช่ทางได้โมเดลของวิชาที่ไม่ได้อยู่
+    (ดู tests/test_bound_key_needs_membership.py)
+    """
     user = make_user(client, "s3")
     join(client, make_workspace(client, "CS101", ["coding"]), user)
     art = make_workspace(client, "ART200", ["gemma-vision"])
+    join(client, art, user)
     key = issue(client, user, workspace_id=art["id"])
     assert catalogue(client, key) == {"gemma-vision"}
 

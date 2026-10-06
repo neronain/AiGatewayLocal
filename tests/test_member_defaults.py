@@ -116,6 +116,9 @@ def test_a_key_pinned_to_a_class_uses_that_class_defaults(client):
     mine = workspace(client, "CS101", default_member_models=["coding"])
     theirs = workspace(client, "ART200", default_member_models=["gemma-vision"])
     join(client, mine, student)
+    # อยู่ทั้งสองวิชา — ซึ่งถ้าไม่ผูก key ไว้จะเป็นกรณี "สองวิชา ไม่เดา" ข้างล่าง ·
+    # (ออก key ภายใต้วิชาที่เจ้าของไม่ได้เรียนไม่ได้แล้ว: ใบนั้นเรียกอะไรไม่ได้เลย)
+    join(client, theirs, student)
 
     key = issue(client, student, workspace_id=theirs["id"])
     assert key["models"] == ["gemma-vision"], "ผูกกับวิชาไหน ใช้ค่าของวิชานั้น"

@@ -516,6 +516,9 @@ def test_workspace_bound_key_cannot_use_unlisted_model(client):
         json={"external_id": "6499999999", "display_name": "Ploy", "role": "member"},
         headers=headers,
     ).json()
+    # key ที่ออกให้ภายใต้ workspace ใช้ได้เฉพาะตอนเจ้าของเป็นสมาชิกของมัน
+    client.post(f"/admin/workspaces/{workspace['id']}/join", json={"user_id": user["id"]},
+                headers=headers)
     key = client.post(
         "/admin/api-keys",
         json={"user_id": user["id"], "workspace_id": workspace["id"]},
@@ -571,6 +574,8 @@ def test_me_names_the_workspace_instead_of_only_its_id(client, member_key):
         json={"external_id": "6499999999", "display_name": "Malee", "role": "member"},
         headers=auth(client.admin_key),
     ).json()
+    client.post(f"/admin/workspaces/{workspace['id']}/join", json={"user_id": user["id"]},
+                headers=auth(client.admin_key))
     key = client.post(
         "/admin/api-keys",
         json={"user_id": user["id"], "name": "k", "workspace_id": workspace["id"]},

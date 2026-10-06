@@ -880,10 +880,39 @@ function modelList(models, empty) {
     : `<div class="empty">${empty}</div>`;
 }
 
+// เอาคนออกจาก workspace เปลี่ยนสิทธิ์ของ key ได้สองทาง และทั้งสองทางเคยเงียบ:
+// ใบที่ออกให้ภายใต้ workspace นั้นหยุดทำงาน · และถ้านั่นคือ workspace สุดท้ายของเขา
+// ใบที่ไม่ผูกจะ *กว้างขึ้น* เป็นทุกโมเดล (ไม่อยู่กลุ่มไหน = ไม่มีอะไรจำกัด) ·
+// เซิร์ฟเวอร์ตอบมาแล้วว่าใบไหน — หน้าจอมีหน้าที่แค่ไม่กลืนมันทิ้ง
+function leaveOutcome(out) {
+  const parts = [];
+  const stopped = out?.keys_stopped || [];
+  if (stopped.length) {
+    parts.push(`key ที่ออกให้ภายใต้ workspace นี้หยุดใช้งานแล้ว ${stopped.length} ใบ (`
+      + stopped.map((k) => `${k.name || 'ไม่มีชื่อ'} ${k.key_prefix}…`).join(', ')
+      + ') · ไม่ได้ถูกเพิกถอน เพิ่มเขากลับเข้ามาเมื่อไรก็ใช้ได้อีก');
+  }
+  if (out?.access_widened) {
+    const widened = out.keys_widened || [];
+    parts.push('คนนี้ไม่อยู่ workspace ไหนแล้ว จึงไม่ถูกจำกัดด้วยกลุ่มอีก — เรียกได้เพิ่ม: '
+      + (out.models_gained || []).join(', ')
+      + (widened.length ? ` ผ่าน key ที่ไม่ผูก workspace ${widened.length} ใบ` : '')
+      + ' · ถ้าไม่ได้ตั้งใจ ให้ใส่เข้า workspace อื่น หรือจำกัด/เพิกถอน key');
+  }
+  // กรณีที่เหลือ (เช่น key ของ admin ที่ไม่ขึ้นกับ membership) เซิร์ฟเวอร์อธิบายมาเอง
+  if (!parts.length && out?.warning) parts.push(out.warning);
+  if (parts.length) banner('error', 'warn', parts.join(' · '));
+}
+
 // A catalogue that has quietly shrunk reads as models having disappeared, and
 // the first guess is that the gateway is broken. Naming the rule that narrowed
 // it turns "where did they go" into something the reader can act on.
 function accessNote(access) {
+  if (access?.reason_code === 'workspace_left') {
+    return `<p class="hint" style="margin:0 0 12px">
+      key ใบนี้ออกให้ภายใต้ workspace ที่เจ้าของ <strong>ไม่ได้เป็นสมาชิกแล้ว</strong>
+      จึงเรียกโมเดลไม่ได้ · ให้ผู้ดูแล workspace นั้นเพิ่มกลับเข้าไป ใบเดิมจะใช้ได้อีก</p>`;
+  }
   if (!access?.restricted) return '';
   return `<p class="hint" style="margin:0 0 12px">
     เห็นเท่านี้เพราะถูกจำกัดโดย <strong>${esc(access.reason)}</strong> ·
@@ -2877,11 +2906,15 @@ async function loadAccess() {
   }
   for (const btn of $('user-table').querySelectorAll('[data-leave]')) {
     btn.onclick = async () => {
-      // key ที่ผูกกับ workspace นี้ไม่ถูกเพิกถอน — มันเลิกใช้ quota ของ workspace เอง
+      // key ที่ผูกกับ workspace นี้ไม่ถูกเพิกถอน แต่ **หยุดใช้งานได้** จนกว่าจะใส่คนกลับ ·
+      // ข้อความเดิมบอกว่า "จะไม่ใช้โควตาของ workspace อีก" ซึ่งไม่ได้บอกสิ่งที่เกิดจริง
       if (!confirm('เอาออกจาก workspace นี้?\n\nkey ที่ออกให้ภายใต้ workspace นี้ไม่ถูกเพิกถอน '
-        + 'แต่จะไม่ใช้โควตาของ workspace อีก')) return;
-      try { await del(`/admin/workspaces/${btn.dataset.leave}/members/${btn.dataset.who}`); await loadAccess(); }
-      catch (e) { showError(e.message); }
+        + 'แต่จะใช้ไม่ได้จนกว่าจะเพิ่มเขากลับเข้ามา')) return;
+      try {
+        const out = await del(`/admin/workspaces/${btn.dataset.leave}/members/${btn.dataset.who}`);
+        await loadAccess();
+        leaveOutcome(out);
+      } catch (e) { showError(e.message); }
     };
   }
   for (const sel of $('user-table').querySelectorAll('[data-role]')) {
@@ -3175,8 +3208,9 @@ async function loadAccess() {
   for (const btn of $('workspace-table').querySelectorAll('[data-leave]')) {
     btn.onclick = async () => {
       try {
-        await del(`/admin/workspaces/${btn.dataset.leave}/members/${btn.dataset.who}`);
+        const out = await del(`/admin/workspaces/${btn.dataset.leave}/members/${btn.dataset.who}`);
         await loadAccess();
+        leaveOutcome(out);
       } catch (e) { showError(e.message); }
     };
   }

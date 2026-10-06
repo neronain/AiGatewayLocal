@@ -89,7 +89,12 @@ def test_removing_someone_who_was_never_in_says_so(client):
 
 
 def test_removal_leaves_the_key_alone(client):
-    """เพิกถอน key ให้ด้วยคือตัดสินใจแทนผู้ใช้ในเรื่องที่กู้คืนไม่ได้"""
+    """เพิกถอน key ให้ด้วยคือตัดสินใจแทนผู้ใช้ในเรื่องที่กู้คืนไม่ได้
+
+    "ไม่เพิกถอน" ไม่ได้แปลว่า "ยังใช้ได้" — เทสนี้เคยเป็นข้อเดียวที่พูดถึง key หลังเอาคน
+    ออก และมันถามแค่ครึ่งเดียว · อีกครึ่ง (ใบนั้นหยุดทำงาน และกลับมาเมื่อใส่คนกลับ)
+    อยู่ใน tests/test_bound_key_needs_membership.py
+    """
     user = _user(client, "6412006")
     ws = _workspace(client, "CS101")
     client.post(f"/admin/workspaces/{ws['id']}/join", headers=auth(client.admin_key),

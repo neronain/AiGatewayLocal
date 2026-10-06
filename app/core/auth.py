@@ -266,7 +266,8 @@ async def permitted_aliases(
 
     Three things can narrow it, and each only ever narrows:
 
-      1. the workspace the key was bound to when it was issued
+      1. the workspace the key was bound to when it was issued - for as long as
+         its owner is still a member of that workspace
       2. otherwise, the workspaces its owner belongs to (union across them)
       3. the alias list written on the key itself
 
@@ -274,6 +275,14 @@ async def permitted_aliases(
     and granted nothing - so (2) is gated on `membership_grants_models`, and a
     deployment with keys already in circulation should look at
     `scripts/access_change_report.py` before switching it on.
+
+    (1) carries the same condition. A key issued for CS101 used to keep CS101's
+    models after its owner was taken out of CS101: the binding was read and the
+    membership was not, so "remove from the workspace" removed a name from a
+    list and nothing else, while the endpoint's own description said the key
+    would stop by itself. The membership is checked here, on every request,
+    rather than by revoking the key when someone is removed - revoking cannot be
+    undone, and putting the person back should be all it takes.
 
     Union, not intersection, in (2): adding somebody to another class must not
     take access away from them, which is the opposite of what "add to group"
@@ -284,10 +293,16 @@ async def permitted_aliases(
     code = ""
 
     if principal.workspace_id is not None:
+        if membership_counts(principal.role, gateway) and not await is_member(
+            session, principal.user_id, principal.workspace_id
+        ):
+            # Returned as it stands: the list on the key cannot add anything to
+            # nothing, and the reason has to say the one thing that is true.
+            return Permission(aliases=set(), reason=LEFT_WORKSPACE, reason_code="workspace_left")
         scope = await _workspace_models(session, [principal.workspace_id])
         reason = "the workspace this key was issued for"
         code = "workspace"
-    elif not principal.is_admin and (gateway is None or gateway.membership_grants_models):
+    elif membership_counts(principal.role, gateway):
         # Managers are scoped like members: someone who looks after CS101 should
         # not be handing out ART200's models. Admins run the gateway itself and
         # stay unscoped - the alternative is adding them to every workspace,
@@ -315,6 +330,49 @@ async def permitted_aliases(
         code = f"{code}+key" if code else "key"
 
     return Permission(aliases=scope, reason=reason, reason_code=code)
+
+
+LEFT_WORKSPACE = (
+    "the workspace this key was issued for, which its owner is no longer a member of"
+)
+
+
+def membership_counts(role: str, gateway=None) -> bool:
+    """Does being in a workspace decide anything for somebody with this role?
+
+    Not for an admin: they run the gateway and are unscoped, so a key of theirs
+    bound to a workspace is narrowed to its models whether or not they were ever
+    enrolled in it. And not on a deployment that set `membership_grants_models:
+    false` - there membership is bookkeeping, a bound key keeps the meaning it
+    had when it was issued, and the switch stays what it was written to be: the
+    way to upgrade without re-permissioning keys already in circulation.
+
+    One function so that the request path, the leave endpoint's report and the
+    key-issuing check cannot disagree about who the rule applies to.
+    """
+    if normalise_role(role) == "admin":
+        return False
+    return gateway is None or bool(gateway.membership_grants_models)
+
+
+async def is_member(session: AsyncSession, user_id: str, workspace_id: str) -> bool:
+    """One indexed lookup (`uq_enrollment` covers both columns).
+
+    This is a query the bound-key path did not make before. It is the price of
+    the rule being true on every request instead of at the moment somebody
+    remembers to revoke a key.
+    """
+    row = await session.execute(
+        select(Membership.id)
+        .where(Membership.user_id == user_id, Membership.workspace_id == workspace_id)
+        .limit(1)
+    )
+    return row.first() is not None
+
+
+async def models_via_membership(session: AsyncSession, user_id: str) -> set[str] | None:
+    """What somebody's workspaces allow, added together. None = in no workspace."""
+    return await _models_via_membership(session, user_id)
 
 
 async def _group_models(session: AsyncSession, group_ids) -> set[str]:
@@ -456,6 +514,19 @@ async def assert_model_permitted(
     permission = await permitted_aliases(session, principal, gateway)
     if permission.allows(alias):
         return
+
+    if permission.reason_code == "workspace_left":
+        # Not "ask for the model": the model list is fine, the membership is
+        # what went. Saying so is the difference between a ticket that reads
+        # "the gateway is broken" and one that reads "add me back to CS101".
+        raise GatewayError(
+            ErrorCode.MODEL_NOT_PERMITTED,
+            f"'{alias}' is not available to you: this key was issued for a workspace "
+            "its owner is no longer a member of. Ask that workspace's manager to add "
+            "you back, or use a key that is not tied to it.",
+            details={"model": alias, "allowed": [], "reason": permission.reason,
+                     "reason_code": permission.reason_code},
+        )
 
     allowed = sorted(permission.aliases or [])
     raise GatewayError(

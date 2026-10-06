@@ -672,7 +672,7 @@ rules, in the order they narrow:
 
 | Situation | What they can call |
 |---|---|
-| Key issued *for* a workspace | that workspace's models — the owner's groups do not apply |
+| Key issued *for* a workspace | that workspace's models, **while the owner is a member of it** — the owner's other groups do not apply |
 | In one or more workspaces | everything those workspaces allow, added together |
 | In no workspace at all | everything their role can see |
 | A list written on the key | narrowed to that list, on top of the above |
@@ -784,12 +784,35 @@ a project between phases, or a team under investigation should not destroy
 credentials that will be needed again. Somebody who is also in another
 workspace keeps that one.
 
-Two consequences worth knowing before you use it:
+Consequences worth knowing before you use it:
 
 * **A workspace with no models allows nothing.** Adding someone to an empty one
   takes their access away rather than granting any. The join response says so.
 * **In no group means unrestricted, not blocked.** A deployment that has not
   started using workspaces behaves exactly as it did before.
+* **Taking someone out of a workspace stops the keys issued for it.** They are
+  not revoked — revoking cannot be undone — but a key issued *for* a workspace
+  grants its models only while its owner is a member, checked on every request.
+  Put the person back and the same key works again. The response to
+  `DELETE /admin/workspaces/{id}/members/{user}` lists the keys that stopped
+  (`keys_stopped`), and so does the `workspace.leave` audit row.
+
+  Until 2026-10 this was documented and not true: the key carried on calling
+  the workspace's models after its owner had been removed.
+* **Taking someone out of their *last* workspace widens their other keys.** They
+  are now in no group, which is the unrestricted case above, so a key of theirs
+  that is not tied to a workspace can call everything their role can see. The
+  same response says so (`access_widened`, `models_gained`, `keys_widened` and a
+  `warning`), because it is the opposite of what "remove" sounds like. Move them
+  to another workspace, narrow or revoke those keys, or suspend the account.
+* **A key can only be issued for a workspace its owner is in.** Otherwise it is
+  a credential that is refused on its first call. `POST /admin/api-keys` answers
+  400 and says who to add where.
+
+An `admin`'s keys are outside all of this, as admins are outside every
+membership rule. So is a gateway running `membership_grants_models: false`:
+there a key issued for a workspace keeps the meaning it had when it was issued,
+and the leave response says the keys keep working rather than that they stopped.
 
 #### Upgrading a gateway that already has keys in circulation
 
@@ -803,6 +826,13 @@ python scripts/access_change_report.py --db "$GW_DATABASE_URL"
 It writes nothing and exits 1 if anyone would lose access. If the answer is not
 "nobody", set `membership_grants_models: false` in `gateway.yaml`, upgrade,
 sort out the workspaces, then switch it on.
+
+Run it again before upgrading past 2026-10 even if membership is already on.
+Its first section lists **keys issued for a workspace whose owner is not a
+member of it** — keys that worked until then, because the membership of a
+workspace-bound key was never read, and that stop entirely afterwards. For each
+one, add the owner to that workspace (the key then works unchanged) or issue an
+unbound key instead.
 
 ### 2.3 Set quota
 
