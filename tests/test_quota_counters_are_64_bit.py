@@ -259,6 +259,16 @@ async def _quota(broken: tuple[str, str]):
     return QuotaService(_OneCounterIsBroken(store, broken), QuotaDefaults()), store
 
 
+def _quota_records(caplog) -> list[logging.LogRecord]:
+    """เฉพาะสิ่งที่โค้ดโควตาพูดเอง — caplog เก็บ ERROR ของทุก logger
+
+    บน PostgreSQL (asyncpg) ตัว pool ของ SQLAlchemy เขียน "Exception terminating connection"
+    ตอน fixture ปิด engine ข้าม event loop — เป็นเสียงของชุดเทส ไม่ใช่ของโค้ดที่กำลังตรวจ ·
+    นับรวมแล้วเทสสามข้อนี้ล้มเฉพาะบน Postgres ทั้งที่พฤติกรรมถูก (รอบรวมงาน 2026-10-06)
+    """
+    return [r for r in caplog.records if r.name == "app.core.quota"]
+
+
 async def test_one_counter_failing_does_not_skip_the_ones_after_it(temp_db, caplog):
     """เคสที่อ่านจากโค้ด: ตัวนับรายเทอมของคนชน int4 → ตัวนับนาทีและตัวนับของ key ถูกข้าม"""
     quota, store = await _quota(broken=("user:u1", "term"))
@@ -273,7 +283,7 @@ async def test_one_counter_failing_does_not_skip_the_ones_after_it(temp_db, capl
     assert (await store.get("user:u1", "minute")).output_tokens == 5
     assert (await store.get("key:k1", "minute")).output_tokens == 5
 
-    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    errors = [r for r in _quota_records(caplog) if r.levelno >= logging.ERROR]
     assert len(errors) == 1, [r.getMessage() for r in errors]
     assert "user:u1" in errors[0].getMessage() and "term" in errors[0].getMessage()
     assert errors[0].exc_info, "ต้องมี traceback ของสาเหตุจริงติดไปด้วย"
@@ -290,7 +300,7 @@ async def test_the_same_holds_for_a_caller_that_passes_no_charge(temp_db, caplog
     assert (await store.get("user:u1", "minute")).requests == 1
     assert (await store.get("key:k1", "day")).requests == 1
     assert (await store.get("key:k1", "minute")).requests == 1
-    assert ["user:u1" in r.getMessage() for r in caplog.records
+    assert ["user:u1" in r.getMessage() for r in _quota_records(caplog)
             if r.levelno >= logging.ERROR] == [True]
 
 
@@ -298,4 +308,4 @@ async def test_a_healthy_record_logs_nothing(temp_db, caplog):
     quota, _store = await _quota(broken=("nobody", "day"))
     with caplog.at_level(logging.ERROR, logger="app.core.quota"):
         await quota.record("u1", "day", SPENT, charge=Charge(windows=(("user:u1", "day"),)))
-    assert not caplog.records
+    assert not _quota_records(caplog)
