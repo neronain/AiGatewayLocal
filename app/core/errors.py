@@ -41,6 +41,8 @@ class ErrorCode:
     CONTEXT_LENGTH_EXCEEDED = "CONTEXT_LENGTH_EXCEEDED"
     TOOL_NOT_FOUND = "TOOL_NOT_FOUND"
     TOOL_NOT_PUBLISHED = "TOOL_NOT_PUBLISHED"
+    # คำขอถูกต้อง แต่ขัดกับของที่มีอยู่แล้ว (409) — เช่นนโยบายโควตาซ้ำเป้าหมายเดิม
+    CONFLICT = "CONFLICT"
 
     # --- policy (429) ---
     QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
@@ -68,6 +70,7 @@ _ERROR_META: dict[str, tuple[int, str]] = {
     ErrorCode.MODEL_DISABLED: (status.HTTP_404_NOT_FOUND, "invalid_request_error"),
     ErrorCode.TOOL_NOT_FOUND: (status.HTTP_404_NOT_FOUND, "invalid_request_error"),
     ErrorCode.TOOL_NOT_PUBLISHED: (status.HTTP_400_BAD_REQUEST, "invalid_request_error"),
+    ErrorCode.CONFLICT: (status.HTTP_409_CONFLICT, "invalid_request_error"),
     ErrorCode.MODEL_CAPABILITY_NOT_SUPPORTED: (
         status.HTTP_400_BAD_REQUEST,
         "invalid_request_error",

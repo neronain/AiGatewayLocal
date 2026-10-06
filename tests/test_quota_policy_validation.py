@@ -290,5 +290,5 @@ def test_what_the_console_sends_is_still_accepted(client):
     assert made.status_code == 201, made.text
     assert set(made.json()) == {
         "id", "name", "scope", "workspace_id", "user_id", "api_key_id", "model_alias",
-        "access_group_id", "window", *LIMITS, "expires_at",
+        "access_group_id", "window", *LIMITS, "expires_at", "effective", "shadowed_by",
     }

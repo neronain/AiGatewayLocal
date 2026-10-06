@@ -831,10 +831,18 @@ class QuotaService:
             # เพดานให้ key ใบเดียว (ซึ่งไม่ได้ระบุ user/workspace) จะได้คะแนน 0
             # เท่ากับนโยบายกลาง แล้วไปชนะ — ตั้งเพดานให้ CI token ใบเดียวกลายเป็น
             # การลดโควตาของทุกคนในระบบ · เทสต์จับได้ตอนเขียนฟีเจอร์นี้พอดี
-            select(QuotaPolicy).where(
+            select(QuotaPolicy)
+            .where(
                 QuotaPolicy.enabled.is_(True),
                 QuotaPolicy.api_key_id.is_(None),
             )
+            # ลำดับตัดสินต้องถูกเขียนไว้ ไม่ใช่ได้มาจากลำดับที่ฐานข้อมูลบังเอิญคืน ·
+            # นโยบายสองใบที่เจาะจงเท่ากัน ใบแรกในลำดับนี้ชนะ (`_winner` ใช้ `>` ไม่ใช่
+            # `>=`) — บน SQLite ลำดับที่ไม่ได้ขอคือลำดับที่แทรก ใบเก่าจึงชนะมาตลอด แต่บน
+            # PostgreSQL แถวที่ถูก UPDATE ย้ายที่ในตารางได้ ผู้ชนะจึงสลับได้หลังมีคนแก้
+            # นโยบายใบหนึ่ง โดยไม่มีอะไรเปลี่ยนบนหน้าจอ · เก่าสุดชนะ = พฤติกรรมเดิม
+            # และ id ตัดสินเมื่อเวลาสร้างเท่ากัน
+            .order_by(QuotaPolicy.created_at, QuotaPolicy.id)
         )
         # An expired policy is skipped rather than deleted: the row is the record
         # of what was granted and when, which is the first thing anyone asks
@@ -903,6 +911,39 @@ class QuotaService:
             if current > best_score:
                 best, best_score = policy, current
         return best if best_score >= 0 else None
+
+    @staticmethod
+    def target_of(policy: QuotaPolicy) -> tuple:
+        """นโยบายสองใบที่ได้ค่านี้เท่ากันคือนโยบายของ "สิ่งเดียวกัน" """
+        return (
+            policy.user_id or None,
+            policy.workspace_id or None,
+            policy.api_key_id or None,
+            policy.model_alias or None,
+            policy.access_group_id or None,
+        )
+
+    @classmethod
+    def shadowed(cls, policies: list[QuotaPolicy]) -> dict[str, QuotaPolicy]:
+        """นโยบายที่ **ไม่มีวันถูกใช้** เพราะมีอีกใบของเป้าหมายเดียวกันมาก่อน → ใบที่บังมัน
+
+        `policies` ต้องเป็นนโยบายที่มีผลอยู่ (เปิด · ยังไม่หมดอายุ) เรียงตามลำดับตัดสิน
+        (created_at, id) · สองใบของเป้าหมายเดียวกันได้คะแนนเท่ากันเสมอ ใบแรกจึงชนะ
+        ทุกครั้งและใบหลังไม่เคยถูกอ่าน ไม่ว่าหน้าต่างหรือลิมิตของมันจะเป็นอะไร
+
+        เพดานของ key ไม่อยู่ในนี้: ทุกเพดานบนใบเดียวถูกบังคับ ไม่มีใบไหนบังใบไหน
+        """
+        first: dict[tuple, QuotaPolicy] = {}
+        hidden: dict[str, QuotaPolicy] = {}
+        for policy in policies:
+            if policy.api_key_id:
+                continue
+            target = cls.target_of(policy)
+            if target in first:
+                hidden[policy.id] = first[target]
+            else:
+                first[target] = policy
+        return hidden
 
     def _limits_of(self, best: QuotaPolicy | None, user_id: str) -> ResolvedLimits:
         if best is None:

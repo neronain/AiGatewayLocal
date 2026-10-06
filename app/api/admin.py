@@ -41,7 +41,7 @@ from app.core.modeltest import (
     suggest_tool_parser,
 )
 from app.core.passwords import read_session_cookie
-from app.core.quota import PolicyBook
+from app.core.quota import PolicyBook, QuotaService
 from app.core.secrets import SecretStoreError
 from app.core.usage import clean_client_request_id
 from app.db.dialect import utc_date
@@ -2016,6 +2016,10 @@ async def update_quota_policy(
             ErrorCode.INVALID_REQUEST,
             "Nothing to change — send 'days', 'window' or a limit field.",
         )
+    if "window" in changed or "days" in changed:
+        # ย้ายหน้าต่างไปชนใบอื่น หรือต่ออายุใบที่หมดอายุไปแล้วกลับมาทับใบที่ตั้งแทน —
+        # ทางอ้อมสองทางที่ได้นโยบายซ้ำแบบเดียวกับการสร้างซ้ำ
+        await _refuse_duplicate_policy(session, policy)
 
     await audit(session, request, actor, "quota.update", "quota", policy_id, changed)
     await session.commit()
@@ -2201,14 +2205,91 @@ async def create_quota_policy(
         **fields,
         expires_at=utcnow() + timedelta(days=days) if days else None,
     )
+    await _refuse_duplicate_policy(session, policy)
     session.add(policy)
+    await session.flush()
+    # เป้าหมายเดียวกันแต่คนละหน้าต่าง: สร้างได้ แต่ใบที่เก่ากว่ายังเป็นใบที่ถูกใช้ —
+    # บอกในคำตอบเลย ไม่ใช่ให้ไปเจอเองว่าลิมิตที่เพิ่งตั้งไม่มีผล
+    shadow = (await _policy_standing(session)).get(policy.id, {})
     await audit(session, request, actor, "quota.create", "quota", fields["scope"])
     await session.commit()
     return {
         "id": policy.id,
         **fields,
         "expires_at": policy.expires_at.isoformat() if policy.expires_at else None,
+        "effective": shadow.get("effective", True),
+        "shadowed_by": shadow.get("shadowed_by"),
     }
+
+
+def _policy_is_live(policy: QuotaPolicy, now: datetime) -> bool:
+    # None = ใบที่ยังไม่ถูกเขียนลงฐานข้อมูล (ค่าตั้งต้นของคอลัมน์คือเปิด)
+    if policy.enabled is False:
+        return False
+    if policy.expires_at is None:
+        return True
+    expires = policy.expires_at
+    return (expires if expires.tzinfo else expires.replace(tzinfo=timezone.utc)) > now
+
+
+async def _refuse_duplicate_policy(session: AsyncSession, policy: QuotaPolicy) -> None:
+    """409 ถ้ามีนโยบายที่มีผลอยู่ของ scope + เป้าหมาย + หน้าต่างเดียวกันอยู่แล้ว
+
+    ตรวจพบ 2026-10-06: นโยบายกลาง day 1 ครั้ง ("old") แล้วสร้างอีกใบ day 100 ครั้ง
+    ("new, raised") → 201 · ทั้งสองใบถูกแสดงว่าเปิดอยู่ · คำขอที่สองของสมาชิกยังได้ 429
+    จากใบเก่า ใบใหม่ไม่เคยถูกอ่าน — การขึ้นลิมิตที่หน้าจอบอกว่าสำเร็จแต่ไม่มีผล
+
+    นโยบายที่หมดอายุแล้วไม่นับ: ตั้งใบใหม่แทนใบที่หมดอายุคือเรื่องปกติ
+    """
+    now = utcnow()
+    if not _policy_is_live(policy, now):
+        return
+    rows = await session.execute(
+        select(QuotaPolicy)
+        .where(QuotaPolicy.enabled.is_(True), QuotaPolicy.window == policy.window)
+        .order_by(QuotaPolicy.created_at, QuotaPolicy.id)
+    )
+    target = QuotaService.target_of(policy)
+    for other in rows.scalars():
+        if other.id == policy.id or not _policy_is_live(other, now):
+            continue
+        if QuotaService.target_of(other) != target:
+            continue
+        label = f"“{other.name}”" if other.name else f"id {other.id}"
+        raise GatewayError(
+            ErrorCode.CONFLICT,
+            f"There is already a {policy.window} policy for this target ({label}). "
+            "Only one can apply, so a second would be listed and never used — "
+            "edit that one, or delete it first.",
+            details={"existing_policy_id": other.id, "existing_policy_name": other.name or ""},
+        )
+
+
+async def _policy_standing(session: AsyncSession) -> dict[str, dict[str, Any]]:
+    """นโยบายแต่ละใบ "มีผลจริงไหม" — ใบที่เปิดอยู่ทุกใบ → effective / expired / shadowed_by
+
+    คำนวณจากนโยบาย *ทั้งหมด* ไม่ใช่เฉพาะที่ผู้เรียกมองเห็น: ใบที่บังกับใบที่ถูกบังมี
+    เป้าหมายเดียวกัน ผู้จัดการที่เห็นใบหนึ่งจึงเห็นอีกใบด้วยเสมอ
+    """
+    now = utcnow()
+    rows = await session.execute(
+        select(QuotaPolicy)
+        .where(QuotaPolicy.enabled.is_(True))
+        .order_by(QuotaPolicy.created_at, QuotaPolicy.id)
+    )
+    policies = list(rows.scalars())
+    live = [p for p in policies if _policy_is_live(p, now)]
+    hidden = QuotaService.shadowed(live)
+    standing: dict[str, dict[str, Any]] = {}
+    for policy in policies:
+        expired = not _policy_is_live(policy, now)
+        by = hidden.get(policy.id)
+        standing[policy.id] = {
+            "expired": expired,
+            "effective": not expired and by is None,
+            "shadowed_by": {"id": by.id, "name": by.name or ""} if by is not None else None,
+        }
+    return standing
 
 
 @router.get("/quota-policies")
@@ -2216,17 +2297,45 @@ async def list_quota_policies(
     actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    stmt = select(QuotaPolicy).where(QuotaPolicy.enabled.is_(True))
+    """Every enabled policy this actor may see, in the order they are resolved.
+
+    `effective` คือคำตอบของคำถามที่หน้านี้มีไว้ตอบ: "ใบนี้มีผลจริงไหม" · ใบที่หมดอายุ
+    (`expired`) และใบที่ถูกใบเก่ากว่าของเป้าหมายเดียวกันบัง (`shadowed_by` บอกว่าใบไหน)
+    ยังถูกแสดง — มันคือบันทึกว่าเคยตั้งอะไรไว้ — แต่ต้องไม่ถูกแสดงว่าบังคับใช้อยู่
+    """
+    stmt = (
+        select(QuotaPolicy)
+        .where(QuotaPolicy.enabled.is_(True))
+        .order_by(QuotaPolicy.created_at, QuotaPolicy.id)
+    )
+    policies = list((await session.execute(stmt)).scalars())
     scope = await _scope(session, actor)
     if scope is not None:
-        # The global policy applies to this manager too, so it stays visible.
-        # A policy aimed at another workspace does not concern them.
-        stmt = stmt.where(
-            (QuotaPolicy.workspace_id.is_(None) & QuotaPolicy.user_id.is_(None))
-            | QuotaPolicy.workspace_id.in_(scope)
-            | (QuotaPolicy.user_id == actor.user_id)
-        )
-    result = await session.execute(stmt)
+        visible = await _visible_users(session, actor) or set()
+        # เพดานของ key ไม่มีทั้ง workspace และ user — ตัวกรองเดิมจึงนับมันเป็น "นโยบาย
+        # กลาง" แล้วแสดงให้ผู้จัดการทุกคน รวมถึงเพดานของ key ที่เจ้าของอยู่นอกวิชาของเขา
+        # (ชื่อ key อยู่ในชื่อนโยบาย) · เพดานของ key เป็นของเจ้าของ key
+        ceilings = [p.api_key_id for p in policies if p.api_key_id]
+        owners: dict[str, str] = {}
+        if ceilings:
+            rows = await session.execute(
+                select(ApiKey.id, ApiKey.user_id).where(ApiKey.id.in_(ceilings))
+            )
+            owners = {key_id: owner for key_id, owner in rows}
+
+        def may_see(p: QuotaPolicy) -> bool:
+            if p.api_key_id:
+                return owners.get(p.api_key_id) in visible
+            if p.user_id:
+                return p.user_id in visible
+            if p.workspace_id:
+                # A policy aimed at another workspace does not concern them.
+                return p.workspace_id in scope
+            # The global policy applies to this manager too, so it stays visible.
+            return True
+
+        policies = [p for p in policies if may_see(p)]
+    standing = await _policy_standing(session)
     return {
         "data": [
             {
@@ -2248,8 +2357,10 @@ async def list_quota_policies(
                 "max_requests_per_minute": p.max_requests_per_minute,
                 "max_tokens_per_minute": p.max_tokens_per_minute,
                 "expires_at": p.expires_at.isoformat() if p.expires_at else None,
+                **standing.get(p.id, {"expired": False, "effective": True,
+                                      "shadowed_by": None}),
             }
-            for p in result.scalars()
+            for p in policies
         ]
     }
 

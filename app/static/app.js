@@ -3510,7 +3510,12 @@ async function loadQuota() {
         <th class="num">Per minute</th><th></th></tr>
     ${policies.data.map((p) => `<tr>
       <td><span class="pill mute">${esc(p.scope)}</span>${p.name
-        ? `<div class="hint">${esc(p.name)}</div>` : ''}</td>
+        ? `<div class="hint">${esc(p.name)}</div>` : ''}${
+        // ใบที่เปิดอยู่แต่ไม่มีผล ต้องไม่หน้าตาเหมือนใบที่บังคับใช้อยู่
+        p.expired ? '<div class="hint err-text">หมดอายุแล้ว — ไม่มีผล</div>'
+        : p.shadowed_by ? `<div class="hint err-text">ไม่มีผล — ถูกบังโดย ${
+            esc(p.shadowed_by.name ? `“${p.shadowed_by.name}”` : 'นโยบายที่เก่ากว่า')
+          } ของเป้าหมายเดียวกัน</div>` : ''}</td>
       <td>${esc(users[p.user_id] || workspaces[p.workspace_id] || 'everyone')}</td>
       <td>${p.access_group_id
         ? `<code>${esc(groupNames[p.access_group_id] || 'bundle')}</code>
