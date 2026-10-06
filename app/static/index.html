@@ -178,6 +178,22 @@
         </div>
         <div class="panel-bd"><div id="savings-body"></div></div>
       </div>
+      <div class="panel" id="reqfind-panel">
+        <div class="panel-hd">
+          <div><h3>Find a request</h3>
+            <div class="sub">ตามหาแถว usage ของคำขอเดียว · ใส่ได้ทั้ง id ของเกตเวย์
+              (<code>x-litegate-request-id</code> หรือ <code>request_id</code> ในข้อความ error)
+              และค่า <code>x-request-id</code> ที่โปรแกรมของผู้ใช้ส่งมาเอง</div></div>
+          <form id="reqfind-form">
+            <input id="reqfind-id" type="search" placeholder="request id" autocomplete="off"
+                   spellcheck="false" aria-label="Request id">
+            <button type="submit" class="ghost small">Find</button>
+          </form>
+        </div>
+        <div class="panel-bd"><div id="reqfind-body">
+          <p class="hint">ค้นย้อนหลัง 30 วัน · เห็นเฉพาะ metadata ของคำขอ ไม่มี prompt ไม่มีคำตอบ</p>
+        </div></div>
+      </div>
     </div>
 
     <div data-fold-section="dash-models" data-subtab="models" data-subtab-label="Available models">

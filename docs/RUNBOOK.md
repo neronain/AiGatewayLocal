@@ -115,7 +115,7 @@ The `code` label names the cause without needing the logs:
 |---|---|
 | `UPSTREAM_*` | The model backends. See below |
 | `MODEL_NOT_FOUND` | An alias was removed or renamed while clients still use it |
-| `INTERNAL_ERROR` | The gateway itself. Get a `request_id` from a member and grep for it |
+| `INTERNAL_ERROR` | The gateway itself. Get a `request_id` from a member (the one in the error body, or the `x-litegate-request-id` header) and grep for it. If all they have is the `x-request-id` their own program sent, **Dashboard → Find a request** turns it into the gateway's id |
 
 A spike right after a registry change is the registry change. `git log config/`.
 

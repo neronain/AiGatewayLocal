@@ -190,6 +190,7 @@ async def _serve(
         key_window=key_limits.window if key_limits else "",
         key_rate_limited=bool(key_limits and key_limits.rate_limited),
         request_id=request_id,
+        client_request_id=getattr(request.state, "client_request_id", None),
         started=started,
         client_agent=request.headers.get("user-agent", "")[:128],
         protocol=surface,

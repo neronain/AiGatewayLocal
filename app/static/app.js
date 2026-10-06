@@ -989,6 +989,44 @@ function renderSavings(d) {
 
 
 
+// ── ตามหาคำขอเดียวด้วย request id ───────────────────────────────────────────
+//
+// ผู้ใช้ที่เจอปัญหามี id ติดมือมาสองแบบ: ตัวที่เกตเวย์ออกให้ (อยู่ใน error กับ header
+// x-litegate-request-id) กับตัวที่โปรแกรมของเขาส่งมาเองใน x-request-id · ตัวหลังซ้ำได้
+// จึงอาจได้หลายแถว — แสดงทุกแถว ไม่เดาว่าเขาหมายถึงแถวไหน
+function setupRequestFinder() {
+  const form = $('reqfind-form');
+  if (!form) return;
+  form.onsubmit = (event) => {
+    event.preventDefault();
+    findRequest($('reqfind-id').value.trim()).catch((e) => {
+      $('reqfind-body').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    });
+  };
+}
+
+async function findRequest(id) {
+  const body = $('reqfind-body');
+  if (!id) return;
+  const d = await api(`/admin/usage/requests?days=30&id=${encodeURIComponent(id)}`);
+  const rows = (d.data || []).map((r) => `
+    <tr><td>${esc(r.ts ? new Date(r.ts).toLocaleString() : '—')}</td>
+        <td class="id">${esc(r.request_id)}${r.client_request_id
+          ? `<br><span class="hint">client: ${esc(r.client_request_id)}</span>` : ''}</td>
+        <td>${esc(r.model)}<br><span class="hint">${esc(r.endpoint || '—')} · ${esc(r.protocol)}</span></td>
+        <td>${esc(r.status)} ${esc(r.http_status)}${r.error_code
+          ? `<br><span class="hint">${esc(r.error_code)}</span>` : ''}</td>
+        <td class="num">${num(r.text_input_tokens + r.visual_input_tokens)} / ${num(r.output_tokens)}</td>
+        <td class="num">${num(r.latency_ms)} ms</td></tr>`).join('');
+  body.innerHTML = rows
+    ? `<div class="scroll"><table class="tbl"><thead><tr><th>When</th><th>Request id</th>
+        <th>Model</th><th>Result</th><th class="num">Tokens in / out</th>
+        <th class="num">Latency</th></tr></thead><tbody>${rows}</tbody></table></div>`
+    : `<div class="empty">ไม่พบคำขอที่ใช้ id นี้ใน ${esc(d.window_days)} วันที่ผ่านมา ·
+        คำขอที่ถูกปฏิเสธก่อนถึงโมเดล (คีย์ผิด โควตาเต็ม) ไม่มีแถว usage</div>`;
+}
+
+
 // ── model="auto" — อันดับตอนนี้ ────────────────────────────────────────────────
 //
 // ฟีเจอร์ที่ไม่โผล่ในหน้าเว็บเท่ากับไม่มีอยู่จริงสำหรับคนที่ใช้ผ่านคอนโซลล้วน ๆ ·
@@ -3874,6 +3912,7 @@ async function load() {
     ]);
     renderUsage(summary, daily);
     loadSavings().catch(() => { /* รายงานเสริม ล้มแล้วไม่ควรทำให้หน้าแดชบอร์ดพัง */ });
+    setupRequestFinder();
     const autoPanel = $('auto-panel');
     if (autoPanel) {
       autoPanel.hidden = false;

@@ -226,6 +226,13 @@ prompt is already typed.
 > prompt and no response to disk (PRD §12), so there is no head to continue from.
 > Codex sends the full input every turn when that mode is off.
 
+> **Reasoning models need room to think *and* answer.** Thinking counts against
+> `limits.max_output_tokens`. A model that spends it all thinking returns
+> `status: "incomplete"`, and Codex reads that as a dropped stream and retries —
+> five times by default, each one a full generation. The thinking itself is
+> passed through as a `reasoning` item; set `show_raw_agent_reasoning = true` in
+> Codex's config to see it.
+
 **Getting a trusted address to the client.** Claude's third-party provider
 settings refuse anything that is not https, or http on loopback — a plain LAN
 address is rejected outright. Three ways in; pick by where the client runs:

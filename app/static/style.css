@@ -734,7 +734,7 @@ nav button[aria-selected="true"] .ti { opacity: 1; }
 .fit.blocked { opacity: .72; }
 .fit-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .fit-head b { font-size: 0.875rem; }
-.fit-head .alias { font-family: var(--mono, ui-monospace, monospace); font-size: 0.75rem; color: var(--fg2); }
+.fit-head .alias { font-family: var(--mono); font-size: 0.75rem; color: var(--fg2); }
 .fit-head .pill { margin-left: auto; }
 .fit ul { margin: 8px 0 0; padding-left: 18px; }
 .fit li { font-size: 0.7812rem; line-height: 1.6; color: var(--fg2); }
@@ -1061,6 +1061,11 @@ table tr:not(.alias-row):not(.ep-row):hover > td {
 .savings-head { margin-bottom: 12px; }
 .savings-big { font-size: 2rem; font-weight: 650; line-height: 1.1; }
 #savings-panel select.mini { font-size: 12px; padding: 4px 8px; }
+#reqfind-form { display: flex; gap: 6px; align-items: center; flex: 0 1 340px; }
+#reqfind-form input { flex: 1; min-width: 0; font-size: 12px; padding: 4px 8px;
+  font-family: var(--mono); }
+#reqfind-body td.id { font-family: var(--mono); font-size: 11px;
+  word-break: break-all; }
 
 /* ── อันดับของ model="auto" ── */
 #auto-panel .auto-win { font-weight: 600; }

@@ -23,6 +23,8 @@ import json
 import uuid
 from typing import Any
 
+from app.upstream.protocol.reasoning import reasoning_text as _reasoning_text
+
 # Anthropic finish reasons keyed by the OpenAI reason that produced them.
 _STOP_REASON_MAP = {
     "stop": "end_turn",
@@ -46,19 +48,6 @@ def wants_thinking(body: dict[str, Any]) -> bool:
     """
     thinking = body.get("thinking")
     return isinstance(thinking, dict) and thinking.get("type") not in (None, "disabled")
-
-
-def _reasoning_text(source: dict[str, Any]) -> str:
-    """ความคิดของโมเดลจาก message หรือ delta ของ OpenAI
-
-    vLLM ใช้มาแล้วสองชื่อ: `reasoning_content` ในรุ่นเก่า · `reasoning` ในรุ่นใหม่ ·
-    llama.cpp ใช้ `reasoning_content` · ดูชื่อเดียว = ครึ่งหนึ่งของฟลีตเงียบหาย
-    """
-    for field in ("reasoning_content", "reasoning"):
-        value = source.get(field)
-        if isinstance(value, str) and value:
-            return value
-    return ""
 
 
 def _thinking_block(text: str) -> dict[str, Any]:

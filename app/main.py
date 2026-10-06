@@ -35,6 +35,7 @@ from app.config import get_settings
 from app.core.auth import generate_api_key
 from app.core.errors import ErrorCode, GatewayError
 from app.core.jsonio import FastJSONResponse
+from app.core.usage import clean_client_request_id
 from app.db.models import ApiKey, User
 from app.db.session import dispose_db, init_db, session_scope
 from app.state import build_state
@@ -289,13 +290,26 @@ def create_app() -> FastAPI:
             allow_credentials=True,
             allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
             allow_headers=["*"],
-            expose_headers=["x-request-id", "x-litegate-model", "x-litegate-endpoint"],
+            expose_headers=[
+                "x-request-id", "x-litegate-request-id",
+                "x-litegate-model", "x-litegate-endpoint",
+            ],
         )
 
     @app.middleware("http")
     async def request_context(request: Request, call_next):
-        request_id = request.headers.get("x-request-id") or uuid.uuid4().hex
+        # id ของคำขอ **เกตเวย์สร้างเองเสมอ** · เดิมรับ `x-request-id` ของ client มาใช้ตรง ๆ
+        # แล้วค่านั้นไปเป็นคีย์ UNIQUE ของ usage_logs — ส่งค่าเดิมซ้ำ = แถว usage ชนกัน และ
+        # พาทั้ง batch ของสมาชิกคนอื่นหายไปด้วย (ตรวจ 2026-10-05 · ชนิดเดียวกับใบจองช่องใน
+        # app/api/openai.py: _RequestContext.lease) · ค่าที่ client เลือกเองเป็นคีย์ของอะไรไม่ได้
+        #
+        # ค่าของ client ไม่ได้ถูกทิ้ง: echo กลับใน `x-request-id` เหมือนเดิม และเก็บลง
+        # usage_logs.client_request_id ให้ตามหาได้ · id ของเราไปใน `x-litegate-request-id`
+        request_id = uuid.uuid4().hex
+        sent_request_id = request.headers.get("x-request-id")
         request.state.request_id = request_id
+        # ตัดความยาวเฉพาะตัวที่จะ *เก็บ* · ตัวที่ echo กลับคือค่าที่เขาส่งมาทั้งก้อนเหมือนเดิม
+        request.state.client_request_id = clean_client_request_id(sent_request_id)
         started = time.perf_counter()
         IN_FLIGHT.inc()
         settled = False
@@ -342,7 +356,8 @@ def create_app() -> FastAPI:
 
             response.body_iterator = counted_body()
 
-        response.headers["x-request-id"] = request_id
+        response.headers["x-request-id"] = sent_request_id or request_id
+        response.headers["x-litegate-request-id"] = request_id
         # ลายเซ็นติดไปกับ *ทุก* response — ที่เดียวจบ ไม่ต้องไล่แก้ทุก endpoint
         # และถอดออกทีเดียวไม่ได้โดยที่ไม่มีใครสังเกต เพราะ client ที่ log header
         # ไว้จะเห็นมันหายไป · MIT ให้ fork ได้ แต่บังคับให้คงประกาศลิขสิทธิ์

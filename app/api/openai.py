@@ -302,6 +302,7 @@ async def run_chat(
         key_window=key_limits.window if key_limits else "",
         key_rate_limited=bool(key_limits and key_limits.rate_limited),
         request_id=request_id,
+        client_request_id=getattr(request.state, "client_request_id", None),
         started=started,
         client_agent=client_agent,
         protocol="openai",
@@ -385,6 +386,7 @@ class _RequestContext:
         key_window: str = "",
         key_rate_limited: bool = False,
         request_id: str,
+        client_request_id: str | None = None,
         started: float,
         client_agent: str,
         protocol: str,
@@ -404,9 +406,10 @@ class _RequestContext:
         # endpoint เป็นของโมเดลนั้น · เคยใช้ตัวนี้แทน ทราฟฟิกที่ถูก reroute หรือ fallback จึง
         # ได้ตัวนับอีกกอง และ llama.cpp 1 slot ได้รับ 2 คำขอ (ตรวจพบ 2026-10-05)
         self.requested_alias = requested_alias or model.alias
-        # ใบจองช่องบน backend · สร้างเองต่อคำขอ ไม่ใช้ request_id เพราะตัวนั้นรับมาจาก
-        # `x-request-id` ของ client ได้ — ค่าซ้ำ = ใบจองใบเดียวกันในที่เก็บที่ทุก worker ใช้ร่วม
-        # ตัวนับไม่ขยับ และ release ของตัวใดตัวหนึ่งคืนช่องของทุกตัว
+        # ใบจองช่องบน backend · สร้างเองต่อคำขอ — เคยใช้ request_id ตอนที่ตัวนั้นยังรับมาจาก
+        # `x-request-id` ของ client: ค่าซ้ำ = ใบจองใบเดียวกันในที่เก็บที่ทุก worker ใช้ร่วม
+        # ตัวนับไม่ขยับ และ release ของตัวใดตัวหนึ่งคืนช่องของทุกตัว · ตอนนี้ request_id
+        # เป็นของเกตเวย์เองแล้ว (app/main.py) แต่ใบจองยังแยกไว้: คนละอายุ คนละหน้าที่
         self.lease = uuid.uuid4().hex
         self.endpoint = endpoint
         self.profile = profile
@@ -415,7 +418,10 @@ class _RequestContext:
         # ว่าง = ใบนี้ไม่มีนโยบายของตัวเอง · ไม่ต้องนับกองที่สอง
         self.key_window = key_window
         self.key_rate_limited = key_rate_limited
+        # ของเกตเวย์เอง ไม่ซ้ำ — คีย์ของแถว usage และตัวที่ log อ้างถึง
         self.request_id = request_id
+        # ค่า `x-request-id` ที่ client ส่งมา (ถ้ามี) · เก็บไว้ให้ตามหาได้ ไม่เคยเป็นคีย์
+        self.client_request_id = client_request_id
         self.started = started
         self.client_agent = client_agent
         self.protocol = protocol
@@ -562,6 +568,7 @@ class _RequestContext:
         """งานบันทึกจริง — เรียกผ่าน finalize() เท่านั้น"""
         record = usage_mod.build_record(
             request_id=self.request_id,
+            client_request_id=self.client_request_id,
             principal=self.principal,
             model_alias=self.requested_alias,
             protocol=self.protocol,

@@ -344,6 +344,8 @@ class UsageLog(Base):
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    # id ที่ **เกตเวย์สร้างเอง** ต่อคำขอ (ดู app/main.py: request_context) · UNIQUE จึงเป็น
+    # จริงโดยโครงสร้าง และเป็นตัวกันแถวซ้ำเมื่อ flush ถูกลองใหม่หลังฐานข้อมูลสะดุด
     request_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
@@ -372,6 +374,14 @@ class UsageLog(Base):
     error_code: Mapped[str | None] = mapped_column(String(64), index=True)
     client_agent: Mapped[str] = mapped_column(String(128), default="")
     cost_units: Mapped[float] = mapped_column(Float, default=0.0)
+
+    # ค่าที่ client ส่งมาใน `x-request-id` (ถ้าส่ง) — เก็บไว้ไล่คำขอข้ามระบบ · ซ้ำได้ ว่างได้
+    # และไม่เคยเป็นคีย์ของอะไร · ไม่ทำ index: ค้นผ่าน /admin/usage/requests ซึ่งจำกัดช่วง `ts`
+    #
+    # **คอลัมน์ใหม่ของตารางนี้ต่อท้ายเสมอ** · เครื่องที่อัปเกรดได้คอลัมน์จาก ALTER TABLE ซึ่งต่อ
+    # ท้ายตาราง ส่วนเครื่องติดตั้งใหม่ได้ลำดับตามที่ประกาศตรงนี้ — ถ้าสองแบบไม่ตรงกัน วิธีย้าย
+    # ข้อมูลใน docs/DEPLOYMENT.md (`SELECT *` → `\copy` ซึ่งจับคู่ตามตำแหน่ง) จะเทค่าลงผิดช่อง
+    client_request_id: Mapped[str | None] = mapped_column(String(128))
 
 
 class ModelTestRun(Base):

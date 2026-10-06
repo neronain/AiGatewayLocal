@@ -1782,7 +1782,16 @@ sudo journalctl -u litegate -n 100 --no-pager     # native
 docker compose -f docker/docker-compose.yml logs --tail 100 gateway
 ```
 
-Every error response carries `request_id`; grep the logs for it.
+Every error response carries `request_id` — the gateway's own id, also sent as the
+`x-litegate-request-id` header; grep the logs for it. A caller's own
+`x-request-id` is echoed back but never used as a key: look it up under
+**Dashboard → Find a request** (`GET /admin/usage/requests?id=`) to get the
+gateway's id for it.
+
+`usage record dropped: the database refused request …` in the log means one usage
+row was lost (the line names the request, model, user and token count); every
+other row in that flush was written. `database unavailable; N usage record(s) kept
+for the next flush` means nothing has been lost yet.
 
 ---
 

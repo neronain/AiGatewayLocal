@@ -67,7 +67,19 @@ OpenAI routes:
 Branch on `error.code` — it is stable. See [PRD §13.1](PRD.md#131-error-taxonomy)
 for the full table.
 
-Every response carries `x-request-id`. Quote it when reporting a problem.
+### Request ids
+
+Every response carries two id headers:
+
+| Header | Whose | Unique | Use it for |
+|---|---|---|---|
+| `x-litegate-request-id` | the gateway's — generated per request, never taken from the caller | always | Reporting a problem. It is the `request_id` in an error body, the id in the gateway's logs, and the key of the usage row |
+| `x-request-id` | yours, echoed back unchanged if you sent one; otherwise the same value as `x-litegate-request-id` | only if you make it so | Correlating with your own logs |
+
+A caller-chosen id is never the key of anything: two requests may carry the same
+`x-request-id` and each still gets its own usage row. The value you sent is kept
+on the row (first 128 characters) so an admin can find the request by either id —
+see `GET /admin/usage/requests` under [Admin endpoints](#admin-endpoints).
 
 ---
 
@@ -238,7 +250,8 @@ curl -X POST $GW/v1/chat/completions \
 
 | Header | Meaning |
 |---|---|
-| `x-request-id` | Correlates with logs and usage rows |
+| `x-litegate-request-id` | The gateway's own id for this request — correlates with logs and the usage row. See [Request ids](#request-ids) |
+| `x-request-id` | Your `x-request-id` echoed back, or the gateway's id if you sent none |
 | `x-litegate-model` | The alias the caller asked for — never changes with internal routing |
 | `x-litegate-served-by` | The alias that **actually ran**. Differs from the above when a routing rule reroutes (`coding` → `coding-long` for an oversized prompt) or when `model: "auto"` picked for you |
 | `x-litegate-endpoint` | Which backend machine answered |
@@ -330,24 +343,56 @@ The shapes differ in more than field names:
 | `max_tokens` | `max_output_tokens` |
 | `tools[].function.name` | `tools[].name` (flattened) |
 | `choices[].message` | `output[]` — one item per message or tool call |
+| `message.reasoning_content` / `.reasoning` | a `reasoning` output item, before the message |
 | `usage.prompt_tokens` | `usage.input_tokens` |
+| `finish_reason: "length"` | `status: "incomplete"`, `incomplete_details.reason: "max_output_tokens"` |
+| `finish_reason: "content_filter"` | `status: "incomplete"`, `incomplete_details.reason: "content_filter"` |
 
 A turn that used tools comes back as `function_call` / `function_call_output`
 items sitting **beside** the messages, not nested inside them. Reading only
 `{role, content}` would hand the model a conversation where it asked for a tool
 and never learned the answer.
 
-Streaming emits the typed event sequence Codex reads:
+Streaming emits the typed event sequence Codex reads. Each output item opens,
+streams and closes at its own `output_index` before the next one opens:
 
 ```
-response.created → response.output_item.added → response.content_part.added
+response.created → response.in_progress
+  reasoning      → response.output_item.added → response.reasoning_text.delta*
+                 → response.reasoning_text.done → response.output_item.done
+  message        → response.output_item.added → response.content_part.added
                  → response.output_text.delta* → response.output_text.done
                  → response.content_part.done → response.output_item.done
-                 → response.completed
+  function_call  → response.output_item.added → response.function_call_arguments.delta*
+                 → response.function_call_arguments.done → response.output_item.done
+response.completed | response.incomplete
 ```
 
 Every event carries a `sequence_number` that increases by one **across all event
-types** — the client uses it to detect a gap.
+types** — the client uses it to detect a gap. The `output` of the final event
+holds the same items (same ids) that were streamed.
+
+**Reasoning models.** A backend that separates its chain of thought
+(`reasoning_content`, or `reasoning` on newer vLLM) gets it back as a `reasoning`
+output item:
+
+```json
+{ "id": "rs_…", "type": "reasoning", "status": "completed", "summary": [],
+  "content": [{ "type": "reasoning_text", "text": "…" }] }
+```
+
+The raw text goes in `content`; `summary` is empty because nothing summarised it.
+It is not opt-in — as on OpenAI, a reasoning model's `output` starts with a
+reasoning item, so read the answer from `output_text` or the `message` item, not
+from `output[0]`. Reasoning items in the *request* are dropped. Codex hides raw
+reasoning unless `show_raw_agent_reasoning = true` is set in its config.
+
+Thinking counts against `max_output_tokens`. A model that spends the whole budget
+thinking returns `status: "incomplete"` with a reasoning item and no message —
+and **Codex treats `response.incomplete` as a dropped stream and retries it**
+(`stream_max_retries`, 5 by default), so one such turn is billed as six. Give
+reasoning models a `limits.max_output_tokens` that covers thinking *and* the
+answer.
 
 `previous_response_id` returns `400`. Codex uses it to have the server keep the
 conversation; this gateway stores no prompts and no responses (PRD §12), so there
@@ -533,6 +578,7 @@ network at the proxy (SEC-5).
 | GET | `/admin/usage/top-users?days=` | manager | Heaviest users |
 | GET | `/admin/usage/quota` | manager | Allowance spent, per person, against the limit that resolves for them |
 | GET | `/admin/usage/by-key?days=` | manager | Requests and tokens per key — activity, not allowance |
+| GET | `/admin/usage/requests?id=&days=` | manager | The usage row(s) for one request. `id` is the gateway's id (`x-litegate-request-id`, or `request_id` from an error body) **or** the `x-request-id` the caller sent — the latter can match several rows, because callers may reuse it. Metadata only; newest first, at most 100; `days` defaults to 7. A request refused before it reached a model (bad key, quota) has no usage row |
 
 > **`POST /admin/registry/reload` reloads only the worker that handled the
 > request.** With multiple uvicorn workers, the file-watcher

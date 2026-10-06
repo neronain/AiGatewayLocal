@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import config
@@ -36,6 +36,7 @@ from app.core.modeltest import (
 )
 from app.core.passwords import read_session_cookie
 from app.core.secrets import SecretStoreError
+from app.core.usage import clean_client_request_id
 from app.db.dialect import utc_date
 from app.db.models import (
     ASSISTANT_MODEL_KEY,
@@ -3386,6 +3387,77 @@ async def usage_daily(
             }
         )
     return {"window_days": days, "series": series}
+
+
+@router.get("/usage/requests")
+async def usage_requests(
+    request_id: str = Query(
+        ..., alias="id", min_length=1, max_length=4096,
+        description="id ของเกตเวย์ (x-litegate-request-id) หรือค่า x-request-id ที่ client ส่งมา",
+    ),
+    days: int = Query(7, ge=1, le=365),
+    actor: Principal = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """แถว usage ของคำขอหนึ่ง — ตามหาได้ด้วย id ตัวไหนก็ได้ที่ผู้ใช้มีอยู่ในมือ
+
+    id ของเกตเวย์ให้แถวเดียวเสมอ · ค่าที่ client ส่งมาเองให้ได้หลายแถว เพราะ client ส่งค่า
+    เดิมซ้ำได้ (นั่นคือเหตุผลที่มันไม่ใช่คีย์ของแถว — ดู UsageLog.client_request_id) ·
+    metadata ล้วน ไม่มี prompt ไม่มีคำตอบ เหมือนทุกอย่างในตารางนี้
+
+    จำกัดช่วงเวลาด้วย `days` เสมอ: คอลัมน์ของ client ไม่มี index จึงให้ index ของ `ts`
+    เป็นตัวตัดจำนวนแถวที่ต้องดู
+    """
+    await state.usage.flush()
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    needle = request_id.strip()
+    stmt = (
+        select(UsageLog)
+        .where(
+            UsageLog.ts >= since,
+            or_(
+                UsageLog.request_id == needle,
+                # เทียบกับค่าที่ถูกตัดแบบเดียวกับตอนเก็บ — id ยาวเกินคอลัมน์ยังหาเจอ
+                UsageLog.client_request_id == clean_client_request_id(needle),
+            ),
+        )
+        .order_by(UsageLog.ts.desc())
+        .limit(100)
+    )
+    visible = await _visible_users(session, actor)
+    if visible is not None:
+        stmt = stmt.where(UsageLog.user_id.in_(visible))
+
+    return {
+        "window_days": days,
+        "data": [
+            {
+                "request_id": row.request_id,
+                "client_request_id": row.client_request_id,
+                "ts": row.ts.isoformat() if row.ts else None,
+                "user_id": row.user_id,
+                "workspace_id": row.workspace_id,
+                "api_key_id": row.api_key_id,
+                "model": row.model_alias,
+                "endpoint": row.endpoint_name,
+                "protocol": row.protocol,
+                "stream": row.stream,
+                "text_input_tokens": row.text_input_tokens,
+                "visual_input_tokens": row.visual_input_tokens,
+                "output_tokens": row.output_tokens,
+                "total_tokens": row.total_tokens,
+                "token_accounting": row.token_accounting,
+                "latency_ms": row.latency_ms,
+                "ttft_ms": row.ttft_ms,
+                "status": row.status,
+                "http_status": row.http_status,
+                "error_code": row.error_code,
+                "client_agent": row.client_agent,
+            }
+            for row in (await session.execute(stmt)).scalars()
+        ],
+    }
 
 
 @router.get("/usage/top-users")

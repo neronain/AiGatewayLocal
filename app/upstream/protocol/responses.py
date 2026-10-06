@@ -20,6 +20,15 @@ The mixed `input` array is the part worth being careful about: a turn that used
 tools comes back with `function_call` and `function_call_output` items sitting
 beside the messages, not nested inside them. Dropping them would hand the model a
 conversation where it asked for a tool and never learned the answer.
+
+Reasoning crosses in one direction, as on the Anthropic surface. A reasoning
+model's chain of thought (`reasoning_content` / `reasoning` on the backend)
+comes back as a `reasoning` output item - raw text in `content[].reasoning_text`,
+`summary` left empty because nothing here summarised it. Unlike Anthropic's
+`thinking` blocks this is not opt-in: on the Responses API a reasoning model's
+output carries reasoning items whether or not the caller asked, so clients
+already have to step over them. `reasoning` items in the *request* are still
+dropped (see `responses_to_openai_request`).
 """
 
 from __future__ import annotations
@@ -28,6 +37,8 @@ import json
 import time
 import uuid
 from typing import Any
+
+from app.upstream.protocol.reasoning import reasoning_text
 
 __all__ = [
     "ResponsesStreamAdapter",
@@ -196,6 +207,42 @@ _STATUS_FOR_FINISH = {
     "content_filter": "incomplete",
 }
 
+# ทำไมถึงไม่จบ — สองเหตุผลนี้ client แก้คนละทาง (เพิ่มงบ output กับเปลี่ยนคำขอ)
+# เดิมรายงาน "max_output_tokens" ทั้งคู่ คำตอบที่ถูกกรองจึงดูเหมือนงบไม่พอ
+_INCOMPLETE_REASON = {"length": "max_output_tokens", "content_filter": "content_filter"}
+
+
+def _incomplete_details(finish: str) -> dict[str, str] | None:
+    if _STATUS_FOR_FINISH.get(finish, "completed") != "incomplete":
+        return None
+    return {"reason": _INCOMPLETE_REASON.get(finish, "max_output_tokens")}
+
+
+def _reasoning_item(item_id: str, text: str, status: str = "completed") -> dict[str, Any]:
+    """item ความคิดของโมเดล ในรูปที่ Responses API ใช้กับความคิดดิบ
+
+    `summary` ว่างแต่ต้องมี: เราไม่ได้สรุปอะไร และ Codex ประกาศฟิลด์นี้เป็นบังคับ ·
+    ไม่ใส่ `encrypted_content`: ของ OpenAI ใช้ส่งความคิดกลับเข้ามาในรอบถัดไป เราไม่มีให้
+    และไม่ปลอมขึ้นมา (ขาเข้าทิ้ง item ชนิดนี้อยู่แล้ว)
+    """
+    return {
+        "id": item_id,
+        "type": "reasoning",
+        "status": status,
+        "summary": [],
+        "content": [{"type": "reasoning_text", "text": text}] if text else [],
+    }
+
+
+def _message_item(item_id: str, text: str) -> dict[str, Any]:
+    return {
+        "id": item_id,
+        "type": "message",
+        "role": "assistant",
+        "status": "completed",
+        "content": [{"type": "output_text", "text": text, "annotations": []}],
+    }
+
 
 def _usage_block(usage: Any) -> dict[str, Any]:
     usage = usage if isinstance(usage, dict) else {}
@@ -219,17 +266,14 @@ def openai_to_responses_response(
     finish = choice.get("finish_reason") or "stop"
 
     output: list[dict] = []
+    # ความคิดมาก่อนคำตอบเสมอ · เดิมถูกทิ้ง โมเดลที่ใช้งบหมดไปกับการคิดจึงคืน `output: []`
+    # กับ status "incomplete" — คิดเงินเต็มโดยไม่มีอะไรให้ดูเลยว่าทำอะไรไป
+    thought = reasoning_text(message)
+    if thought:
+        output.append(_reasoning_item(_item_id("rs"), thought))
     text = message.get("content")
     if isinstance(text, str) and text:
-        output.append(
-            {
-                "id": _item_id(),
-                "type": "message",
-                "role": "assistant",
-                "status": "completed",
-                "content": [{"type": "output_text", "text": text, "annotations": []}],
-            }
-        )
+        output.append(_message_item(_item_id(), text))
 
     for call in message.get("tool_calls") or []:
         if not isinstance(call, dict):
@@ -258,7 +302,7 @@ def openai_to_responses_response(
         "parallel_tool_calls": True,
         "usage": _usage_block(payload.get("usage")),
         "error": None,
-        "incomplete_details": ({"reason": "max_output_tokens"} if status == "incomplete" else None),
+        "incomplete_details": _incomplete_details(finish),
         "metadata": {},
     }
 
@@ -273,10 +317,20 @@ class ResponsesStreamAdapter:
     open/close pairs being balanced:
 
         response.created
-        response.output_item.added / response.content_part.added
-        response.output_text.delta*
+        response.output_item.added                       (reasoning)
+        response.reasoning_text.delta* / .done
+        response.output_item.done
+        response.output_item.added / response.content_part.added   (message)
+        response.output_text.delta* / .done
         response.content_part.done / response.output_item.done
-        response.completed
+        response.output_item.added                       (function_call)
+        response.function_call_arguments.delta* / .done
+        response.output_item.done
+        response.completed | response.incomplete
+
+    Items are opened lazily - an OpenAI stream does not announce boundaries, it
+    just starts sending a different kind of delta - and each one takes the next
+    `output_index` when it opens and keeps it until it closes.
 
     Every event carries a `sequence_number`; the client uses it to detect a gap,
     so it has to increase by one across *all* event types, not per type.
@@ -287,9 +341,14 @@ class ResponsesStreamAdapter:
         self.response_id = new_response_id()
         self._seq = 0
         self._started = False
-        self._text_item: str | None = None
+        # item ความคิด/ข้อความที่เปิดค้างอยู่ — เปิดได้ทีละอัน
+        # {"kind": "reasoning" | "text", "id", "index", "text"}
+        self._open: dict[str, Any] | None = None
+        # item ที่ปิดแล้ว ตามช่อง · ตอนจบใช้ชุดนี้ประกอบ `output` — ต้องเป็น item ตัวเดียวกับ
+        # ที่ stream ไปแล้ว (id เดิม) ไม่ใช่สร้างใหม่ให้ client เห็นของสองชุด
+        self._closed: dict[int, dict[str, Any]] = {}
         self._text = ""
-        self._output_index = 0
+        self._output_index = 0  # ช่องว่างถัดไป
         # openai tool_call index -> {"item_id", "call_id", "name", "args", "output_index"}
         self._tools: dict[int, dict[str, Any]] = {}
         self._finish: str | None = None
@@ -314,6 +373,10 @@ class ResponsesStreamAdapter:
             "incomplete_details": None,
             "metadata": {},
         }
+
+    def _take_index(self) -> int:
+        index, self._output_index = self._output_index, self._output_index + 1
+        return index
 
     # -- stream -------------------------------------------------------------
     def start_events(self) -> list[tuple[str, dict]]:
@@ -345,54 +408,84 @@ class ResponsesStreamAdapter:
         if choice.get("finish_reason"):
             self._finish = choice["finish_reason"]
 
+        # ส่งความคิดออกไป *ตอนที่มันเกิด* · เดิมทิ้ง stream จึงเงียบสนิทตลอดช่วงคิด ซึ่ง
+        # client ที่มี idle timeout (Codex: 5 นาที) อ่านว่าสายหลุด ทั้งที่โมเดลยังทำงานอยู่
+        thought = reasoning_text(delta)
+        if thought:
+            events.extend(self._append("reasoning", thought))
+
         text = delta.get("content")
         if isinstance(text, str) and text:
-            if self._text_item is None:
-                self._text_item = _item_id()
-                events.append(
-                    self._next(
-                        "response.output_item.added",
-                        {
-                            "output_index": self._output_index,
-                            "item": {
-                                "id": self._text_item,
-                                "type": "message",
-                                "role": "assistant",
-                                "status": "in_progress",
-                                "content": [],
-                            },
-                        },
-                    )
-                )
-                events.append(
-                    self._next(
-                        "response.content_part.added",
-                        {
-                            "item_id": self._text_item,
-                            "output_index": self._output_index,
-                            "content_index": 0,
-                            "part": {"type": "output_text", "text": "", "annotations": []},
-                        },
-                    )
-                )
-            self._text += text
-            events.append(
-                self._next(
-                    "response.output_text.delta",
-                    {
-                        "item_id": self._text_item,
-                        "output_index": self._output_index,
-                        "content_index": 0,
-                        "delta": text,
-                    },
-                )
-            )
+            events.extend(self._append("text", text))
 
         for call in delta.get("tool_calls") or []:
             if isinstance(call, dict):
                 events.extend(self._handle_tool_call(call))
 
         return events
+
+    def _append(self, kind: str, piece: str) -> list[tuple[str, dict]]:
+        """ต่อ `piece` เข้า item ชนิด `kind` — เปิดตัวใหม่ถ้าตัวที่ค้างอยู่เป็นคนละชนิด"""
+        events: list[tuple[str, dict]] = []
+        if self._open is None or self._open["kind"] != kind:
+            events.extend(self._close_open())
+            events.extend(self._open_item(kind))
+        item = self._open
+        item["text"] += piece
+        if kind == "text":
+            self._text += piece
+        events.append(
+            self._next(
+                "response.output_text.delta" if kind == "text"
+                else "response.reasoning_text.delta",
+                {
+                    "item_id": item["id"],
+                    "output_index": item["index"],
+                    "content_index": 0,
+                    "delta": piece,
+                },
+            )
+        )
+        return events
+
+    def _open_item(self, kind: str) -> list[tuple[str, dict]]:
+        index = self._take_index()
+        if kind == "reasoning":
+            item_id = _item_id("rs")
+            self._open = {"kind": kind, "id": item_id, "index": index, "text": ""}
+            return [
+                self._next(
+                    "response.output_item.added",
+                    {"output_index": index, "item": _reasoning_item(item_id, "", "in_progress")},
+                )
+            ]
+
+        item_id = _item_id()
+        self._open = {"kind": kind, "id": item_id, "index": index, "text": ""}
+        return [
+            self._next(
+                "response.output_item.added",
+                {
+                    "output_index": index,
+                    "item": {
+                        "id": item_id,
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "in_progress",
+                        "content": [],
+                    },
+                },
+            ),
+            self._next(
+                "response.content_part.added",
+                {
+                    "item_id": item_id,
+                    "output_index": index,
+                    "content_index": 0,
+                    "part": {"type": "output_text", "text": "", "annotations": []},
+                },
+            ),
+        ]
 
     def _handle_tool_call(self, call: dict[str, Any]) -> list[tuple[str, dict]]:
         events: list[tuple[str, dict]] = []
@@ -401,16 +494,16 @@ class ResponsesStreamAdapter:
 
         state = self._tools.get(index)
         if state is None:
-            # A text item, if any, is closed before a tool item opens: the two
-            # must not be open at the same output_index.
-            events.extend(self._close_text())
-            self._output_index += 1 if self._text_item is not None else 0
+            # A text or reasoning item, if any, is closed before a tool item
+            # opens: two items must never be open at once, and each has its own
+            # output_index (text and the first tool call used to share index 0).
+            events.extend(self._close_open())
             state = {
                 "item_id": _item_id("fc"),
                 "call_id": call.get("id") or _item_id("call"),
                 "name": fn.get("name") or "",
                 "args": "",
-                "output_index": self._output_index,
+                "output_index": self._take_index(),
             }
             self._tools[index] = state
             events.append(
@@ -429,7 +522,6 @@ class ResponsesStreamAdapter:
                     },
                 )
             )
-            self._output_index += 1
 
         if fn.get("name") and not state["name"]:
             state["name"] = fn["name"]
@@ -449,63 +541,37 @@ class ResponsesStreamAdapter:
             )
         return events
 
-    def _close_text(self) -> list[tuple[str, dict]]:
-        if self._text_item is None:
+    def _close_open(self) -> list[tuple[str, dict]]:
+        """ปิด item ความคิด/ข้อความที่ค้างอยู่ ที่ช่องของมันเอง"""
+        if self._open is None:
             return []
-        item_id, self._text_item_closed = self._text_item, True
-        events = [
-            self._next(
-                "response.output_text.done",
-                {
-                    "item_id": item_id,
-                    "output_index": 0,
-                    "content_index": 0,
-                    "text": self._text,
-                },
-            ),
+        open_item, self._open = self._open, None
+        item_id, index, text = open_item["id"], open_item["index"], open_item["text"]
+        where = {"item_id": item_id, "output_index": index, "content_index": 0}
+
+        if open_item["kind"] == "reasoning":
+            item = _reasoning_item(item_id, text)
+            self._closed[index] = item
+            return [
+                self._next("response.reasoning_text.done", {**where, "text": text}),
+                self._next("response.output_item.done", {"output_index": index, "item": item}),
+            ]
+
+        item = _message_item(item_id, text)
+        self._closed[index] = item
+        return [
+            self._next("response.output_text.done", {**where, "text": text}),
             self._next(
                 "response.content_part.done",
-                {
-                    "item_id": item_id,
-                    "output_index": 0,
-                    "content_index": 0,
-                    "part": {"type": "output_text", "text": self._text, "annotations": []},
-                },
+                {**where, "part": {"type": "output_text", "text": text, "annotations": []}},
             ),
-            self._next(
-                "response.output_item.done",
-                {
-                    "output_index": 0,
-                    "item": {
-                        "id": item_id,
-                        "type": "message",
-                        "role": "assistant",
-                        "status": "completed",
-                        "content": [
-                            {"type": "output_text", "text": self._text, "annotations": []}
-                        ],
-                    },
-                },
-            ),
+            self._next("response.output_item.done", {"output_index": index, "item": item}),
         ]
-        self._text_item = None
-        return events
 
     def finish_events(self) -> list[tuple[str, dict]]:
         events = list(self.start_events())
-        events.extend(self._close_text())
+        events.extend(self._close_open())
 
-        output: list[dict] = []
-        if self._text:
-            output.append(
-                {
-                    "id": _item_id(),
-                    "type": "message",
-                    "role": "assistant",
-                    "status": "completed",
-                    "content": [{"type": "output_text", "text": self._text, "annotations": []}],
-                }
-            )
         for _, state in sorted(self._tools.items()):
             events.append(
                 self._next(
@@ -531,15 +597,15 @@ class ResponsesStreamAdapter:
                     {"output_index": state["output_index"], "item": item},
                 )
             )
-            output.append(item)
+            self._closed[state["output_index"]] = item
 
-        status = _STATUS_FOR_FINISH.get(self._finish or "stop", "completed")
+        finish = self._finish or "stop"
+        status = _STATUS_FOR_FINISH.get(finish, "completed")
         final = self._skeleton(status)
-        final["output"] = output
+        final["output"] = [self._closed[index] for index in sorted(self._closed)]
         final["output_text"] = self._text
         final["usage"] = _usage_block(self.usage)
-        if status == "incomplete":
-            final["incomplete_details"] = {"reason": "max_output_tokens"}
+        final["incomplete_details"] = _incomplete_details(finish)
         events.append(
             self._next(
                 "response.completed" if status == "completed" else "response.incomplete",
