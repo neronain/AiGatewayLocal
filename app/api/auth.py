@@ -36,6 +36,7 @@ from app.core.passwords import (
     issue_session,
     read_session_cookie,
     session_cookie_name,
+    verify_login_async,
     verify_password_async,
 )
 from app.db.models import ApiKey, User, utcnow
@@ -162,10 +163,14 @@ async def login(
     )
     user = result.scalar_one_or_none()
 
-    # One message for every failure: no way to learn which usernames exist.
-    if user is None or not await verify_password_async(
-        payload.password, user.password_hash
-    ):
+    # One message for every failure, and one amount of work: no way to learn
+    # which usernames exist, from the answer or from how long it took. The
+    # check runs even when there is no such user or no password to check
+    # against - see verify_login.
+    matched = await verify_login_async(
+        payload.password, user.password_hash if user is not None else ""
+    )
+    if user is None or not matched:
         raise GatewayError(ErrorCode.INVALID_API_KEY, "Incorrect username or password.")
     if user.status != "active":
         raise GatewayError(
