@@ -380,6 +380,11 @@ async def count_tokens(
     body = await _read_json(request)
     alias = body.get("model", "")
     model = await resolve_model(state, session, alias, principal)
+    # ด่านสิทธิ์เดียวกับ /v1/messages · เดิม endpoint นี้ไม่มี: key ที่ถูกจำกัดโมเดลถามขนาด
+    # prompt กับโมเดลที่มันเรียกไม่ได้ และได้คำตอบที่ยืนยันว่า alias นั้นมีอยู่
+    await assert_model_permitted(
+        session, principal, alias, state.registry.snapshot.gateway
+    )
     policy = state.registry.snapshot.vision_policy_for(model)
     profile = profile_anthropic_request(body, policy)
     usage = resolve_usage(profile, None, rates_of(model.spec))
