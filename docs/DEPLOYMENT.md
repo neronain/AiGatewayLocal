@@ -1657,7 +1657,7 @@ viewer's OS. A Connect button mints a scoped key and shows the
 ./scripts/backup.sh --out /srv/backups --keep 30
 ```
 
-One timestamped `.tar.gz` holding the three things a gateway cannot be rebuilt
+One timestamped `.tar.gz` holding the four things a gateway cannot be rebuilt
 without. Only one of them is the database:
 
 | In the archive | Why it is there |
@@ -1665,8 +1665,9 @@ without. Only one of them is the database:
 | `database.sqlite` / `database.dump` | Members, keys, quota policies, usage history |
 | `config/` | The registry. Probably in git — but a restore that needs someone to remember which branch is a restore that goes badly at 3am |
 | `.env` | **The pepper.** Every API key is a hash under it |
+| `secrets.json` | Provider keys entered in the console (`data/secrets.json`). The registry only names them, so this file is the only copy of the values |
 
-That last row is the one that matters. Restore a database under a different
+The `.env` row is the one that matters most. Restore a database under a different
 `GW_API_KEY_PEPPER` and every key ever issued stops working, silently, with no
 way to recover them: every member has to be given a new one. The archive is
 therefore a secret — it is written mode 600, and it belongs somewhere with the

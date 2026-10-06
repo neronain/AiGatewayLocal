@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Back up everything a LiteGate needs to be rebuilt.
 #
-# Three things matter here, and only one of them is the database.
+# Four things matter here, and only one of them is the database.
 #
 #   * The **pepper** (`GW_API_KEY_PEPPER`). Every API key ever issued is a hash
 #     under it. Restore a database with a different pepper and every key in the
@@ -12,6 +12,10 @@
 #     restore that needs someone to remember which branch is a restore that
 #     happens badly at 3am.
 #   * The **database**. Members, keys, quota policies and usage history.
+#   * The **provider keys** an admin typed into the console
+#     (`data/secrets.json`). The registry only names them (`api_key_env`), so
+#     neither `config/` nor - on a console-managed install - `.env` holds the
+#     values. This file is the only copy.
 #
 # Usage:
 #   ./scripts/backup.sh                       # into ./backups
@@ -117,6 +121,26 @@ under a different pepper invalidates every API key ever issued, and they cannot
 be recovered: every member has to be given a new one.
 WARN
     echo "  .env       NOT FOUND — see NO_ENV_WARNING in the archive"
+fi
+
+# --- provider keys set from the console ------------------------------------
+# Left out until 2026-10-06: a restore then brought back members, keys and the
+# registry - everything the restore script tells you to check - while every
+# upstream whose key had only ever been entered in the console answered 401.
+# The archive said "complete"; the one thing that could not be re-derived from
+# anywhere else was not in it.
+secrets_file="${GW_SECRETS_FILE:-}"
+if [[ -z "$secrets_file" && -f .env ]]; then
+    secrets_file="$(grep -E '^GW_SECRETS_FILE=' .env | tail -1 | cut -d= -f2- || true)"
+fi
+secrets_file="${secrets_file:-./data/secrets.json}"
+if [[ -f "$secrets_file" ]]; then
+    # No `|| true`: a file that exists but cannot be read (0600, wrong user) must
+    # stop the backup, not quietly produce an archive without it.
+    cp "$secrets_file" "$staging/secrets.json"
+    echo "  secrets    provider keys set from the console (secrets.json)"
+else
+    echo "  secrets    none — no provider key has been set from the console"
 fi
 
 cat > "$staging/MANIFEST" <<MANIFEST

@@ -132,6 +132,22 @@ elif [[ -f "$unpacked/env" ]]; then
     echo "  .env       left alone — the live one already matches the backup"
 fi
 
+# --- provider keys set from the console ------------------------------------
+# The registry names a provider key (`api_key_env`); the value an admin typed
+# into the console lives only in data/secrets.json. Without it the gateway
+# starts, authenticates members, and then gets 401 from every such upstream.
+if [[ -f "$unpacked/secrets.json" ]]; then
+    mkdir -p "$TARGET/data"
+    secrets_dest="$TARGET/data/secrets.json"
+    [[ -f "$secrets_dest" ]] && cp -p "$secrets_dest" "$secrets_dest.before-restore-$(date +%s)"
+    cp "$unpacked/secrets.json" "$secrets_dest"
+    chmod 600 "$secrets_dest"
+    echo "  secrets    provider keys restored (mode 600)"
+else
+    echo "  secrets    NOT in this archive — provider keys that were set from the"
+    echo "             console have to be entered there again"
+fi
+
 # --- ownership -------------------------------------------------------------
 # A restore is usually run as root, which leaves every file owned by root. The
 # gateway then runs as its own service user, can read the database but not write
