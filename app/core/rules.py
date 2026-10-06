@@ -33,7 +33,7 @@ from app.core.capability import (
 )
 from app.core.errors import GatewayError
 from app.core.multimodal import RequestProfile
-from app.core.tokens import estimate_prompt_tokens
+from app.core.tokens import estimate_prompt_tokens, rates_of
 from app.registry.schema import ModelDefinition
 
 log = logging.getLogger(__name__)
@@ -90,7 +90,7 @@ def _prompt_tokens(model: ModelDefinition, profile: RequestProfile) -> int:
     (1.6) กับทุกโมเดล กฎ routing กับด่าน context จึงเห็นคำขอเดียวกันเป็นสองขนาด: ข้อความไทย
     บนโมเดลที่วัดได้ 3.86 ถูกมองว่า "ล้น" แล้วส่งไปตัวใหญ่ ทั้งที่ด่านจริงบอกว่าพอ
     """
-    return estimate_prompt_tokens(profile, model.spec.wide_chars_per_token)
+    return estimate_prompt_tokens(profile, rates_of(model.spec))
 
 
 def _fits(model: ModelDefinition, profile: RequestProfile) -> bool:

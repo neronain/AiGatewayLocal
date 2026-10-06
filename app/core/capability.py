@@ -12,14 +12,19 @@ somewhere downstream.
 
 from __future__ import annotations
 
+from app.core import notices
 from app.core.errors import ErrorCode, GatewayError, capability_error
 from app.core.multimodal import RequestProfile
-from app.core.tokens import estimate_prompt_tokens
+from app.core.tokens import estimate_prompt_tokens, rates_of
 from app.registry.schema import Endpoint, Modality, ModelDefinition
 
 # ประมาณจำนวน token เอง ไม่ได้รัน tokenizer ของโมเดล (PRD §13) จึงเผื่อไว้ก่อนปฏิเสธ
 # app/core/rules.py ใช้ค่าเดียวกันตัดสินใจ overflow — แยกกันเมื่อไหร่คือกฎสองชุดที่ขัดกันเอง
 CONTEXT_TOLERANCE = 1.15
+
+# เพดานคำตอบขั้นต่ำที่ยังส่งไป เมื่อค่าประมาณบอกว่า prompt เต็มหรือเกินหน้าต่างแล้ว (โซน
+# 100–115%) — พอให้ backend ตอบสั้น ๆ ได้ถ้า prompt จริงสั้นกว่าที่ประมาณ
+MIN_OUTPUT_IN_DOUBT = 256
 
 _CAPABILITY_HINTS = {
     "vision": "Choose a model whose badge shows 'Image', for example a vision model.",
@@ -101,9 +106,18 @@ def validate_context_budget(
     Returns the effective max output tokens. The prompt figure is an estimate -
     the gateway does not run the model's tokenizer (PRD §13) - so a safety margin
     is applied before rejecting, to avoid false negatives on borderline requests.
+
+    Whenever the returned cap is lower than what the caller asked for (or, when
+    they named none, lower than the model's own limit) the request is told so in
+    the `x-litegate-output-cap` response header - see `_note_output_cap`.
     """
     limits = model.spec.limits
-    estimated_prompt = estimate_prompt_tokens(profile, model.spec.wide_chars_per_token)
+    estimated_prompt = estimate_prompt_tokens(profile, rates_of(model.spec))
+
+    # สิ่งที่ผู้เรียกคาดว่าจะได้: ค่าที่เขาขอ หรือเพดานของโมเดลเมื่อไม่ได้ขอ
+    expected = requested_max_tokens or limits.max_output_tokens
+    max_output = min(expected, limits.max_output_tokens)
+    reason = "model-limit" if max_output < expected else None
 
     # `n` คำตอบ = backend เขียน `max_tokens` *ต่อคำตอบ* · เพดาน `max_output_tokens` เป็นของ
     # ทั้งคำขอ (คือสิ่งที่แค็ตตาล็อกโชว์ และสิ่งที่โควตาตรวจล่วงหน้าไม่ได้) จึงแบ่งให้แต่ละ
@@ -117,7 +131,8 @@ def validate_context_budget(
             "one token per choice. Ask for fewer choices.",
             param="n",
         )
-    max_output = min(requested_max_tokens or ceiling, ceiling)
+    if ceiling < max_output:
+        max_output, reason = ceiling, "n"
 
     # Only reject when the prompt is unambiguously too long.
     if estimated_prompt > limits.context_tokens * CONTEXT_TOLERANCE:
@@ -135,9 +150,39 @@ def validate_context_budget(
     # ตัดสิน แต่ต้องไม่ขอคำตอบเต็มเพดานไปด้วย: เดิมกรณี headroom <= 0 ไม่ถูก clamp เลย
     # (ประมาณ 144,179 บนหน้าต่าง 131,072 ส่ง max_tokens 8192 ไปเต็ม ๆ) ซึ่งการันตีว่า
     # backend ที่ตรวจ prompt + max_tokens จะปฏิเสธ แม้ prompt จริงจะสั้นกว่าที่ประมาณ
-    headroom = limits.context_tokens - estimated_prompt
-    max_output = min(max_output, max(headroom, 256))
-    return max(max_output, 1)
+    headroom = max(limits.context_tokens - estimated_prompt, MIN_OUTPUT_IN_DOUBT)
+    if headroom < max_output:
+        max_output, reason = headroom, "context"
+
+    granted = max(max_output, 1)
+    _note_output_cap(requested_max_tokens, granted, reason if granted < expected else None)
+    return granted
+
+
+def _note_output_cap(requested: int | None, granted: int, reason: str | None) -> None:
+    """บอกผู้เรียกเมื่อเพดานคำตอบที่ส่งให้ backend ต่ำกว่าที่เขาคาด
+
+    เดิมเงียบสนิท: client ขอ `max_tokens=4000` กับ prompt ที่ *ประมาณ* ได้ 100–115% ของหน้าต่าง
+    backend ได้ 256 แล้วคำตอบถูกตัดกลางประโยค โดย header ทุกตัวเหมือนคำขอปกติ (ตรวจ
+    2026-10-06 · prompt จริง 198,866 token = 76% ของหน้าต่าง แต่ประมาณได้เกิน 100%)
+
+        x-litegate-output-cap: granted=256; requested=4000; reason=context
+
+    `requested=default` = ผู้เรียกไม่ได้ระบุ จึงเทียบกับเพดานของโมเดล · `reason` คือด่าน
+    *สุดท้าย* ที่ลดค่าลง:
+
+        model-limit  ขอเกิน `limits.max_output_tokens` ของโมเดล
+        n            เพดานของโมเดลถูกแบ่งให้ `n` คำตอบ
+        context      prompt (ตามที่ประมาณ) เหลือที่ในหน้าต่างน้อยกว่าที่ขอ
+
+    ถูกเรียกทุกครั้งที่คิดเพดาน รวมถึงเมื่อ fallback สลับโมเดล ค่าหลังสุดจึงเป็นของตัวที่
+    เสิร์ฟจริง และถูกลบออกเมื่อโมเดลใหม่ไม่ได้ลดอะไร
+    """
+    if reason is None:
+        notices.put(notices.OUTPUT_CAP, None)
+        return
+    asked = "default" if requested is None else str(requested)
+    notices.put(notices.OUTPUT_CAP, f"granted={granted}; requested={asked}; reason={reason}")
 
 
 def validate_batch_context(model: ModelDefinition, profile: RequestProfile) -> None:

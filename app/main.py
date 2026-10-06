@@ -32,6 +32,7 @@ from app.api import (
     tools,
 )
 from app.config import get_settings
+from app.core import notices
 from app.core.auth import generate_api_key
 from app.core.errors import ErrorCode, GatewayError
 from app.core.jsonio import FastJSONResponse
@@ -293,6 +294,7 @@ def create_app() -> FastAPI:
             expose_headers=[
                 "x-request-id", "x-litegate-request-id",
                 "x-litegate-model", "x-litegate-endpoint",
+                notices.OUTPUT_CAP,
             ],
         )
 
@@ -310,6 +312,8 @@ def create_app() -> FastAPI:
         request.state.request_id = request_id
         # ตัดความยาวเฉพาะตัวที่จะ *เก็บ* · ตัวที่ echo กลับคือค่าที่เขาส่งมาทั้งก้อนเหมือนเดิม
         request.state.client_request_id = clean_client_request_id(sent_request_id)
+        # สิ่งที่เกตเวย์เปลี่ยนในคำขอนี้และต้องบอกผู้เรียก — ดู app/core/notices.py
+        noted = notices.begin()
         started = time.perf_counter()
         IN_FLIGHT.inc()
         settled = False
@@ -356,6 +360,9 @@ def create_app() -> FastAPI:
 
             response.body_iterator = counted_body()
 
+        if response.status_code < 400:
+            for header, value in noted.items():
+                response.headers[header] = value
         response.headers["x-request-id"] = sent_request_id or request_id
         response.headers["x-litegate-request-id"] = request_id
         # ลายเซ็นติดไปกับ *ทุก* response — ที่เดียวจบ ไม่ต้องไล่แก้ทุก endpoint

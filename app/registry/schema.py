@@ -322,6 +322,18 @@ class ModelSpec(BaseModel):
     # ไหนก็เจ็บ: ต่ำไป = นับเกิน ผู้ใช้ชนเพดานเร็วและถูกคิดเงินเกิน · สูงไป = นับขาด
     # ซึ่งในงานโควตาคือช่องโหว่ · วัดจริงแล้วค่อยใส่ อย่าเดา (ดู core/tokens.wide_rate)
     wide_chars_per_token: float | None = Field(default=None, gt=0.2, lt=20.0)
+    # อักขระ ASCII ต่อ token ของ *โมเดลตัวนี้* แยกสองชนิดตามที่ตัวประมาณแยก — ไม่ตั้ง = ค่ากลาง
+    # (4.0 กับ 1.0) ซึ่งคือพฤติกรรมเดิมทุกตัวเลข
+    #
+    #   ascii_chars_per_token   ตัวอักษรละติน + ช่องว่าง
+    #   symbol_chars_per_token  ตัวเลข วรรคตอน เครื่องหมาย
+    #
+    # ค่ากลางวัดจาก tokenizer ตัวเดียว · เทียบกับ Gemma-4 จริง (2026-10-06) มันประมาณโค้ดสูงไป
+    # 1.3–1.4 เท่า และ JSON อัดแน่นสูงไป 2 เท่า — ผู้ใช้ agent ชนเพดาน context ที่ ~75% ของ
+    # ความจุจริง · ทิศของความผิดพลาดเหมือน `wide_chars_per_token` ทุกประการ: ตั้งสูงไป =
+    # นับขาด = ช่องโหว่โควตา · วัดจาก /tokenize ของ backend แล้วค่อยใส่ (docs ใน core/tokens)
+    ascii_chars_per_token: float | None = Field(default=None, gt=0.2, lt=20.0)
+    symbol_chars_per_token: float | None = Field(default=None, gt=0.2, lt=20.0)
     modalities: Modalities = Field(default_factory=Modalities)
     capabilities: Capabilities = Field(default_factory=Capabilities)
     protocols: Protocols = Field(default_factory=Protocols)

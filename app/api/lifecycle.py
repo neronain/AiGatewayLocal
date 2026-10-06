@@ -34,7 +34,7 @@ from fastapi import Request
 
 from app.core.errors import ErrorCode, GatewayError, describe
 from app.core.routing import RETRYABLE_ERRORS, is_request_fault, is_retryable_status
-from app.core.tokens import OutputMeter, TokenUsage, resolve_usage
+from app.core.tokens import OutputMeter, TokenRates, TokenUsage, rates_of, resolve_usage
 from app.registry.schema import Endpoint
 from app.upstream import client as upstream
 from app.upstream.client import UpstreamBodyError
@@ -52,10 +52,9 @@ CLIENT_CLOSED_REQUEST = "CLIENT_CLOSED_REQUEST"
 CLIENT_CLOSED_STATUS = 499
 
 
-def rate_of(ctx) -> float | None:  # noqa: ANN001
-    """อัตราอักขระนอก ASCII ต่อ token ของโมเดลที่ *เสิร์ฟจริง* ตอนนี้ (fallback เปลี่ยนได้)"""
-    spec = getattr(getattr(ctx, "model", None), "spec", None)
-    return getattr(spec, "wide_chars_per_token", None)
+def rate_of(ctx) -> TokenRates:  # noqa: ANN001
+    """อัตราอักขระต่อ token (ASCII และนอก ASCII) ของโมเดลที่ *เสิร์ฟจริง* ตอนนี้ (fallback เปลี่ยนได้)"""
+    return rates_of(getattr(getattr(ctx, "model", None), "spec", None))
 
 
 @dataclass

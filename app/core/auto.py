@@ -25,7 +25,7 @@ from app.core.capability import endpoint_supports
 from app.core.multimodal import RequestProfile
 from app.core.perf import ModelPerf, PerfStore
 from app.core.rules import can_serve
-from app.core.tokens import estimate_prompt_tokens
+from app.core.tokens import estimate_prompt_tokens, rates_of
 from app.registry.schema import ModelDefinition
 
 log = logging.getLogger(__name__)
@@ -70,7 +70,7 @@ def _fits(model: ModelDefinition, profile: RequestProfile) -> bool:
     tokenizer ฉีกถูกเลือกทั้งที่ด่านถัดไปจะปฏิเสธ — `auto` จึงตอบ 400 กับคำขอที่มีโมเดลรับไหว
     """
     limit = model.spec.limits.context_tokens or 0
-    prompt_tokens = estimate_prompt_tokens(profile, model.spec.wide_chars_per_token)
+    prompt_tokens = estimate_prompt_tokens(profile, rates_of(model.spec))
     return not limit or prompt_tokens + _HEADROOM_TOKENS <= limit
 
 

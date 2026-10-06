@@ -41,7 +41,7 @@ from app.core.jsonio import FastJSONResponse
 from app.core.multimodal import profile_anthropic_request
 from app.core.params import validate_messages_params
 from app.core.rules import resolve_route
-from app.core.tokens import OutputMeter, TokenUsage, resolve_usage
+from app.core.tokens import OutputMeter, TokenRates, TokenUsage, rates_of, resolve_usage
 from app.db.session import get_session, release_connection
 from app.registry.schema import Endpoint, ModelDefinition
 from app.state import AppState, get_state
@@ -55,15 +55,14 @@ from app.upstream.protocol.anthropic import (
 from app.upstream.sse import format_json_sse
 
 
-def _rate(ctx) -> float | None:
-    """อัตราอักขระนอก ASCII ต่อ token ของโมเดลที่ *เสิร์ฟจริง*
+def _rate(ctx) -> TokenRates:
+    """อัตราอักขระต่อ token (ทั้ง ASCII และนอก ASCII) ของโมเดลที่ *เสิร์ฟจริง*
 
     อ่านจาก ctx ตอนนั้น ไม่ใช่จำไว้ล่วงหน้า — fallback ระดับโมเดลเปลี่ยน ctx.model
     ระหว่างคำขอได้ ถ้าจำค่าของตัวแรกไว้ ยอดที่บันทึกจะเป็นของโมเดลที่ไม่ได้รัน
     """
     model = getattr(ctx, "model", None)
-    spec = getattr(model, "spec", None)
-    return getattr(spec, "wide_chars_per_token", None)
+    return rates_of(getattr(model, "spec", None))
 
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["anthropic"])
@@ -383,7 +382,7 @@ async def count_tokens(
     model = await resolve_model(state, session, alias, principal)
     policy = state.registry.snapshot.vision_policy_for(model)
     profile = profile_anthropic_request(body, policy)
-    usage = resolve_usage(profile, None, model.spec.wide_chars_per_token)
+    usage = resolve_usage(profile, None, rates_of(model.spec))
     return {
         "input_tokens": usage.input_tokens,
         "litegate": {

@@ -60,22 +60,21 @@ from app.core.retrieval import (
     rewrite_model_name,
 )
 from app.core.routing import RETRYABLE_ERRORS, is_retryable_status
-from app.core.tokens import TokenUsage, resolve_pooling_usage
+from app.core.tokens import TokenRates, TokenUsage, rates_of, resolve_pooling_usage
 from app.db.session import get_session, release_connection
 from app.registry.schema import Endpoint
 from app.state import AppState, get_state
 from app.upstream import client as upstream
 
 
-def _rate(ctx) -> float | None:
-    """อัตราอักขระนอก ASCII ต่อ token ของโมเดลที่ *เสิร์ฟจริง*
+def _rate(ctx) -> TokenRates:
+    """อัตราอักขระต่อ token (ทั้ง ASCII และนอก ASCII) ของโมเดลที่ *เสิร์ฟจริง*
 
     อ่านจาก ctx ตอนนั้น ไม่ใช่จำไว้ล่วงหน้า — fallback ระดับโมเดลเปลี่ยน ctx.model
     ระหว่างคำขอได้ ถ้าจำค่าของตัวแรกไว้ ยอดที่บันทึกจะเป็นของโมเดลที่ไม่ได้รัน
     """
     model = getattr(ctx, "model", None)
-    spec = getattr(model, "spec", None)
-    return getattr(spec, "wide_chars_per_token", None)
+    return rates_of(getattr(model, "spec", None))
 
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["retrieval"])

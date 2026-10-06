@@ -1088,6 +1088,44 @@ the ASCII share first, or a mixed passage gives a rate diluted by English.
 Values outside 0.2–20 are refused. **Measure again whenever the model's
 tokenizer changes** (a tokenizer overlay roughly doubles the rate for Thai).
 
+### 4.1c The ASCII rates — `ascii_chars_per_token`, `symbol_chars_per_token`
+
+The same idea for the ASCII part of a prompt. Unset, the estimate counts ASCII
+letters and whitespace at 4.0 characters per token and every other ASCII
+character (digits, punctuation, operators) at 1.0. Those two constants were
+measured on one tokenizer. Against Gemma-4's real tokenizer they run **high**:
+1.3–1.4× on source code, 1.2× on markdown, 2.1× on minified tool-definition
+JSON — which is most of what a coding agent sends. A prompt that really fills
+76% of the window is estimated past 100%, its output limit is cut to 256
+(announced in `x-litegate-output-cap`), and one at 87% is refused.
+
+```yaml
+spec:
+  wide_chars_per_token: 3.86
+  ascii_chars_per_token: 4.6     # letters + whitespace   (default 4.0)
+  symbol_chars_per_token: 2.2    # digits + punctuation   (default 1.0)
+```
+
+Both are optional and independent; leaving them out changes nothing. They feed
+everything `wide_chars_per_token` feeds — the context check, routing rules,
+`model: "auto"`, `count_tokens`, the embeddings/rerank gate and the estimate
+charged when a backend reports no usage — so the gate and the bill always see
+one size. The direction of error is the same too: **too high under-counts,
+which is a quota hole.** Round a measurement down, not up.
+
+Detect does not measure these yet. By hand, tokenize two passages of your own
+traffic with the `/tokenize` call above:
+
+1. plain English prose with the punctuation stripped —
+   `ascii_chars_per_token = characters ÷ tokens`
+2. a few kilobytes of the code and tool-definition JSON your agents really
+   send — count its letters+whitespace `L` and its other characters `S`, then
+   `symbol_chars_per_token = S ÷ (tokens − L ÷ ascii_chars_per_token)`
+
+Digits tokenize far worse than punctuation (a CSV of numbers is close to one
+token per character on most tokenizers), so if your traffic is number-heavy
+keep `symbol_chars_per_token` low. Values outside 0.2–20 are refused at load.
+
 ### 4.2 Swapping the model behind an alias
 
 Change `upstream_model` and `base_url`, keep the alias. No member changes

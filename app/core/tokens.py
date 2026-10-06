@@ -15,6 +15,7 @@ measured and estimated numbers.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from app.core.multimodal import _ASCII_SYMBOL, ImageRef, RequestProfile
 
@@ -56,21 +57,86 @@ WIDE_CHARS_PER_TOKEN = 1.6     # นอก ASCII — ไทย จีน ญี�
 # ด้วย `app.core.modeltest.measure_wide_rate` · วัดมือได้ตาม docs/DEPLOYMENT.md §4.1b
 
 
-def wide_rate(rate: float | None) -> float:
+def _usable_rate(rate: Any, fallback: float) -> float:
     """อัตราที่จะใช้จริง — ค่าของโมเดลถ้ามี ไม่มีก็ค่าสำรอง
 
     กันค่าที่เป็นไปไม่ได้ออกให้หมดตรงนี้ที่เดียว: 0 หรือติดลบจะทำให้หารพัง และค่าที่
     สูงเกินจริงคือการนับต่ำกว่าจริง ซึ่งในงานโควตาคือช่องโหว่ ไม่ใช่แค่ความคลาดเคลื่อน
     """
-    if rate is None:
-        return WIDE_CHARS_PER_TOKEN
+    if rate is None or isinstance(rate, bool):
+        return fallback
     try:
         value = float(rate)
     except (TypeError, ValueError):
-        return WIDE_CHARS_PER_TOKEN
+        return fallback
     if not 0.2 <= value <= 20.0:
-        return WIDE_CHARS_PER_TOKEN
+        return fallback
     return value
+
+
+def wide_rate(rate: float | None) -> float:
+    """อัตราอักขระนอก ASCII ที่จะใช้จริง — ดู `_usable_rate`"""
+    return _usable_rate(rate, WIDE_CHARS_PER_TOKEN)
+
+
+# ── ทำไมอัตราฝั่ง ASCII ก็ต้องตั้งต่อโมเดลได้ ───────────────────────────────
+#
+# 4.0 กับ 1.0 ข้างบนวัดจาก tokenizer ตัวเดียว (qwen3-embedding-8b) แล้วใช้กับทุกโมเดล ·
+# เทียบกับ tokenizer จริงของ Gemma-4 (2026-10-06) ค่าประมาณ **สูงกว่าจริง** สม่ำเสมอ:
+#
+#     ซอร์ส python / javascript       1.33–1.44 เท่า
+#     markdown                        1.24
+#     นิยาม tool เป็น JSON อัดแน่น      2.06     (วรรคตอนติดกันถูกรวมเป็น token เดียว
+#                                              ไม่ใช่ตัวละ token อย่างที่ 1.0 สมมติ)
+#     CSV ตัวเลข                      0.95
+#
+# ผลที่เห็นจริง: prompt โค้ด 198,866 token (76% ของหน้าต่าง 262,144) ถูกมองว่าเกิน 100% แล้ว
+# เพดานคำตอบที่ client ขอ 4,000 ถูกลดเหลือ 256 · ตัวที่ 228,569 token (87%) ถูกปฏิเสธว่า
+# "~308,283 tokens" · งาน agent คือโค้ดกับ JSON เกือบทั้งหมด ความคลาดเคลื่อนนี้จึงโดนทุกคำขอ
+#
+# ตั้งได้ที่ `spec.ascii_chars_per_token` (ตัวอักษรละติน + ช่องว่าง) และ
+# `spec.symbol_chars_per_token` (ตัวเลข วรรคตอน เครื่องหมาย) ใน YAML ของโมเดล · ไม่ตั้ง =
+# ค่ากลางข้างบน **พฤติกรรมเดิมทุกตัวเลข** · ค่ากลางไม่ถูกแตะ: มันตั้งใจให้เกินเล็กน้อย
+# เพราะนับขาดคือช่องโหว่โควตา และกติกานั้นยังใช้กับค่าที่ตั้งเองด้วย — ตั้งสูงไป = นับขาด
+
+
+@dataclass(frozen=True)
+class TokenRates:
+    """อักขระต่อ token ของโมเดลหนึ่งตัว แยกตามชนิดอักขระ · None = ใช้ค่ากลาง
+
+    ส่งก้อนนี้ไปทุกที่ที่เคยส่ง `wide_chars_per_token` ตัวเดียว — ด่าน context · กฎ routing ·
+    `auto` · ด่านของ embeddings/rerank · ยอดที่บันทึกเมื่อ backend ไม่รายงาน usage ·
+    `count_tokens` · ทุกที่ต้องนับด้วยตัวเลขชุดเดียวกัน ไม่งั้นด่านกับบิลจะเห็นคำขอเดียวกัน
+    เป็นสองขนาด
+    """
+
+    wide: float | None = None      # นอก ASCII
+    letters: float | None = None   # ASCII ที่เป็นตัวอักษรหรือช่องว่าง
+    symbols: float | None = None   # ASCII อื่น
+
+    def resolved(self) -> tuple[float, float, float]:
+        """(letters, symbols, wide) ที่จะหารจริง — กรองค่าที่เป็นไปไม่ได้ออกแล้ว"""
+        return (
+            _usable_rate(self.letters, CHARS_PER_TOKEN),
+            _usable_rate(self.symbols, SYMBOL_CHARS_PER_TOKEN),
+            _usable_rate(self.wide, WIDE_CHARS_PER_TOKEN),
+        )
+
+
+def rates_of(spec: object) -> TokenRates:
+    """อัตราของโมเดลจาก `spec` ของมัน · `spec` เป็น None ได้ (ได้ค่ากลางทั้งชุด)"""
+    return TokenRates(
+        wide=getattr(spec, "wide_chars_per_token", None),
+        letters=getattr(spec, "ascii_chars_per_token", None),
+        symbols=getattr(spec, "symbol_chars_per_token", None),
+    )
+
+
+def _rates(rate: TokenRates | float | None) -> tuple[float, float, float]:
+    """รับได้ทั้งก้อน `TokenRates` และตัวเลขเดี่ยวแบบเดิม (= อัตรานอก ASCII อย่างเดียว)"""
+    if isinstance(rate, TokenRates):
+        return rate.resolved()
+    return CHARS_PER_TOKEN, SYMBOL_CHARS_PER_TOKEN, wide_rate(rate)
 
 # Tile model, matching how most vision encoders bill: the image is covered by
 # 512x512 tiles, each worth TILE_TOKENS, plus a fixed thumbnail pass.
@@ -109,7 +175,7 @@ def estimate_visual_tokens(profile: RequestProfile) -> int:
     return sum(estimate_image_tokens(img) for img in profile.images)
 
 
-def estimate_chars(text: str, rate: float | None = None) -> int:
+def estimate_chars(text: str, rate: TokenRates | float | None = None) -> int:
     """ประมาณ token ของข้อความชิ้นเดียว — ตัวเดียวกับที่ `estimate_text_tokens` ใช้
 
     มีไว้ให้ฝั่งที่ถือ *ตัวข้อความ* อยู่ (เช่นด่านตรวจ context ต่อชิ้นของ /v1/rerank)
@@ -121,12 +187,15 @@ def estimate_chars(text: str, rate: float | None = None) -> int:
     wide = len(text) - len(plain)
     symbols = len(_ASCII_SYMBOL.findall(plain))
     letters = len(plain) - symbols
-    return (int(letters / CHARS_PER_TOKEN)
-            + int(symbols / SYMBOL_CHARS_PER_TOKEN)
-            + int(wide / wide_rate(rate)))
+    per_letter, per_symbol, per_wide = _rates(rate)
+    return (int(letters / per_letter)
+            + int(symbols / per_symbol)
+            + int(wide / per_wide))
 
 
-def estimate_text_tokens(profile: RequestProfile, rate: float | None = None) -> int:
+def estimate_text_tokens(
+    profile: RequestProfile, rate: TokenRates | float | None = None
+) -> int:
     """อักขระที่ต้องเดา บวกกับ token ที่ไม่ต้องเดา
 
     `pretokenized_tokens` ไม่ใช่ค่าประมาณ: /v1/embeddings รับ token id ตรง ๆ ได้
@@ -137,13 +206,16 @@ def estimate_text_tokens(profile: RequestProfile, rate: float | None = None) -> 
     symbols = profile.text_symbol_chars
     # ที่เหลือคือตัวอักษรละตินกับช่องว่าง · ไม่ติดลบแม้โปรไฟล์ถูกสร้างขึ้นเองโดยไม่ได้แยกชนิด
     plain = max(0, profile.text_chars - wide - symbols)
-    return (int(plain / CHARS_PER_TOKEN)
-            + int(symbols / SYMBOL_CHARS_PER_TOKEN)
-            + int(wide / wide_rate(rate))
+    per_letter, per_symbol, per_wide = _rates(rate)
+    return (int(plain / per_letter)
+            + int(symbols / per_symbol)
+            + int(wide / per_wide)
             + profile.pretokenized_tokens)
 
 
-def estimate_prompt_tokens(profile: RequestProfile, rate: float | None = None) -> int:
+def estimate_prompt_tokens(
+    profile: RequestProfile, rate: TokenRates | float | None = None
+) -> int:
     return estimate_text_tokens(profile, rate) + estimate_visual_tokens(profile)
 
 
@@ -202,18 +274,19 @@ class OutputMeter:
     def chars(self) -> int:
         return self.letters + self.symbols + self.wide
 
-    def tokens(self, rate: float | None = None) -> int:
+    def tokens(self, rate: TokenRates | float | None = None) -> int:
         if not self.chars:
             return 0
-        estimate = (int(self.letters / CHARS_PER_TOKEN)
-                    + int(self.symbols / SYMBOL_CHARS_PER_TOKEN)
-                    + int(self.wide / wide_rate(rate)))
+        per_letter, per_symbol, per_wide = _rates(rate)
+        estimate = (int(self.letters / per_letter)
+                    + int(self.symbols / per_symbol)
+                    + int(self.wide / per_wide))
         # ส่งเนื้อหาออกไปแล้ว = ไม่มีวันเป็น 0 · "ok" สองตัวอักษรปัดลงได้ 0 พอดี
         return max(estimate, 1)
 
 
 def resolve_usage(profile: RequestProfile, upstream_usage: dict | None,
-                  rate: float | None = None, *,
+                  rate: TokenRates | float | None = None, *,
                   relayed: OutputMeter | None = None) -> TokenUsage:
     """Turn a backend usage object (or its absence) into the split we store.
 
@@ -260,7 +333,7 @@ def resolve_usage(profile: RequestProfile, upstream_usage: dict | None,
 
 
 def resolve_pooling_usage(profile: RequestProfile, upstream_usage: dict | None,
-                          rate: float | None = None) -> TokenUsage:
+                          rate: TokenRates | float | None = None) -> TokenUsage:
     """การนับของ /v1/embeddings และ /v1/rerank — เส้นทางที่ **ไม่มี output token เลย**
 
     แยกจาก `resolve_usage` เพราะกติกาการอ่าน `total_tokens` ต่างกันจนใช้ตัวเดียวกันไม่ได้:
