@@ -80,10 +80,32 @@ class ResolvedLimits:
     # ระดับของมัน · ผู้ดูแลที่เห็นแค่คำว่า "workspace" ยังต้องไปไล่หาต่ออยู่ดีว่าอันไหน
     policy_id: str = ""
     policy_name: str = ""
+    # ตัวนับที่ลิมิตชุดนี้ถูกวัดด้วย · เป้าหมายของนโยบายเป็นส่วนหนึ่งของชื่อ — นโยบายที่
+    # เล็งโมเดลเดียววัดกับการใช้โมเดลนั้น ไม่ใช่กับทุกอย่างที่คนคนนี้ใช้ (ดู subject_key)
+    subject: str = ""
+    # เป้าหมายของนโยบายที่ชนะ — ให้หน้าจอบอกได้ว่ากฎนี้ครอบอะไร
+    workspace_id: str | None = None
+    model_alias: str | None = None
+    access_group_id: str | None = None
 
     @property
     def rate_limited(self) -> bool:
         return bool(self.max_requests_per_minute or self.max_tokens_per_minute)
+
+
+@dataclass(frozen=True)
+class Charge:
+    """คำขอหนึ่งคำขอถูกนับลงตัวนับไหนบ้าง — ตัดสินตอนรับคำขอ ใช้ตอนคำขอจบ
+
+    `record()` รันหลังคำตอบจบ ซึ่งสำหรับ stream คือหลายนาทีหลัง session ของคำขอถูก
+    คืนไปแล้ว จึงถามฐานข้อมูลซ้ำไม่ได้ว่านโยบายไหนชนะ (และไม่ควร: นโยบายอาจถูกแก้
+    ระหว่างทาง แล้วคำขอจะถูกตรวจกับกองหนึ่งแต่ไปนับลงอีกกอง) · ใบนี้พกคำตอบไปด้วย
+    """
+
+    # (subject, หน้าต่าง) ที่ต้องบวกการใช้งานจริงเมื่อคำขอจบ
+    windows: tuple[tuple[str, str], ...] = ()
+    # subject ที่มีลิมิตต่อนาที
+    minutes: tuple[str, ...] = ()
 
 
 # Months a "term" starts on. The default is a Thai academic year, because that
@@ -142,7 +164,49 @@ def window_bounds(
     return start, start + timedelta(days=1)
 
 
+# สั้นไปยาว · ลำดับนี้คือสิ่งที่ counter_key ใช้ตัดสินว่า "หน้าต่างที่ยาวกว่า" คืออะไร
+WINDOW_KINDS = ("minute", "hour", "day", "month", "term")
+
+
+def counter_key(subject: str, window: str, start: datetime) -> str:
+    """ชื่อแถวของตัวนับ (subject, ชนิดหน้าต่าง) ที่เริ่ม ณ `start`
+
+    ตัวนับถูกเก็บด้วยคีย์ (ชื่อ, เวลาเริ่มหน้าต่าง) — ทั้งแถวใน `quota_counters`
+    (`uq_counter_window`) และคีย์ของ Redis (`quota:<ชื่อ>:<เวลาเริ่ม>`) · **ชนิดของ
+    หน้าต่างไม่ได้อยู่ในคีย์** หน้าต่างสองชนิดที่เริ่มวินาทีเดียวกันจึงเป็นแถวเดียวกัน:
+
+      * นาทีแรกของชั่วโมง — ตัวนับ "นาที" กับตัวนับ "ชั่วโมง" คือแถวเดียว · record()
+        บวกคำขอเข้าตัวนับของหน้าต่างแล้วบวกเข้าตัวนับนาทีอีกรอบ = **นับสองครั้ง** และ
+        ด่านต่อนาทีอ่านยอดของทั้งชั่วโมง (ตรวจพบ 2026-10-06: นโยบาย hour 100 ครั้ง +
+        4 ครั้ง/นาที ที่ 10:00:30 → คำขอที่ 3 โดน "minute request quota is exhausted
+        (4 of 4)" ทั้งที่ส่งจริงสองครั้ง)
+      * ชั่วโมงแรกของวัน (hour/day) · วันที่ 1 (day/month) · เดือนที่เทอมเริ่ม (month/term)
+
+    ทางแก้ต้องไม่ย้ายตัวนับที่ production นับอยู่: คีย์เดิมไม่มีชนิดหน้าต่าง ถ้าเติมชนิดให้
+    ทุกตัว ยอดรายวัน/รายเดือนของทุกคนจะกลับเป็นศูนย์ในวันที่ deploy
+
+    จึงเติม `@<ชนิด>` **เฉพาะเมื่อมีหน้าต่างที่ยาวกว่าเริ่มวินาทีเดียวกัน** · ตัวที่ยาวที่สุด
+    ณ วินาทีนั้นได้ชื่อเดิมไป ตัวที่สั้นกว่าทุกตัวได้ชื่อของตัวเอง — สองชนิดจึงไม่มีทางได้
+    ชื่อเดียวกัน และแถวเกือบทั้งหมด (วันที่ไม่ใช่วันที่ 1 · เดือนที่ไม่ใช่ต้นเทอม · นาทีที่
+    ไม่ใช่ :00) ใช้ชื่อเดิมต่อไปโดยไม่มีอะไรต้องย้าย
+
+    คำตอบขึ้นกับ `start` อย่างเดียว ไม่ขึ้นกับ "ตอนนี้" — แถวของหน้าต่างหนึ่งจึงมีชื่อเดียว
+    ตลอดอายุของมัน
+    """
+    kind = window if window in WINDOW_KINDS else "day"
+    for longer in WINDOW_KINDS[WINDOW_KINDS.index(kind) + 1:]:
+        if window_bounds(longer, start)[0] == start:
+            return f"{subject}@{kind}"
+    return subject
+
+
 class CounterStore(ABC):
+    """ตัวนับของ (subject, ชนิดหน้าต่าง) ในหน้าต่างปัจจุบัน
+
+    `key` ที่รับเข้ามาคือ *subject* (`user:<id>`, `key:<id>`, …) ไม่ใช่ชื่อแถว —
+    ชื่อแถวเป็นเรื่องของ store และต้องผ่าน `counter_key` เสมอ
+    """
+
     @abstractmethod
     async def get(self, key: str, window: str) -> Consumption: ...
 
@@ -171,6 +235,7 @@ class DatabaseCounterStore(CounterStore):
 
     async def get(self, key: str, window: str) -> Consumption:
         start, end = window_bounds(window)
+        key = counter_key(key, window, start)
         async with self._session_factory() as session:
             row = await self._fetch(session, key, start)
         if row is None:
@@ -206,6 +271,7 @@ class DatabaseCounterStore(CounterStore):
         แก้ให้ทางสำรองถูกต้อง ไม่ได้มาแทนที่
         """
         start, end = window_bounds(window)
+        key = counter_key(key, window, start)
 
         # SQLite ให้เขียนได้ทีละคน · WAL + busy_timeout ทำให้คนที่มาทีหลัง *รอ* แทนที่จะแพ้
         # แต่รอจนหมดเวลาก็ยังเป็นไปได้เมื่อคนเขียนเยอะพร้อมกันบนดิสก์ช้า (เจอบน CI runner:
@@ -289,6 +355,7 @@ class DatabaseCounterStore(CounterStore):
 
     async def reset(self, key: str, window: str) -> None:
         start, _ = window_bounds(window)
+        key = counter_key(key, window, start)
         async with self._session_factory() as session:
             row = await self._fetch(session, key, start)
             if row is not None:
@@ -315,12 +382,12 @@ class RedisCounterStore(CounterStore):
         self._redis = redis
 
     @staticmethod
-    def _redis_key(key: str, start: datetime) -> str:
-        return f"quota:{key}:{start.isoformat()}"
+    def _redis_key(key: str, window: str, start: datetime) -> str:
+        return f"quota:{counter_key(key, window, start)}:{start.isoformat()}"
 
     async def get(self, key: str, window: str) -> Consumption:
         start, _ = window_bounds(window)
-        values = await self._redis.hgetall(self._redis_key(key, start))
+        values = await self._redis.hgetall(self._redis_key(key, window, start))
         if not values:
             return Consumption()
         decoded = {
@@ -331,7 +398,7 @@ class RedisCounterStore(CounterStore):
 
     async def increment(self, key: str, window: str, delta: Consumption) -> None:
         start, end = window_bounds(window)
-        redis_key = self._redis_key(key, start)
+        redis_key = self._redis_key(key, window, start)
         pipe = self._redis.pipeline()
         for field_name in self.FIELDS:
             value = getattr(delta, field_name)
@@ -343,7 +410,7 @@ class RedisCounterStore(CounterStore):
 
     async def reset(self, key: str, window: str) -> None:
         start, _ = window_bounds(window)
-        await self._redis.delete(self._redis_key(key, start))
+        await self._redis.delete(self._redis_key(key, window, start))
 
 
 class ResilientCounterStore(CounterStore):
@@ -480,8 +547,39 @@ class QuotaService:
         self._defaults = defaults
 
     @staticmethod
-    def subject_key(user_id: str, model_alias: str | None = None) -> str:
-        return f"user:{user_id}:model:{model_alias}" if model_alias else f"user:{user_id}"
+    def subject_key(
+        user_id: str,
+        model_alias: str | None = None,
+        *,
+        workspace_id: str | None = None,
+        access_group_id: str | None = None,
+    ) -> str:
+        """ชื่อกองที่นับการใช้งานของคนคนนี้ **ภายใต้เป้าหมายหนึ่ง**
+
+        กองเป็นของ (คน, เป้าหมาย) ไม่ใช่ของคนอย่างเดียว · เดิมทุกนโยบายอ่านกอง
+        `user:<id>` กองเดียว นโยบาย "coding ได้ 2 ครั้งต่อวัน" จึงถูกวัดกับทุกโมเดลที่คน
+        คนนั้นเรียก — เรียก gemma-vision สองครั้ง แล้ว coding ครั้งแรกในชีวิตได้ 429
+        "(2 of 2)" (ตรวจพบ 2026-10-06) ทั้งที่ README บอกว่าโควตาตั้งได้ "ต่อสมาชิก
+        workspace โมเดล หรือกลุ่ม"
+
+          user:<u>                          นโยบายที่ไม่เล็งอะไร (global · user · default)
+          user:<u>:ws:<w>                   นโยบายของ workspace
+          user:<u>:model:<alias>            นโยบายที่เล็งโมเดลเดียว
+          user:<u>:group:<g>                นโยบายที่เล็งมัดโมเดล
+          user:<u>:ws:<w>:model:<alias>     ทั้งสองอย่าง (และ :group: เช่นกัน)
+
+        **กองที่ไม่เล็งอะไรใช้ชื่อเดิม** — ตัวนับของทุกคนที่ production นับอยู่ไม่ขยับ
+        ส่วนกองของนโยบายที่มีเป้าหมายเป็นชื่อใหม่ เริ่มนับจากศูนย์ครั้งเดียวตอน deploy
+        (ยอดเดิมของมันคือยอดรวมทุกโมเดล ซึ่งไม่ใช่ตัวเลขที่นโยบายนั้นควรถูกวัดด้วยอยู่แล้ว)
+        """
+        key = f"user:{user_id}"
+        if workspace_id:
+            key += f":ws:{workspace_id}"
+        if model_alias:
+            key += f":model:{model_alias}"
+        elif access_group_id:
+            key += f":group:{access_group_id}"
+        return key
 
     @staticmethod
     def key_subject(api_key_id: str) -> str:
@@ -506,6 +604,9 @@ class QuotaService:
         bundle that happens to contain it, for the same reason a rule about one
         person beats a rule about their class: it was written with more
         knowledge of the case.
+
+        คำขอหนึ่งคำขออยู่ใต้นโยบายเดียว และ **ถูกนับลงกองของนโยบายนั้น** (`subject`)
+        — กองของเป้าหมายที่มันเล็ง ไม่ใช่กองรวมของคน
         """
         now = datetime.now(timezone.utc)
         result = await session.execute(
@@ -578,6 +679,7 @@ class QuotaService:
                 max_output_tokens=d.max_output_tokens,
                 max_images=d.max_images,
                 source="default",
+                subject=self.subject_key(user_id),
             )
         return ResolvedLimits(
             window=best.window,
@@ -590,6 +692,15 @@ class QuotaService:
             max_tokens_per_minute=best.max_tokens_per_minute or 0,
             policy_id=best.id,
             policy_name=best.name or "",
+            subject=self.subject_key(
+                user_id,
+                best.model_alias,
+                workspace_id=best.workspace_id,
+                access_group_id=best.access_group_id,
+            ),
+            workspace_id=best.workspace_id,
+            model_alias=best.model_alias,
+            access_group_id=best.access_group_id,
         )
 
     async def resolve_key_limits(
@@ -630,6 +741,7 @@ class QuotaService:
             max_tokens_per_minute=best.max_tokens_per_minute or 0,
             policy_id=best.id,
             policy_name=best.name or "",
+            subject=self.key_subject(api_key_id),
         )
 
     async def check_key(self, api_key_id: str, limits: ResolvedLimits) -> Consumption:
@@ -641,7 +753,26 @@ class QuotaService:
         return await self._check_subject(self.key_subject(api_key_id), limits, subject="key")
 
     async def check(self, user_id: str, limits: ResolvedLimits) -> Consumption:
-        return await self._check_subject(self.subject_key(user_id), limits, subject="user")
+        return await self._check_subject(
+            limits.subject or self.subject_key(user_id), limits, subject="user"
+        )
+
+    async def admit(
+        self, limits: ResolvedLimits, key_limits: ResolvedLimits | None = None
+    ) -> Charge:
+        """รับคำขอนี้เข้า และบอกว่ามันจะถูกนับลงกองไหนเมื่อจบ
+
+        เรียกหลังด่าน `check`/`check_key` ผ่านแล้ว ก่อนส่งต่อให้ backend · ใบที่ได้ต้อง
+        ถูกส่งต่อให้ `record()` — ถ้าไม่ส่ง record จะนับลงกองรวมของคน (พฤติกรรมเดิม)
+        ซึ่งผิดกองสำหรับนโยบายที่มีเป้าหมาย
+        """
+        windows: list[tuple[str, str]] = [(limits.subject, limits.window)]
+        minutes: list[str] = [limits.subject] if limits.rate_limited else []
+        if key_limits is not None:
+            windows.append((key_limits.subject, key_limits.window))
+            if key_limits.rate_limited:
+                minutes.append(key_limits.subject)
+        return Charge(windows=tuple(dict.fromkeys(windows)), minutes=tuple(minutes))
 
     async def _check_subject(
         self, key: str, limits: ResolvedLimits, *, subject: str = "user"
@@ -702,7 +833,18 @@ class QuotaService:
         api_key_id: str = "",
         key_window: str = "",
         key_rate_limited: bool = False,
+        charge: Charge | None = None,
     ) -> None:
+        if charge is not None:
+            # กองถูกตัดสินไว้แล้วตอนรับคำขอ (admit) — ไม่เดาใหม่จาก user_id
+            try:
+                for subject, charged_window in charge.windows:
+                    await self._store.increment(subject, charged_window, delta)
+                for subject in charge.minutes:
+                    await self._store.increment(subject, "minute", delta)
+            except Exception:
+                log.exception("failed to record quota consumption for user %s", user_id)
+            return
         try:
             key = self.subject_key(user_id)
             await self._store.increment(key, window, delta)
@@ -728,13 +870,15 @@ class QuotaService:
         quietly costs a few tokens of accuracy; a reset that fails quietly
         leaves somebody locked out while the console says it worked.
         """
-        key = self.subject_key(user_id)
+        key = limits.subject or self.subject_key(user_id)
         await self._store.reset(key, limits.window)
         if limits.rate_limited:
             await self._store.reset(key, "minute")
 
     async def usage_snapshot(self, user_id: str, limits: ResolvedLimits) -> dict:
-        used = await self._store.get(self.subject_key(user_id), limits.window)
+        used = await self._store.get(
+            limits.subject or self.subject_key(user_id), limits.window
+        )
         start, end = window_bounds(limits.window)
         return {
             "window": limits.window,

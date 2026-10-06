@@ -163,6 +163,7 @@ async def messages(
         rate_limited=limits.rate_limited,
         key_window=key_limits.window if key_limits else "",
         key_rate_limited=bool(key_limits and key_limits.rate_limited),
+        quota_charge=await state.quota.admit(limits, key_limits),
         request_id=request_id,
         client_request_id=getattr(request.state, "client_request_id", None),
         started=started,

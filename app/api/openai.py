@@ -43,7 +43,7 @@ from app.core.errors import ErrorCode, GatewayError
 from app.core.jsonio import FastJSONResponse
 from app.core.multimodal import RequestProfile, profile_openai_request
 from app.core.params import validate_chat_params
-from app.core.quota import Consumption
+from app.core.quota import Charge, Consumption
 from app.core.rules import fallback_models, resolve_route
 from app.core.tokens import (
     OutputMeter,
@@ -316,6 +316,7 @@ async def run_chat(
         rate_limited=limits.rate_limited,
         key_window=key_limits.window if key_limits else "",
         key_rate_limited=bool(key_limits and key_limits.rate_limited),
+        quota_charge=await state.quota.admit(limits, key_limits),
         request_id=request_id,
         client_request_id=getattr(request.state, "client_request_id", None),
         started=started,
@@ -400,6 +401,7 @@ class _RequestContext:
         rate_limited: bool,
         key_window: str = "",
         key_rate_limited: bool = False,
+        quota_charge: Charge | None = None,
         request_id: str,
         client_request_id: str | None = None,
         started: float,
@@ -433,6 +435,8 @@ class _RequestContext:
         # ว่าง = ใบนี้ไม่มีนโยบายของตัวเอง · ไม่ต้องนับกองที่สอง
         self.key_window = key_window
         self.key_rate_limited = key_rate_limited
+        # กองที่คำขอนี้ถูกนับ ตัดสินไว้ตอนรับคำขอ (QuotaService.admit)
+        self.quota_charge = quota_charge
         # ของเกตเวย์เอง ไม่ซ้ำ — คีย์ของแถว usage และตัวที่ log อ้างถึง
         self.request_id = request_id
         # ค่า `x-request-id` ที่ client ส่งมา (ถ้ามี) · เก็บไว้ให้ตามหาได้ ไม่เคยเป็นคีย์
@@ -629,6 +633,7 @@ class _RequestContext:
             api_key_id=self.principal.api_key_id,
             key_window=self.key_window,
             key_rate_limited=self.key_rate_limited,
+            charge=self.quota_charge,
             delta=Consumption(
                 requests=1,
                 text_input_tokens=usage.text_input_tokens,
