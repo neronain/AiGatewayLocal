@@ -297,10 +297,18 @@ class AnthropicStreamAdapter:
     stream does not announce block boundaries - it just starts sending deltas.
     """
 
-    def __init__(self, model_alias: str, *, include_thinking: bool = False) -> None:
+    def __init__(
+        self,
+        model_alias: str,
+        *,
+        include_thinking: bool = False,
+        input_tokens_estimate: int = 0,
+    ) -> None:
         self.model_alias = model_alias
         self.message_id = new_message_id()
         self._include_thinking = include_thinking
+        # ขนาด input ที่เกตเวย์ประมาณไว้ — ไปอยู่ใน message_start (ดู start_events)
+        self._input_estimate = max(int(input_tokens_estimate), 0)
         self._started = False
         # block ที่เปิดค้างอยู่ตอนนี้: "thinking" · "text" · None — เปิดได้ทีละอัน
         self._open: str | None = None
@@ -328,7 +336,11 @@ class AnthropicStreamAdapter:
                         "content": [],
                         "stop_reason": None,
                         "stop_sequence": None,
-                        "usage": {"input_tokens": 0, "output_tokens": 0},
+                        # backend ที่พูด chat completions บอกขนาด input ใน chunk *สุดท้าย*
+                        # แต่ message_start ต้องออกก่อน · ใส่ค่าประมาณของเกตเวย์ไว้ก่อน
+                        # (เดิมเป็น 0 — client ที่วาดมิเตอร์ context จาก event นี้เห็น 0
+                        # ตลอดทั้ง stream) ตัวเลขจริงตามไปใน message_delta
+                        "usage": {"input_tokens": self._input_estimate, "output_tokens": 0},
                     },
                 },
             )
@@ -468,6 +480,13 @@ class AnthropicStreamAdapter:
         return events
 
     def finish_events(self) -> list[tuple[str, dict]]:
+        """ปิด block ที่ค้าง แล้วส่ง message_delta + message_stop
+
+        `message_delta.usage` มี `input_tokens` ด้วย: เดิมส่งแค่ `output_tokens` ผู้เรียกแบบ
+        stream จึงไม่เคยถูกบอกขนาด input ที่แท้จริงเลย (message_start ออกไปก่อนจะรู้) ·
+        API ของ Anthropic เองก็ใส่ input_tokens ใน message_delta และทั้ง SDK กับ Claude Code
+        อ่านค่านั้นทับค่าจาก message_start
+        """
         if self._closed:
             return []
         self._closed = True
@@ -491,7 +510,10 @@ class AnthropicStreamAdapter:
                         ),
                         "stop_sequence": None,
                     },
-                    "usage": {"output_tokens": self.usage["output_tokens"]},
+                    "usage": {
+                        "input_tokens": self.usage["input_tokens"],
+                        "output_tokens": self.usage["output_tokens"],
+                    },
                 },
             )
         )

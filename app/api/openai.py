@@ -748,12 +748,7 @@ async def _stream_chat(
 ) -> Response:
     # เปิดสายและรอ payload แรก *ก่อน* เริ่มตอบ: ช่องเต็ม · เครื่องล่ม · backend ที่ตอบ 200
     # แล้วเงียบ ล้วนสลับเครื่องได้ตรงนี้ และถ้าหมดทางผู้เรียกได้สถานะจริง ไม่ใช่ 200 ที่สายขาด
-    def plan(endpoint: Endpoint) -> lifecycle.Call:
-        call = _chat_plan(build)(endpoint)
-        lifecycle.ask_for_usage(call)
-        return call
-
-    stream = await lifecycle.open_stream_for(request, ctx, plan)
+    stream = await lifecycle.open_stream_for(request, ctx, _chat_plan(build))
     if stream is None:
         return Response(status_code=lifecycle.CLIENT_CLOSED_STATUS)
 
@@ -769,7 +764,8 @@ async def _stream_chat(
 
             if isinstance(chunk.get("usage"), dict):
                 upstream_usage = chunk["usage"]
-                # ถ้าผู้เรียกไม่ได้ขอ usage chunk ก็ตัดออกก่อนส่งต่อ ให้รูปตรงกับที่เขาขอมา
+                # เราขอ usage chunk จาก backend เสมอ (lifecycle.ask_for_usage) · ถ้าผู้เรียก
+                # ไม่ได้ขอ ก็ตัดออกก่อนส่งต่อ ให้รูปตรงกับที่เขาขอมา
                 if not stream.call.client_wants_usage and not chunk.get("choices"):
                     continue
 

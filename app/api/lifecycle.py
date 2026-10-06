@@ -6,6 +6,8 @@
 stream กับไม่ stream อีกอย่างละสำเนา) · บั๊กที่ตรวจพบ 2026-10-06 เกือบทั้งหมดคือสำเนาที่
 ไม่ตรงกัน หรือรูที่มีครบทุกสำเนา:
 
+* มีแค่ chat ที่ขอ usage chunk จาก backend — stream ที่แปลจาก Anthropic/Responses (ทางที่
+  Claude Code กับ Codex ใช้) จึงถูกคิด output เป็น 0 ทุกคำขอ
 * `router.acquire()` คือด่านช่องตัวจริง แต่ถูกเรียก *ใน* generator หลังส่ง 200 ไปแล้ว และอยู่
   นอก `except GatewayError` — ช่องเต็มที่ worker อื่นถืออยู่ = สายขาดกลางอากาศ บันทึกว่า
   success และไม่เคยลองโมเดลสำรอง
@@ -72,10 +74,15 @@ Plan = Callable[[Endpoint], Call]
 
 
 def ask_for_usage(call: Call) -> None:
-    """Ask for a final usage chunk so accounting stays authoritative.
+    """ขอ usage chunk ปิดท้ายจาก backend ที่พูด chat completions — ทุก surface ไม่เว้น
 
-    If the caller did not want it, it is stripped before forwarding so the shape
-    matches what they asked for.
+    vLLM ส่ง chunk นี้ **เฉพาะเมื่อถูกขอ** (`stream_options.include_usage`) · เดิมมีแค่
+    /v1/chat/completions ที่ขอ ตัวแปลของ /v1/messages กับ /v1/responses คัดลอก `stream` ไป
+    แต่ไม่ขอ usage → `upstream_usage` เป็น None ตลอด → แถว usage ได้ `output_tokens=0
+    accounting=estimated` และผู้เรียกถูกบอกว่า `"output_tokens": 0` · นั่นคือรูปที่ส่งมอบจริง
+    (config/models/coding.yaml: vllm + anthropic: false) = ทางของ Claude Code และ Codex
+
+    ไม่ทับตัวเลือกอื่นใน `stream_options` ที่ผู้เรียกตั้งมา
     """
     if call.dialect != OPENAI:
         return
@@ -267,6 +274,7 @@ async def open_stream(ctx, plan: Plan) -> OpenedStream:  # noqa: ANN001
     while True:
         endpoint, served = ctx.endpoint, ctx.model.alias
         call = plan(endpoint)
+        ask_for_usage(call)
         if not await take_slot(ctx, served, endpoint):
             continue
 

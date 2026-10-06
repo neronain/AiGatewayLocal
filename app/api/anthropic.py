@@ -283,7 +283,11 @@ async def _stream_messages(
     translate = attempt.translate
     upstream_usage: dict | None = None
     adapter = (
-        AnthropicStreamAdapter(alias, include_thinking=attempt.thinking)
+        AnthropicStreamAdapter(
+            alias,
+            include_thinking=attempt.thinking,
+            input_tokens_estimate=resolve_usage(ctx.profile, None, _rate(ctx)).input_tokens,
+        )
         if translate else None
     )
 
