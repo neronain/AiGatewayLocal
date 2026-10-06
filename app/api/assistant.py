@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.openai import run_chat
 from app.core import assistant_fit
-from app.core.auth import Principal, authenticate
+from app.core.auth import Permission, Principal, authenticate, permitted_aliases
 from app.core.errors import ErrorCode, GatewayError
 from app.db.models import ASSISTANT_MODEL_KEY, GatewaySetting
 from app.db.session import get_session
@@ -90,20 +90,41 @@ async def configured_alias(state: AppState, session: AsyncSession) -> str:
     return state.settings.assistant_model
 
 
+def _usable_by(
+    state: AppState, principal: Principal, permission: Permission
+) -> list[ModelDefinition]:
+    """Every model this caller may actually call - the one list this file uses.
+
+    "May call" is two questions and both have to be asked: can their role see
+    it, and does `permitted_aliases` - workspace, membership, the list on the
+    key - allow it. This file used to ask only the first. A key limited to
+    `gemma-vision` was told `available: true, model: coding`, and then every
+    message was refused with 403 by the pipeline the assistant sends through
+    (2026-10-06): not a way around the rules, but a chat box that says it works
+    and does not, with a prompt that listed models the caller could not use.
+    """
+    return [
+        m for m in state.registry.snapshot.visible_to(principal.role)
+        if permission.allows(m.alias)
+    ]
+
+
 def _pick_model(
-    state: AppState, principal: Principal, configured: str = ""
+    state: AppState, principal: Principal, permission: Permission, configured: str = ""
 ) -> ModelDefinition | None:
     """The model the assistant will use.
 
     Pinned alias first; otherwise the best-fitting chat model this caller is
     allowed to use. Never a model they cannot use themselves - the assistant
-    must not be a side door to a restricted model.
+    must not be a side door to a restricted model, and it must not promise one
+    the request pipeline is about to refuse either.
 
     The ranking is `assistant_fit.rank()`, the same one the admin console shows.
     An automatic choice the console cannot explain is one nobody can debug.
     """
-    snapshot = state.registry.snapshot
-    allowed = [m for m in snapshot.visible_to(principal.role) if m.spec.capabilities.chat]
+    allowed = [
+        m for m in _usable_by(state, principal, permission) if m.spec.capabilities.chat
+    ]
     if not allowed:
         return None
 
@@ -140,8 +161,26 @@ def _health_by_alias(state: AppState) -> dict[str, dict]:
     return merged
 
 
+def _unavailable(configured: str, permission: Permission) -> str:
+    """Why there is no assistant for this caller, in terms they can act on."""
+    if configured:
+        return (
+            f"The assistant is pinned to '{configured}', which is not available to your "
+            "account. Ask an administrator to change it."
+        )
+    if permission.aliases is not None:
+        # Restricted, and nothing in the restriction can hold a conversation.
+        # Naming the rule is what turns "the assistant is broken" into "this key
+        # is limited to an embedding model".
+        return (
+            "No chat model is available to you here: what you may call is limited by "
+            f"{permission.reason}, and none of it can serve the assistant."
+        )
+    return "No chat model is available to your account yet."
+
+
 async def _gather_state(
-    principal: Principal, state: AppState, session: AsyncSession
+    principal: Principal, state: AppState, session: AsyncSession, permission: Permission
 ) -> dict[str, Any]:
     """What the assistant is allowed to know, for this caller.
 
@@ -169,7 +208,11 @@ async def _gather_state(
                 p for p in ("openai", "anthropic") if getattr(m.spec.protocols, p)
             ],
         }
-        for m in snapshot.visible_to(principal.role)
+        # The caller's list, by the same rule that gates the call - not every
+        # model their role could see. The model answers "what can I use?" from
+        # this, and an answer naming something they will be refused is worse
+        # than no answer.
+        for m in _usable_by(state, principal, permission)
     ]
 
     # Operational detail is for people who operate. A member gets their own
@@ -207,20 +250,14 @@ async def assistant_status(
     box that always answers "no backend" is worse than no chat box.
     """
     configured = await configured_alias(state, session)
-    model = _pick_model(state, principal, configured)
-    if model is None and configured:
-        reason = (
-            f"The assistant is pinned to '{configured}', which is not available to your "
-            "account. Ask an administrator to change it."
-        )
-    else:
-        reason = "No chat model is available to your account yet."
+    permission = await permitted_aliases(session, principal, state.registry.snapshot.gateway)
+    model = _pick_model(state, principal, permission, configured)
     return {
         "available": model is not None,
         "model": model.alias if model else None,
         "display_name": model.metadata.display_name if model else None,
         "pinned": bool(configured),
-        "reason": None if model else reason,
+        "reason": None if model else _unavailable(configured, permission),
     }
 
 
@@ -233,18 +270,12 @@ async def assistant_chat(
     session: AsyncSession = Depends(get_session),
 ):
     configured = await configured_alias(state, session)
-    model = _pick_model(state, principal, configured)
+    permission = await permitted_aliases(session, principal, state.registry.snapshot.gateway)
+    model = _pick_model(state, principal, permission, configured)
     if model is None:
-        raise GatewayError(
-            ErrorCode.MODEL_NOT_FOUND,
-            f"The assistant is pinned to '{configured}', which is not available to your "
-            "account. Ask an administrator to change it."
-            if configured
-            else "No chat model is available to your account. Ask an administrator to "
-            "enable one, or deploy one with your model deployment tool.",
-        )
+        raise GatewayError(ErrorCode.MODEL_NOT_FOUND, _unavailable(configured, permission))
 
-    context = await _gather_state(principal, state, session)
+    context = await _gather_state(principal, state, session, permission)
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
