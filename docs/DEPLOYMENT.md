@@ -711,6 +711,10 @@ Send the whole list you want, not a delta. `[]` removes the restriction, which
 *widens* the key, so the console spells that out before saving. `days` and
 `models` travel in the same request and neither disturbs the other. A manager is
 held to the same bar as when issuing: only models they could call themselves.
+That includes `[]`: removing a list is refused (403) when the key would then
+reach a model the manager cannot use — a student who is also in somebody else's
+workspace, or the manager's own key that an administrator narrowed. The message
+names the models; an admin can lift it.
 
 **Handing the same models to many workspaces.** Ticking four models into
 twenty workspaces means eighty clicks, and adding a fifth means visiting all

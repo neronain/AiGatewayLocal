@@ -141,6 +141,55 @@ async def _assert_may_grant(
         )
 
 
+async def _assert_may_lift_key_list(
+    session: AsyncSession, actor: Principal, api_key: ApiKey, state: AppState
+) -> None:
+    """Clearing the list on a key is a grant, and the largest one there is.
+
+    `_assert_may_grant` looks at the aliases being named, so an empty list sails
+    through it - there is nothing in it to object to. But on a key `[]` means
+    "no list", and removing a list somebody wrote hands the key everything its
+    owner can reach. A manager could therefore undo a narrowing an administrator
+    had set, and end up with a key that calls models the manager may not use or
+    hand out: the student who is also in another class, or the manager's own
+    key that was issued for one script.
+
+    The bar is the one every other grant is held to: whatever the key would be
+    able to call afterwards, the person lifting the list must be able to call
+    themselves.
+    """
+    if actor.is_admin:
+        return
+    owner = await session.get(User, api_key.user_id)
+    if owner is None:
+        return
+    snapshot = state.registry.snapshot
+    role = normalise_role(owner.role)
+    after = await permitted_aliases(
+        session,
+        # The key as it would stand: same owner, same binding, same bundles,
+        # and no list.
+        Principal(
+            user_id=owner.id, external_id=owner.external_id, role=role,
+            display_name=owner.display_name, api_key_id=api_key.id,
+            workspace_id=api_key.workspace_id, scopes=[],
+            key_models=[], key_access_groups=list(api_key.access_groups or []),
+        ),
+        snapshot.gateway,
+    )
+    reach = {m.alias for m in snapshot.visible_to(role) if after.allows(m.alias)}
+    mine = await permitted_aliases(session, actor, snapshot.gateway)
+    beyond = sorted(alias for alias in reach if not mine.allows(alias))
+    if beyond:
+        raise GatewayError(
+            ErrorCode.INSUFFICIENT_SCOPE,
+            "Removing the list would let this key call models you cannot grant "
+            f"yourself: {', '.join(beyond)}. Send the list you mean instead, or "
+            "ask an administrator to lift it.",
+            details={"models": beyond},
+        )
+
+
 async def _assert_may_read_model(
     session: AsyncSession, actor: Principal, alias: str, state: AppState
 ) -> None:
@@ -340,7 +389,13 @@ async def user_quota(
     วันหนึ่งตัวเลขบนหน้าจอกับตัวเลขที่บังคับใช้จริงจะไม่ตรงกัน แล้วไม่มีใครรู้ว่าอันไหนถูก
     """
     user = await session.get(User, user_id)
-    if user is None:
+    # Same answer for "not yours" and "does not exist", as for a key outside a
+    # manager's workspaces. This route was the one that asked `require_manager`
+    # and then nothing else: `/admin/users` listed a lecturer only their own
+    # class, while this handed over anybody's quota and usage to whoever had the
+    # id (2026-10-06).
+    visible = await _visible_users(session, actor)
+    if user is None or (visible is not None and user_id not in visible):
         raise GatewayError(ErrorCode.INVALID_REQUEST, "User not found.")
 
     limits = await state.quota.resolve_limits(session, user_id, None, "")
@@ -1567,6 +1622,10 @@ async def amend_api_key(
             )
         # แก้ scope คือการให้สิทธิ์ ไม่ต่างจากตอนออก key · ผู้จัดการจึงกว้างเกินตัวเองไม่ได้
         await _assert_may_grant(session, actor, models, state)
+        # …และ "ไม่มีรายการ" คือการให้ที่กว้างที่สุด ซึ่งด่านข้างบนมองไม่เห็นเพราะไม่มี
+        # alias ให้ตรวจ · ถามเฉพาะตอนที่กำลัง *ถอด* รายการที่มีอยู่ออกจริง
+        if not models and (api_key.models or []):
+            await _assert_may_lift_key_list(session, actor, api_key, state)
 
         changes["models"] = {"from": list(api_key.models or []), "to": models}
         api_key.models = models
