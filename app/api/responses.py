@@ -239,7 +239,7 @@ _FAILURE_CODES = {
 
 async def _complete_response(build: BuildAttempt, ctx: _RequestContext) -> FastJSONResponse:
     alias = ctx.requested_alias
-    # จองช่อง · เรียก · สลับเครื่อง/โมเดลสำรอง — ดู lifecycle
+    # จองช่อง · เรียก · สลับเครื่อง/โมเดลสำรอง · ตรวจว่า body ของ 200 ใช้ได้จริง — ดู lifecycle
     call, endpoint, data = await lifecycle.complete(ctx, _plan(build))
     translate = call.extra.translate
 

@@ -11,6 +11,7 @@ stream กับไม่ stream อีกอย่างละสำเนา) 
   success และไม่เคยลองโมเดลสำรอง
 * สายไป backend ขาดหลัง 200 = generator `return` เงียบ ๆ ผู้เรียกได้คำตอบครึ่งเดียวที่จบ
   เหมือนจบปกติ
+* error object ที่ backend ใส่มาใน stream 200 ถูกทิ้ง กลายเป็น "คำตอบว่างที่สำเร็จ"
 
 หลักที่ไฟล์นี้ยึด: **สถานะ HTTP กับ header ของ stream ตัดสินจากสิ่งที่เกิดก่อน event แรก**
 เปิดสายไป backend และรอ payload แรกให้ได้ก่อน แล้วค่อยเริ่มตอบผู้เรียก · ก่อนจุดนั้นทุกความ
@@ -21,7 +22,6 @@ stream กับไม่ stream อีกอย่างละสำเนา) 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import AsyncIterator, Callable, Iterable
 from dataclasses import dataclass
@@ -29,12 +29,12 @@ from typing import Any
 
 from fastapi import Request
 
-from app.core import jsonio
 from app.core.errors import ErrorCode, GatewayError, describe
-from app.core.routing import RETRYABLE_ERRORS, is_retryable_status
+from app.core.routing import RETRYABLE_ERRORS, is_request_fault, is_retryable_status
 from app.core.tokens import TokenUsage, resolve_usage
 from app.registry.schema import Endpoint
 from app.upstream import client as upstream
+from app.upstream.client import UpstreamBodyError
 from app.upstream.sse import DONE, iter_sse_payloads, parse_chunk
 
 log = logging.getLogger(__name__)
@@ -90,10 +90,21 @@ def ask_for_usage(call: Call) -> None:
 # ความล้มเหลว: นับสุขภาพเครื่อง · ตัดสินว่าสลับได้ไหม · บันทึกแถว usage
 # ---------------------------------------------------------------------------
 def _report(ctx, served: str, endpoint: Endpoint, exc: GatewayError) -> None:  # noqa: ANN001
-    ctx.state.router.report_failure(served, endpoint, exc.message)
+    router = ctx.state.router
+    if isinstance(exc, UpstreamBodyError):
+        # error ใน body ของ 200 นับเหมือน HTTP error ที่มันควรจะเป็น: 4xx เรื่องคำขอ
+        # (prompt ยาวเกิน) ไม่ใช่ความผิดของเครื่อง — ดู routing.REQUEST_FAULT_STATUSES
+        if not is_request_fault(exc.upstream_status):
+            router.report_failure(
+                served, endpoint, f"error inside an HTTP 200: {exc.backend_message}"
+            )
+        return
+    router.report_failure(served, endpoint, exc.message)
 
 
 def _can_retry(exc: GatewayError) -> bool:
+    if isinstance(exc, UpstreamBodyError):
+        return is_retryable_status(exc.upstream_status)
     return exc.code in RETRYABLE_ERRORS
 
 
@@ -138,7 +149,7 @@ async def take_slot(ctx, served: str, endpoint: Endpoint) -> bool:  # noqa: ANN0
 # ไม่ stream
 # ---------------------------------------------------------------------------
 async def complete(ctx, plan: Plan) -> tuple[Call, Endpoint, dict[str, Any]]:  # noqa: ANN001
-    """ถามเครื่องหนึ่ง ไม่สบายก็ถามเครื่องถัดไป — คืนคำตอบ 200 ที่ parse แล้ว
+    """ถามเครื่องหนึ่ง ไม่สบายก็ถามเครื่องถัดไป — คืนคำตอบที่เป็น JSON object ที่ใช้ได้แล้ว
 
     ยังไม่มีอะไรถึงผู้เรียก การลองใหม่จึงมองไม่เห็นจากฝั่งเขา · ล้มทุกทางแล้วจะบันทึกแถว
     usage และ raise GatewayError ของความล้มเหลวครั้งสุดท้าย
@@ -149,7 +160,6 @@ async def complete(ctx, plan: Plan) -> tuple[Call, Endpoint, dict[str, Any]]:  #
         call = plan(endpoint)
         if not await take_slot(ctx, served, endpoint):
             continue
-        answered = False
         try:
             response = await upstream.post_json(endpoint, call.path, call.payload, call.headers)
             if response.status_code >= 400:
@@ -159,22 +169,15 @@ async def complete(ctx, plan: Plan) -> tuple[Call, Endpoint, dict[str, Any]]:  #
                     endpoint, response.status_code, response.text[:2000]
                 )
             else:
+                data = upstream.parse_success(endpoint, response)
                 router.report_success(served, endpoint)
-                answered = True
+                return call, endpoint, data
         except GatewayError as exc:
             _report(ctx, served, endpoint, exc)
             retry, failure = _can_retry(exc), exc
         finally:
             await router.release(served, endpoint, ctx.lease)
 
-        if answered:
-            try:
-                # ไม่ใช้ response.json() เพราะมันเรียก json ของ stdlib ตายตัว · เรามีไบต์อยู่แล้ว
-                return call, endpoint, jsonio.loads(response.content)
-            except json.JSONDecodeError as exc:
-                raise GatewayError(
-                    ErrorCode.UPSTREAM_ERROR, "The model server returned a malformed response."
-                ) from exc
         if retry and (nxt := ctx.another_endpoint()) is not None:
             ctx.retarget(nxt)
             continue
@@ -191,12 +194,17 @@ Payload = tuple[str | None, str, dict[str, Any] | None]
 async def _payloads(endpoint: Endpoint, response) -> AsyncIterator[Payload]:  # noqa: ANN001
     """(event, data ดิบ, chunk ที่ parse แล้วหรือ None) ของ stream จาก backend
 
-    `[DONE]` ถูกกรองออก · สายขาดระหว่างอ่านออกมาเป็น GatewayError
+    `[DONE]` ถูกกรองออก · สายขาดระหว่างอ่านและ error object ใน stream ออกมาเป็น GatewayError
     """
     async for event, data in iter_sse_payloads(upstream.iter_lines(endpoint, response)):
         if data.strip() == DONE:
             continue
-        yield event, data, parse_chunk(data)
+        chunk = parse_chunk(data)
+        if chunk is not None:
+            problem = upstream.embedded_error(endpoint, chunk)
+            if problem is not None:
+                raise problem
+        yield event, data, chunk
 
 
 class OpenedStream:
@@ -251,8 +259,9 @@ async def open_stream(ctx, plan: Plan) -> OpenedStream:  # noqa: ANN001
     ผู้เรียกได้เป็นสถานะ HTTP จริง ไม่ใช่ 200 ที่สายขาด
 
     รอถึง payload แรก ไม่ใช่แค่ header 200: backend ที่งานล้นตอบ 200 แล้วเงียบจนหมดเวลา
-    (vLLM ส่ง header ก่อน token แรก) · เดิมจบที่ `HTTP 200 body=''` โดยเครื่องสำรองที่ว่างอยู่
-    ไม่ถูกเรียกเลย
+    (vLLM ส่ง header ก่อน token แรก) และ vLLM รายงานคำขอที่มันรับไม่ได้ด้วย error object
+    เป็น payload แรกของ stream 200 · ทั้งสองแบบเคยจบที่ `HTTP 200 body=''` โดยเครื่องสำรองที่
+    ว่างอยู่ไม่ถูกเรียกเลย
     """
     router = ctx.state.router
     while True:
@@ -383,7 +392,7 @@ async def relay(  # noqa: PLR0913
 
     `produce` แปล payload ของ backend เป็น frame ของ surface · ที่เหลืออยู่ที่นี่ที่เดียว:
 
-    * **สายไป backend ขาดกลางทาง** → ผู้เรียกได้ event ปิดท้าย
+    * **สายไป backend ขาดกลางทาง / error object กลาง stream** → ผู้เรียกได้ event ปิดท้าย
       ของ surface (`render_error`) เสมอ · แถวเป็น `error` พร้อมรหัสจริง · เครื่องถูกนับว่าล้ม
     * **ผู้เรียกตัดสาย** → แถวเป็น `aborted` (เดิมค้างเป็น success/200)
     * **คืนช่อง + บันทึกแถว usage รันเสมอ** แม้ generator ถูกยกเลิก — ทั้งสองขั้น shield

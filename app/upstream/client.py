@@ -6,6 +6,7 @@ when every request is a long-lived streaming response to the same few hosts.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import AsyncIterator
@@ -16,7 +17,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from app.config import get_settings
-from app.core import providers
+from app.core import jsonio, providers
 from app.core.errors import ErrorCode, GatewayError
 from app.core.secrets import SecretStore
 from app.registry.schema import Endpoint, ServerType
@@ -228,6 +229,105 @@ async def iter_lines(endpoint: Endpoint, response: httpx.Response) -> AsyncItera
         raise _transport_error(endpoint, exc, mid_stream=True) from exc
 
 
+class UpstreamBodyError(GatewayError):
+    """backend ตอบ 200 แต่เนื้อในคือความล้มเหลว
+
+    `upstream_status` คือสถานะที่มัน *ควรจะ* ตอบ — ใช้ตัดสินสองเรื่องเหมือน HTTP error จริง:
+    นับเป็นความล้มเหลวของเครื่องไหม (4xx ที่เป็นเรื่องของคำขอไม่นับ) และสลับเครื่องได้ไหม
+    """
+
+    def __init__(self, base: GatewayError, upstream_status: int, backend_message: str) -> None:
+        super().__init__(
+            base.code, base.message, param=base.param, details=base.details,
+            retry_after=base.retry_after,
+        )
+        self.upstream_status = upstream_status
+        self.backend_message = backend_message
+
+
+def _status_of(error: Any) -> int:
+    """สถานะ HTTP ที่ error object ของ backend บอกไว้ — ไม่บอกหรือบอกมั่ว = 500"""
+    candidates = []
+    if isinstance(error, dict):
+        candidates = [error.get("code"), error.get("status"), error.get("status_code")]
+    for value in candidates:
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, str) and value.isdigit():
+            value = int(value)
+        if isinstance(value, int) and 400 <= value <= 599:
+            return value
+    return 500
+
+
+def embedded_error(endpoint: Endpoint, payload: Any) -> UpstreamBodyError | None:
+    """error object ที่ backend ใส่มาใน body ของคำตอบ 200 — None ถ้าไม่ใช่
+
+    vLLM รายงานความล้มเหลวที่เกิด *หลัง* stream เปิดแล้วด้วย `data: {"error": {...}}` เพราะ
+    สถานะ 200 ถูกส่งไปก่อนหน้านั้น · llama.cpp กับเกตเวย์ค่ายอื่นทำแบบเดียวกันบนคำตอบที่ไม่ได้
+    stream ด้วย · ทั้งสองแบบเคยถูกนับเป็นความสำเร็จ: /v1/messages กับ /v1/responses ทิ้ง chunk
+    ที่ไม่มี `choices` แล้วปิดเป็น "คำตอบว่างที่จบปกติ" ส่วน /v1/chat/completions ส่งต่อแต่
+    บันทึกแถว usage ว่า success
+
+    ครอบทั้งสามรูป: OpenAI (`{"error": ...}`) · Anthropic (`{"type": "error", "error": ...}`)
+    · Responses (`response.failed` / `{"type": "error", ...}`)
+    """
+    if not isinstance(payload, dict):
+        return None
+    error: Any = payload.get("error")
+    kind = payload.get("type")
+    if kind == "response.failed" and isinstance(payload.get("response"), dict):
+        error = payload["response"].get("error") or {"message": "response failed"}
+    elif kind == "error" and not error:
+        error = {"message": payload.get("message"), "code": payload.get("code")}
+    if not error:
+        return None
+
+    if isinstance(error, dict):
+        message = error.get("message")
+        message = message if isinstance(message, str) and message else json.dumps(error)[:300]
+    else:
+        message = str(error)
+    message = message.strip()[:300]
+    status = _status_of(error)
+    base = upstream_error(endpoint, status, json.dumps({"error": {"message": message}}))
+    if base.code != ErrorCode.CONTEXT_LENGTH_EXCEEDED:
+        # ข้อความของ backend คือสิ่งเดียวที่บอกว่าเกิดอะไรขึ้น — สถานะที่เห็นคือ 200
+        base.message = f"{base.message} Backend said: {message}"
+    base.details["upstream_status"] = 200
+    base.details["upstream_error_status"] = status
+    return UpstreamBodyError(base, status, message)
+
+
+def parse_success(endpoint: Endpoint, response: httpx.Response) -> dict[str, Any]:
+    """body ของคำตอบ 200 ที่ไม่ได้ stream — เป็น JSON object ที่ไม่ใช่ error เท่านั้น
+
+    สามรูปที่เคยหลุด (ตรวจ 2026-10-06): JSON ที่เป็น list หรือ `null` ไปพังเป็น TypeError → 500
+    ตอนใส่ `data["model"]` · หน้า HTML ของ proxy ที่คั่นอยู่ได้ 502 แต่ไม่มีแถว usage และเครื่อง
+    ถูกนับว่าตอบสำเร็จ · `{"error": ...}` ที่มากับสถานะ 200 ถูกส่งต่อเป็นความสำเร็จ
+    """
+    try:
+        data = jsonio.loads(response.content)
+    except json.JSONDecodeError:
+        data = None
+    else:
+        problem = embedded_error(endpoint, data)
+        if problem is not None:
+            raise problem
+        if isinstance(data, dict):
+            return data
+    base = GatewayError(
+        ErrorCode.UPSTREAM_ERROR,
+        "The model server returned a malformed response.",
+        details={
+            "endpoint": endpoint.name,
+            "upstream_status": response.status_code,
+            "upstream_detail": response.text[:500],
+        },
+    )
+    raise UpstreamBodyError(base, 502, "200 with a body that is not a JSON object")
+
+
 async def read_error_body(response: httpx.Response) -> str:
     try:
         if response.is_stream_consumed:
@@ -251,8 +351,6 @@ _CONTEXT_OVERFLOW = re.compile(
 def _backend_message(body: str) -> str:
     """ข้อความของ backend เอง ตัดให้สั้น — มีตัวเลขที่ผู้ใช้ต้องใช้ตัดสินใจ (จำกัดเท่าไร ส่งมาเท่าไร)"""
     try:
-        import json
-
         parsed = json.loads(body)
         error = parsed.get("error") if isinstance(parsed, dict) else None
         if isinstance(error, dict) and isinstance(error.get("message"), str):

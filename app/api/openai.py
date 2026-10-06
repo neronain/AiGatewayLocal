@@ -683,7 +683,7 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> FastJSONR
                     },
                 )
 
-    # จองช่อง · เรียก · สลับเครื่อง/โมเดลสำรอง — ดู lifecycle
+    # จองช่อง · เรียก · สลับเครื่อง/โมเดลสำรอง · ตรวจว่า body ของ 200 ใช้ได้จริง — ดู lifecycle
     _call, endpoint, data = await lifecycle.complete(ctx, _chat_plan(build))
 
     # The member asked for the alias; never leak the upstream repository name.
