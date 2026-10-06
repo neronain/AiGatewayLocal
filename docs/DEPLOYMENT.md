@@ -1224,6 +1224,7 @@ rather than take it on faith.
 | `WINDOW` is a reserved word in PostgreSQL — `quota_policies.window` | Same schema upgrade | Identifiers are quoted by SQLAlchemy's identifier preparer, per dialect |
 | PostgreSQL really does accept concurrent writers, so a read-modify-write counter loses increments | `quota_counters` when Redis is not configured | The increment is now one `UPDATE … SET requests = requests + n` (§5f) |
 | Connections cross a network and can be closed by a pooler or firewall while idle | Every query | `pool_pre_ping` and a 300 s `pool_recycle` are enabled for PostgreSQL only |
+| `INTEGER` is 32-bit on PostgreSQL and 64-bit on SQLite — a cumulative token counter passing 2,147,483,647 makes `UPDATE … SET x = x + n` raise | `quota_counters.*` over a `month`/`term` window; `quota_policies.max_*` above 2.1 billion | Those columns are `BIGINT`. An existing PostgreSQL database is widened at startup with one `ALTER TABLE … ALTER COLUMN … TYPE BIGINT` per table (`app/db/session.py::plan_widened_columns`); SQLite needs nothing |
 
 ### Things to watch after the switch
 
@@ -1238,8 +1239,20 @@ rather than take it on faith.
   asyncpg's prepared-statement cache; if you must use it, the gateway needs
   `statement_cache_size=0` passed through the URL query string.
 * **Back up before the first start**, not after. The startup schema upgrade
-  adds columns; it never drops or retypes anything, but "never" is easier to
-  believe with a dump on disk.
+  adds columns; it never drops anything, and the only retype it performs is
+  widening the quota counters and limits from 32 to 64 bits, which cannot lose
+  a value — but "never" is easier to believe with a dump on disk.
+* **The first start after upgrading to the 64-bit counters rewrites
+  `quota_counters` and `quota_policies` once** (PostgreSQL only), under an
+  `ACCESS EXCLUSIVE` lock for as long as the rewrite takes. `quota_policies` is
+  tiny; `quota_counters` has one row per person per window, plus one per
+  person per active minute where a per-minute limit is set, and is never
+  pruned — check `SELECT count(*) FROM quota_counters;` first and do it in a
+  quiet moment if that is in the millions. Later starts see `BIGINT` and do
+  nothing. Restart every instance together rather than rolling: an instance
+  still running the previous build sees the column types change under its
+  prepared statements, and a query on those tables can fail once ("cached plan
+  must not change result type") before the driver re-prepares it.
 
 ### Testing against a real PostgreSQL
 

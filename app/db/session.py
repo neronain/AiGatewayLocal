@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from sqlalchemy import event, inspect, text
+from sqlalchemy import BigInteger, Integer, event, inspect, text
 from sqlalchemy.exc import InternalError, OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.config import get_settings
-from app.db.dialect import is_postgresql, is_sqlite
+from app.db.dialect import POSTGRESQL, is_postgresql, is_sqlite
 from app.db.models import Base
 
 log = logging.getLogger(__name__)
@@ -218,6 +218,7 @@ async def init_db(attempts: int = 5) -> None:
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all, checkfirst=True)
             await _add_missing_columns(engine)
+            await _widen_integer_columns(engine)
             log.info("database ready: %s", get_settings().database_url.split("@")[-1])
             return
         except (OperationalError, ProgrammingError, InternalError) as exc:
@@ -244,7 +245,9 @@ async def _add_missing_columns(engine: AsyncEngine) -> None:
 
     Additive only: this never drops, renames or retypes anything, so it cannot
     lose data. Anything beyond adding a column is a real migration and belongs
-    in a reviewed script.
+    in a reviewed script. (The one retype the startup path performs is the
+    lossless int4 -> int8 widening in `_widen_integer_columns`, which says why
+    it is safe.)
 
     DDL ตรงนี้เคยเขียนด้วยการต่อสตริงเองทั้งหมด ซึ่งใช้ได้เฉพาะบน SQLite:
 
@@ -302,6 +305,72 @@ def plan_missing_columns(sync_conn) -> list[str]:  # noqa: ANN001
                 ddl += f" DEFAULT {literal}"
             statements.append(ddl)
     return statements
+
+
+async def _widen_integer_columns(engine: AsyncEngine) -> None:
+    """ขยายคอลัมน์จำนวนเต็มที่โค้ดประกาศเป็น 64 บิต แต่ฐานข้อมูลยังเป็น 32 บิต
+
+    กลไกเดียวกับ `_add_missing_columns`: วางแผนจากสคีมาจริงของฐานข้อมูล แล้วรันเฉพาะ
+    สิ่งที่ยังขาด · ฐานข้อมูลที่ขยายแล้ว (หรือสร้างใหม่ด้วยโค้ดรุ่นนี้) ได้แผนว่าง จึงรันซ้ำ
+    กี่รอบก็ได้ และ worker ที่เริ่มพร้อมกันหลายตัวไม่ทำงานซ้ำกัน: ตัวที่มาทีหลังรอ lock แล้ว
+    สั่ง `TYPE BIGINT` กับคอลัมน์ที่เป็น BIGINT อยู่แล้ว ซึ่ง PostgreSQL ไม่เขียนตารางใหม่
+
+    นี่คือข้อยกเว้นเดียวของกฎ "เติมอย่างเดียว ไม่เปลี่ยนชนิด" ข้างบน และยกเว้นได้เพราะ
+    int4 → int8 ไม่มีค่าไหนที่แปลงไม่ได้ ไม่มีข้อมูลหาย และโค้ดรุ่นก่อนอ่านเขียนคอลัมน์
+    BIGINT ได้ตามปกติ (rollback ไปรุ่นก่อนจึงไม่ต้องย้อนสคีมา)
+    """
+    async with engine.begin() as conn:
+        statements = await conn.run_sync(plan_widened_columns)
+        for statement in statements:
+            log.warning("schema upgrade: %s", statement)
+            await conn.execute(text(statement))
+
+
+def plan_widened_columns(sync_conn) -> list[str]:  # noqa: ANN001
+    """DDL ที่ต้องรันเพื่อให้คอลัมน์ `BigInteger` ของโมเดลเป็น 64 บิตจริงในฐานข้อมูลนี้
+
+    * **PostgreSQL** — `ALTER TABLE … ALTER COLUMN … TYPE BIGINT` ซึ่งเขียนตารางใหม่
+      ทั้งตารางใต้ ACCESS EXCLUSIVE lock · ทุกคอลัมน์ของตารางเดียวกันจึงรวมอยู่ใน
+      **คำสั่งเดียว** (เขียนใหม่รอบเดียว ไม่ใช่รอบละคอลัมน์) และออกคำสั่งเฉพาะเมื่อยังมี
+      คอลัมน์ที่แคบอยู่จริง · ตารางที่เกี่ยวคือ `quota_counters` กับ `quota_policies`
+      เท่านั้น — `usage_logs` ไม่ถูกแตะ
+    * **SQLite** — ไม่มีอะไรต้องทำ: INTEGER ของ SQLite เก็บได้ถึง 64 บิตไม่ว่าคอลัมน์จะ
+      ประกาศไว้ว่าอะไร (และ SQLite เปลี่ยนชนิดคอลัมน์ในที่ไม่ได้อยู่แล้ว)
+
+    แยกเป็นฟังก์ชันระดับโมดูลด้วยเหตุผลเดียวกับ `plan_missing_columns` — เทสเรียกได้
+    ตรง ๆ โดยไม่ต้องมีเซิร์ฟเวอร์
+    """
+    dialect = sync_conn.dialect
+    if dialect.name != POSTGRESQL:
+        return []
+    inspector = inspect(sync_conn)
+    preparer = dialect.identifier_preparer
+    existing_tables = set(inspector.get_table_names())
+    statements: list[str] = []
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue
+        wide = {c.name: c for c in table.columns if isinstance(c.type, BigInteger)}
+        if not wide:
+            continue
+        narrow = [
+            wide[found["name"]]
+            for found in inspector.get_columns(table.name)
+            if found["name"] in wide and _narrower_than_bigint(found["type"])
+        ]
+        if not narrow:
+            continue
+        changes = ", ".join(
+            f"ALTER COLUMN {preparer.format_column(column)} TYPE BIGINT" for column in narrow
+        )
+        statements.append(f"ALTER TABLE {preparer.format_table(table)} {changes}")
+    return statements
+
+
+def _narrower_than_bigint(found_type) -> bool:  # noqa: ANN001
+    # BigInteger เป็น subclass ของ Integer ใน SQLAlchemy — INTEGER/SMALLINT ที่ reflect
+    # กลับมาคือ Integer ที่ไม่ใช่ BigInteger
+    return isinstance(found_type, Integer) and not isinstance(found_type, BigInteger)
 
 
 def _default_literal(column, dialect) -> str | None:  # noqa: ANN001

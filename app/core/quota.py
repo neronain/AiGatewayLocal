@@ -1042,39 +1042,52 @@ class QuotaService:
     ) -> None:
         if charge is not None:
             # กองถูกตัดสินไว้แล้วตอนรับคำขอ (admit) — ไม่เดาใหม่จาก user_id
-            try:
-                for subject, charged_window in charge.windows:
-                    await self._store.increment(subject, charged_window, delta)
-                # คำขอถูกนับเข้าตัวนับนาทีไปแล้วตอน admit — ตรงนี้เหลือแค่ token
-                tokens_only = Consumption(
-                    text_input_tokens=delta.text_input_tokens,
-                    visual_input_tokens=delta.visual_input_tokens,
-                    output_tokens=delta.output_tokens,
-                    images=delta.images,
-                )
+            for subject, charged_window in charge.windows:
+                await self._add(subject, charged_window, delta)
+            # คำขอถูกนับเข้าตัวนับนาทีไปแล้วตอน admit — ตรงนี้เหลือแค่ token
+            tokens_only = Consumption(
+                text_input_tokens=delta.text_input_tokens,
+                visual_input_tokens=delta.visual_input_tokens,
+                output_tokens=delta.output_tokens,
+                images=delta.images,
+            )
+            if tokens_only != Consumption():
                 for subject in charge.minutes:
-                    if tokens_only != Consumption():
-                        await self._store.increment(subject, "minute", tokens_only)
-            except Exception:
-                log.exception("failed to record quota consumption for user %s", user_id)
+                    await self._add(subject, "minute", tokens_only)
             return
+        key = self.subject_key(user_id)
+        await self._add(key, window, delta)
+        # Only when a rate limit is actually set: otherwise every deployment
+        # that never wanted one would pay for a second counter per request.
+        if rate_limited:
+            await self._add(key, "minute", delta)
+        # กองของ key นับเฉพาะเมื่อมีนโยบายของ key จริง ๆ · ไม่มีนโยบาย = ไม่มี
+        # ตัวนับเพิ่ม ทุก deployment ที่ไม่ได้ใช้ฟีเจอร์นี้จึงไม่จ่ายอะไรเลย
+        if api_key_id and key_window:
+            subject = self.key_subject(api_key_id)
+            await self._add(subject, key_window, delta)
+            if key_rate_limited:
+                await self._add(subject, "minute", delta)
+
+    async def _add(self, subject: str, window: str, delta: Consumption) -> None:
+        """บวกเข้าตัวนับหนึ่งตัว · ล้มแล้ว **ไม่พาตัวถัดไปล้มตาม**
+
+        Never fail a completed request because bookkeeping failed - แต่เดิม try ครอบ
+        ทั้งชุด: การบวกตัวแรกโยน (เช่นตัวนับ token รายเทอมชน int4 บน PostgreSQL) แล้ว
+        ตัวนับนาทีกับตัวนับของ key ที่อยู่ถัดไปถูกข้ามทั้งหมด — ลิมิตต่อนาทีและเพดานของ key
+        ของคนคนนั้นหยุดนับไปเงียบ ๆ จนจบหน้าต่าง โดยมีแค่ traceback ที่ไม่บอกว่าตัวนับไหน
+
+        บันทึกที่ ERROR พร้อมชื่อ subject: โควตาที่ไม่ถูกนับคือโควตาที่ไม่ถูกบังคับ และคนที่
+        ต้องรู้คือผู้ดูแล ไม่ใช่ผู้ใช้ที่ได้คำตอบไปเรียบร้อยแล้ว
+        """
         try:
-            key = self.subject_key(user_id)
-            await self._store.increment(key, window, delta)
-            # Only when a rate limit is actually set: otherwise every deployment
-            # that never wanted one would pay for a second counter per request.
-            if rate_limited:
-                await self._store.increment(key, "minute", delta)
-            # กองของ key นับเฉพาะเมื่อมีนโยบายของ key จริง ๆ · ไม่มีนโยบาย = ไม่มี
-            # ตัวนับเพิ่ม ทุก deployment ที่ไม่ได้ใช้ฟีเจอร์นี้จึงไม่จ่ายอะไรเลย
-            if api_key_id and key_window:
-                subject = self.key_subject(api_key_id)
-                await self._store.increment(subject, key_window, delta)
-                if key_rate_limited:
-                    await self._store.increment(subject, "minute", delta)
+            await self._store.increment(subject, window, delta)
         except Exception:
-            # Never fail a completed request because bookkeeping failed.
-            log.exception("failed to record quota consumption for user %s", user_id)
+            log.error(
+                "โควตา: บวกตัวนับ %s (หน้าต่าง %s) ไม่สำเร็จ — การใช้งานรอบนี้ไม่ถูกนับ "
+                "ในตัวนับนี้: %s",
+                subject, window, delta, exc_info=True,
+            )
 
     async def reset(self, user_id: str, limits: ResolvedLimits) -> None:
         """Give this person their window back.

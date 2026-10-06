@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -293,15 +294,18 @@ class QuotaPolicy(Base, TimestampMixin):
     )
 
     window: Mapped[str] = mapped_column(String(16), default="day")  # day|month|term
-    max_requests: Mapped[int] = mapped_column(Integer, default=0)  # 0 == unlimited
-    max_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    max_output_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    max_images: Mapped[int] = mapped_column(Integer, default=0)
+    # 64 บิต: `Integer` บน PostgreSQL คือ int4 — เพดานเกิน 2,147,483,647 token (สองพันล้าน
+    # ต่อเทอมไม่ใช่ตัวเลขที่ไกลตัวสำหรับทั้งองค์กร) ทำให้การสร้างนโยบายตอบ 500 ·
+    # SQLite เก็บ INTEGER เป็น 64 บิตอยู่แล้ว จึงไม่เคยเห็นอาการนี้ในเทส
+    max_requests: Mapped[int] = mapped_column(BigInteger, default=0)  # 0 == unlimited
+    max_input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    max_output_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    max_images: Mapped[int] = mapped_column(BigInteger, default=0)
     # Burst control, per minute, counted per person. Separate from the window
     # limits above because they answer different questions: how much may you use
     # this term, and how fast may you use it right now.
-    max_requests_per_minute: Mapped[int] = mapped_column(Integer, default=0)
-    max_tokens_per_minute: Mapped[int] = mapped_column(Integer, default=0)
+    max_requests_per_minute: Mapped[int] = mapped_column(BigInteger, default=0)
+    max_tokens_per_minute: Mapped[int] = mapped_column(BigInteger, default=0)
     # A policy written for a fortnight that nobody remembers to remove is a
     # policy still in force next term. Past this the policy is ignored and the
     # person falls back to whatever applied before it.
@@ -323,11 +327,16 @@ class QuotaCounter(Base):
     window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
-    requests: Mapped[int] = mapped_column(Integer, default=0)
-    text_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    visual_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    images: Mapped[int] = mapped_column(Integer, default=0)
+    # 64 บิต: ตัวนับเป็นยอดสะสมทั้งหน้าต่าง · บน PostgreSQL `Integer` คือ int4 และ
+    # `UPDATE … SET x = x + :n` ที่พายอดข้าม 2,147,483,647 จะ *โยน* ("integer out of
+    # range") ไม่ใช่วนกลับ — ตัวนับ token รายเดือน/รายเทอมของคนที่ใช้หนักจะค้างที่ค่าเดิม
+    # ไปจนจบหน้าต่าง · ฐานข้อมูลที่มีอยู่ถูกขยายตอนเริ่มระบบ (db/session.py:
+    # plan_widened_columns)
+    requests: Mapped[int] = mapped_column(BigInteger, default=0)
+    text_input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    visual_input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    images: Mapped[int] = mapped_column(BigInteger, default=0)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
