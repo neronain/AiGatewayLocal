@@ -2438,6 +2438,10 @@ async def admin_models(
                 # 1.6 · โมเดลที่อัตราจริง 3.86 จะถูกนับ token ไทยเกิน 2.4 เท่าและชนเพดาน
                 # context ทั้งที่ยังเหลือที่เกินครึ่ง โดยไม่มีอะไรบนหน้าจอบอก
                 "wide_chars_per_token": model.spec.wide_chars_per_token,
+                # สองค่านี้ก็ไม่มีช่องบนฟอร์มเหมือนกัน (ตั้งใน YAML) — ไม่คืนมา = กด Save ครั้งเดียวหาย
+                # แล้ว prompt โค้ด/เครื่องมือกลับไปถูกนับด้วยค่ากลาง โดยไม่มีอะไรบนหน้าจอบอก
+                "ascii_chars_per_token": model.spec.ascii_chars_per_token,
+                "symbol_chars_per_token": model.spec.symbol_chars_per_token,
                 # กฎ round-trip เดียวกับข้างบน · ไม่คืน routing มาแล้วคอนโซล
                 # จะประกอบ spec ใหม่โดยไม่มีมัน = ทับ fallback เดิมหายทั้งชุด
                 # โดยที่ผู้ดูแลเห็นแค่ว่าตัวเองแก้ชื่อรุ่น

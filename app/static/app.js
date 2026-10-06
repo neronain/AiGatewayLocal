@@ -2277,6 +2277,10 @@ function editorValues() {
   if (state.cache.editingWideRate) {
     definition.spec.wide_chars_per_token = state.cache.editingWideRate;
   }
+  // อัตราฝั่ง ASCII (ตัวอักษร / สัญลักษณ์) ตั้งใน YAML และไม่มีช่องบนฟอร์ม — พาผ่านไปแบบเดียวกัน
+  for (const [field, value] of Object.entries(state.cache.editingAsciiRates || {})) {
+    if (value) definition.spec[field] = value;
+  }
   return definition;
 }
 
@@ -2322,6 +2326,10 @@ function openEditor(model) {
   // อัตราอักขระต่อ token ที่วัดจาก backend — ไม่มีช่องบนฟอร์ม ต้องพาผ่านไปเหมือนกัน
   // เดิมหายทุกครั้งที่กด Save แล้วโมเดลกลับไปนับด้วยค่าสำรอง 1.6
   state.cache.editingWideRate = model?.wide_chars_per_token ?? null;
+  state.cache.editingAsciiRates = {
+    ascii_chars_per_token: model?.ascii_chars_per_token ?? null,
+    symbol_chars_per_token: model?.symbol_chars_per_token ?? null,
+  };
 
   // Null-safe: the API returns every capability flag, including ones the form
   // deliberately has no box for (audio, embedding). Without the guard the first

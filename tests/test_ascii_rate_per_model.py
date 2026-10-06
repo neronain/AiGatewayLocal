@@ -259,3 +259,44 @@ def test_output_the_gateway_relayed_is_metered_at_the_same_rates():
     rates = TokenRates(letters=4.6, symbols=2.2)
     assert code.tokens(rates) == estimate_chars(LINE * 100, rates)
     assert code.tokens() == estimate_chars(LINE * 100)
+
+
+# ---------------------------------------------------------------------------
+# คอนโซลต้องไม่ลบอัตราฝั่ง ASCII ตอนกด Save (รอบตรวจ 2026-10-06)
+# ---------------------------------------------------------------------------
+# สองค่านี้ตั้งใน YAML และฟอร์มไม่มีช่องให้ — ตัวแก้โมเดลประกอบ spec ใหม่ทั้งก้อนจากสิ่งที่ API
+# คืนมา เดิมพาผ่านแค่ wide_chars_per_token → กด Save ครั้งเดียว (แม้แค่แก้ชื่อที่แสดง) แล้วอัตราที่
+# ตั้งไว้หาย prompt โค้ด/เครื่องมือกลับไปถูกนับด้วยค่ากลาง โดยไม่มีอะไรบนหน้าจอบอก — บั๊กเดียวกับที่
+# wide_chars_per_token เคยเป็น
+
+
+def test_the_model_listing_returns_the_ascii_rates_the_editor_must_send_back(
+    writable_config, client
+):
+    _set_rates(writable_config, client,
+               {"ascii_chars_per_token": 3.1, "symbol_chars_per_token": 1.7})
+    listed = client.get("/admin/models", headers=auth(client.admin_key)).json()
+    got = next(m for m in listed["data"] if m["alias"] == "gemma-vision")
+    assert got["ascii_chars_per_token"] == 3.1
+    assert got["symbol_chars_per_token"] == 1.7
+
+
+def test_console_save_sends_back_the_ascii_rates_it_was_given():
+    from tests.test_context_per_request import _run_console
+
+    document = _run_console(
+        "state.cache.editingAsciiRates = {ascii_chars_per_token: 3.1, symbol_chars_per_token: 1.7};"
+        "console.log(JSON.stringify(editorValues()));")
+    assert document["spec"]["ascii_chars_per_token"] == 3.1
+    assert document["spec"]["symbol_chars_per_token"] == 1.7
+
+
+def test_console_save_does_not_invent_ascii_rates():
+    from tests.test_context_per_request import _run_console
+
+    document = _run_console(
+        "state.cache.editingAsciiRates ="
+        " {ascii_chars_per_token: null, symbol_chars_per_token: null};"
+        "console.log(JSON.stringify(editorValues()));")
+    assert "ascii_chars_per_token" not in document["spec"]
+    assert "symbol_chars_per_token" not in document["spec"]
