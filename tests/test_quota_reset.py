@@ -70,9 +70,12 @@ def test_a_spent_allowance_can_be_handed_back(client):
 def test_the_person_can_work_again_immediately(client):
     """ที่ต้องการจริง ๆ — ไม่ใช่ตัวเลขสวย แต่คนคนนั้นยิงคำขอได้อีกครั้ง"""
     person = user(client)
-    client.post("/admin/quota-policies", headers=auth(client.admin_key),
-                json={"scope": "user", "subject_id": person["id"],
-                      "window": "day", "max_requests": 2})
+    # เดิมส่ง `subject_id` ซึ่งไม่ใช่ชื่อฟิลด์ — API รับไว้เงียบ ๆ แล้วสร้างนโยบาย "user"
+    # ที่ไม่เจาะจงใคร (= ใช้กับทุกคน) เทสจึงผ่านด้วยเหตุผลที่ผิด · ตอนนี้ถูกปฏิเสธ 400
+    made = client.post("/admin/quota-policies", headers=auth(client.admin_key),
+                       json={"scope": "user", "user_id": person["id"],
+                             "window": "day", "max_requests": 2})
+    assert made.status_code == 201, made.text
     plaintext = issue(client, person)["api_key"]
     spend(client, plaintext, times=2)
 

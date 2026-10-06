@@ -1774,6 +1774,205 @@ _EDITABLE_LIMITS = (
     "max_tokens_per_minute",
 )
 
+# ---------------------------------------------------------------------------
+# ตัวตรวจค่าของนโยบายโควตา — ตัวเดียว ใช้ทั้งตอนสร้าง (POST) และตอนแก้ (PATCH)
+#
+# เดิมสองทางตรวจไม่เท่ากัน (ตรวจพบ 2026-10-06): PATCH ปฏิเสธลิมิตติดลบ แต่ POST รับ
+# `max_requests: -1` แล้วตอบ 201 — จากนั้นทุกคนใต้นโยบายนั้นได้ `429 … (0 of -1)`
+# ตั้งแต่คำขอแรก · POST รับ `scope: "user"` ที่ไม่มี `user_id` แล้วนโยบาย "ของคนเดียว"
+# กลายเป็นของทุกคน · ค่าเดียวกันต้องหมายความอย่างเดียวกันไม่ว่าจะเข้ามาทางไหน และ
+# ค่าที่ไม่มีความหมายต้องถูกปฏิเสธตรงทางเข้า ไม่ใช่ไปโผล่เป็น 429 ของผู้ใช้
+#
+# ความหมายของลิมิตแต่ละตัว (เหมือนกันทั้งหกตัว — ตามที่ core/quota.py บังคับจริง):
+#   จำนวนเต็ม > 0   เพดาน
+#   0              ไม่จำกัดมิตินี้
+#   ไม่ส่งมา         ตอนสร้าง = 0 (ไม่จำกัด) · ตอนแก้ = ไม่แตะค่าเดิม
+#   null           **ปฏิเสธ** ทั้งสองทาง — ถ้ารับ ตอนสร้างมันจะแปลว่า "ไม่จำกัด" และตอนแก้
+#                  จะแปลว่า "ไม่จำกัด" หรือ "ไม่แตะ" แล้วแต่คนเดา · ทีมเคยเจ็บกับ
+#                  "ว่าง = ไม่จำกัด" บนรายการโมเดลของ key มาแล้ว
+#   ติดลบ · ไม่ใช่จำนวนเต็ม · เกิน 64 บิต   ปฏิเสธ
+# ---------------------------------------------------------------------------
+_POLICY_WINDOWS = ("hour", "day", "month", "term")
+_POLICY_SCOPES = ("global", "workspace", "user", "key")
+_POLICY_LIMIT_MAX = 2**63 - 1
+_POLICY_NAME_MAX = 128
+
+
+def _policy_window(value: Any) -> str:
+    if value not in _POLICY_WINDOWS:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST, "window must be hour, day, month or term.",
+            param="window",
+        )
+    return value
+
+
+def _policy_whole_number(field: str, value: Any) -> int:
+    # bool เป็น subclass ของ int ใน Python — `true` ต้องไม่กลายเป็นลิมิต 1
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST, f"{field} must be a whole number.", param=field
+        )
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise GatewayError(
+                ErrorCode.INVALID_REQUEST, f"{field} must be a whole number.", param=field
+            )
+        value = int(value)
+    return value
+
+
+def _policy_limit(field: str, value: Any) -> int:
+    if value is None:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            f"{field} cannot be null — send 0 for unlimited, or leave the field out.",
+            param=field,
+        )
+    value = _policy_whole_number(field, value)
+    if value < 0:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            f"{field} cannot be negative. Use 0 for unlimited.", param=field,
+        )
+    if value > _POLICY_LIMIT_MAX:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            f"{field} is too large (the maximum is {_POLICY_LIMIT_MAX:,}). "
+            "Use 0 for unlimited.",
+            param=field,
+        )
+    return value
+
+
+def _policy_days(field: str, value: Any) -> int | None:
+    """จำนวนวันจนหมดอายุ · null = ไม่มีวันหมดอายุ (ทั้งตอนสร้างและตอนแก้)"""
+    if value is None:
+        return None
+    days = _policy_whole_number(field, value)
+    if days < 1:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            f"{field} must be at least 1. Use null for a policy that does not expire.",
+            param=field,
+        )
+    if days > 36500:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST, f"{field} is too large.", param=field
+        )
+    return days
+
+
+def _policy_id_field(payload: dict[str, Any], field: str) -> str | None:
+    """id ของเป้าหมาย · "" กับ null คือ "ไม่ได้ระบุ" เหมือนกัน (ฟอร์มที่ยังไม่ได้เลือกส่ง "")"""
+    value = payload.get(field)
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise GatewayError(ErrorCode.INVALID_REQUEST, f"{field} must be a string.", param=field)
+    return value
+
+
+async def _policy_target(
+    session: AsyncSession, state: AppState, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """scope และเป้าหมายของนโยบายใหม่ — ตรวจว่าเข้ากัน และเป้าหมายมีอยู่จริง
+
+    `scope` บอกว่านโยบายนี้เป็นของใคร เป้าหมายต้องตรงกับที่ scope บอก: scope ที่เจาะจง
+    ต้องมีเป้าหมายของมัน และเป้าหมายที่ scope ไม่ได้พูดถึงต้องไม่ถูกส่งมา — ตัวตัดสิน
+    (`QuotaService._winner`) ดูที่ *เป้าหมาย* ไม่ได้ดูที่คำว่า scope นโยบาย "global" ที่มี
+    user_id จึงทำงานเป็นนโยบายของคนคนเดียวภายใต้ป้ายที่บอกว่าเป็นของทุกคน
+
+    เป้าหมายที่ไม่มีอยู่จริงก็ถูกปฏิเสธที่นี่: บน PostgreSQL id ที่ไม่มีอยู่ชน foreign key แล้ว
+    ตอบ 500 ส่วน alias ที่พิมพ์ผิดได้นโยบายที่ไม่มีวันถูกใช้โดยไม่มีอะไรบอก
+    """
+    user_id = _policy_id_field(payload, "user_id")
+    workspace_id = _policy_id_field(payload, "workspace_id")
+    api_key_id = _policy_id_field(payload, "api_key_id")
+    model_alias = _policy_id_field(payload, "model_alias")
+    access_group_id = _policy_id_field(payload, "access_group_id")
+
+    scope = payload.get("scope")
+    if scope is None:
+        # ไม่ได้บอก scope = อ่านจากเป้าหมายที่ส่งมา · `{"user_id": …}` ล้วน ๆ เคยถูกเก็บ
+        # ด้วยป้าย "global" ทั้งที่ผูกคนคนเดียว — ทำงานถูกแต่หน้าจอบอกผิด
+        scope = ("key" if api_key_id else "user" if user_id
+                 else "workspace" if workspace_id else "global")
+    if scope not in _POLICY_SCOPES:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST, "scope must be global, workspace, user or key.",
+            param="scope",
+        )
+
+    def refuse(message: str, param: str) -> GatewayError:
+        return GatewayError(ErrorCode.INVALID_REQUEST, message, param=param)
+
+    if scope == "key":
+        if not api_key_id:
+            raise refuse("A key-scoped policy needs api_key_id.", "api_key_id")
+        # เพดานของ key ไม่ใช่ที่ทางสำหรับเจาะจงคนหรือวิชา — สองเรื่องนี้มีนโยบายของ
+        # ตัวเองอยู่แล้ว และการรวมกันทำให้เดาไม่ออกว่ากฎไหนบังคับใช้จริง
+        if user_id or workspace_id:
+            raise refuse(
+                "A key-scoped policy names only the key — set user or workspace "
+                "limits with their own policy.",
+                "user_id" if user_id else "workspace_id",
+            )
+        # เพดานของ key วัดทุกอย่างที่ใบนั้นทำ · รับ model_alias ไว้เฉย ๆ = เพดานที่ป้ายบอก
+        # ว่า "เฉพาะ coding" แต่นับทุกโมเดล
+        if model_alias or access_group_id:
+            raise refuse(
+                "A key-scoped policy covers everything the key does — it cannot "
+                "be narrowed to a model or a bundle.",
+                "model_alias" if model_alias else "access_group_id",
+            )
+    else:
+        if api_key_id:
+            raise refuse('api_key_id belongs to a policy with scope "key".', "api_key_id")
+        if scope == "user" and not user_id:
+            # เคสที่ตรวจพบ: ไม่มี user_id = ไม่เจาะจงใคร = ใช้กับทุกคน ภายใต้ป้าย "user"
+            raise refuse("A user-scoped policy needs user_id.", "user_id")
+        if scope == "workspace" and not workspace_id:
+            raise refuse("A workspace-scoped policy needs workspace_id.", "workspace_id")
+        if scope != "user" and user_id:
+            raise refuse('A policy that names a person has scope "user".', "user_id")
+        if scope == "global" and workspace_id:
+            raise refuse(
+                'A policy that names a workspace has scope "workspace".', "workspace_id"
+            )
+
+    if model_alias and access_group_id:
+        raise refuse(
+            "Name one model or one bundle, not both — two answers to the same "
+            "question is a policy nobody can predict.",
+            "access_group_id",
+        )
+    if user_id and await session.get(User, user_id) is None:
+        raise refuse("User not found.", "user_id")
+    if workspace_id and await session.get(Workspace, workspace_id) is None:
+        raise refuse("Workspace not found.", "workspace_id")
+    if api_key_id and await session.get(ApiKey, api_key_id) is None:
+        raise refuse("API key not found.", "api_key_id")
+    if access_group_id and await session.get(AccessGroup, access_group_id) is None:
+        raise refuse("Access group not found.", "access_group_id")
+    if model_alias:
+        known = set(state.registry.snapshot.models)
+        if model_alias not in known:
+            raise GatewayError(
+                ErrorCode.MODEL_NOT_FOUND,
+                f"Unknown model alias: {model_alias}.",
+                param="model_alias",
+                details={"known_models": sorted(known)},
+            )
+    return {
+        "scope": scope,
+        "workspace_id": workspace_id,
+        "user_id": user_id,
+        "api_key_id": api_key_id,
+        "model_alias": model_alias,
+        "access_group_id": access_group_id,
+    }
+
 
 @router.patch("/quota-policies/{policy_id}")
 async def update_quota_policy(
@@ -1795,43 +1994,20 @@ async def update_quota_policy(
 
     changed: dict[str, Any] = {}
 
+    # ตรวจทุกค่าด้วยตัวตรวจเดียวกับตอนสร้าง (ดูหัวข้อเหนือ _POLICY_WINDOWS)
     if "days" in payload:
-        days = payload["days"]
-        if days is None:
-            policy.expires_at = None
-            changed["days"] = None
-        else:
-            try:
-                days = int(days)
-            except (TypeError, ValueError):
-                raise GatewayError(
-                    ErrorCode.INVALID_REQUEST, "days must be a whole number."
-                ) from None
-            if days < 1:
-                raise GatewayError(ErrorCode.INVALID_REQUEST, "days must be at least 1.")
-            policy.expires_at = utcnow() + timedelta(days=days)
-            changed["days"] = days
+        days = _policy_days("days", payload["days"])
+        policy.expires_at = utcnow() + timedelta(days=days) if days else None
+        changed["days"] = days
 
     if "window" in payload:
-        window = payload["window"]
-        if window not in {"hour", "day", "month", "term"}:
-            raise GatewayError(
-                ErrorCode.INVALID_REQUEST, "window must be hour, day, month or term."
-            )
-        policy.window = window
-        changed["window"] = window
+        policy.window = _policy_window(payload["window"])
+        changed["window"] = policy.window
 
     for field in _EDITABLE_LIMITS:
         if field not in payload:
             continue
-        try:
-            value = int(payload[field])
-        except (TypeError, ValueError):
-            raise GatewayError(
-                ErrorCode.INVALID_REQUEST, f"{field} must be a whole number."
-            ) from None
-        if value < 0:
-            raise GatewayError(ErrorCode.INVALID_REQUEST, f"{field} cannot be negative.")
+        value = _policy_limit(field, payload[field])
         setattr(policy, field, value)
         changed[field] = value
 
@@ -1978,71 +2154,55 @@ async def purge_revoked_api_keys(
 # ---------------------------------------------------------------------------
 # Quota policies
 # ---------------------------------------------------------------------------
-class QuotaPolicyIn(BaseModel):
-    # ชื่อที่คนอ่านออกว่านโยบายนี้เขียนไว้เพื่ออะไร · scope+เป้าหมายบอกโค้ดได้ แต่ไม่ได้
-    # บอกคนที่กำลังมองอยู่หกใบว่าใบไหนคือใบที่เขียนไว้ตอนสอบ
-    name: str = ""
-    scope: str = "global"
-    workspace_id: str | None = None
-    user_id: str | None = None
-    # เพดานของ key ใบเดียว · เป็นด่านที่ *บวกเข้ามา* ไม่ได้แทนโควตาของคน
-    api_key_id: str | None = None
-    model_alias: str | None = None
-    # หรือทั้งมัด · มัดคือชุดโมเดลที่มีชื่ออยู่แล้ว จึงเล็งไปที่มัดแทนที่จะสร้างรายชื่อ
-    # โมเดลชุดที่สองซึ่งต้องคอยไล่ให้ตรงกัน
-    access_group_id: str | None = None
-    window: str = "day"
-    max_requests: int = 0
-    max_input_tokens: int = 0
-    max_output_tokens: int = 0
-    max_images: int = 0
-    # ลิมิตต่อนาที นับต่อคน · 0 = ไม่จำกัด ซึ่งเป็นค่าตั้งต้น
-    max_requests_per_minute: int = 0
-    max_tokens_per_minute: int = 0
-    # ให้สิทธิ์ชั่วคราว · ครบกำหนดแล้วนโยบายเลิกมีผลเอง ไม่ต้องจำไปลบ
-    expires_in_days: int | None = None
-
-
 @router.post("/quota-policies", status_code=201)
 async def create_quota_policy(
-    payload: QuotaPolicyIn,
+    payload: dict[str, Any],
     request: Request,
     actor: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
-    if payload.window not in {"hour", "day", "month", "term"}:
-        raise GatewayError(ErrorCode.INVALID_REQUEST, "window must be hour, day, month or term.")
-    if payload.model_alias and payload.access_group_id:
+    """Create a policy.
+
+    ฟิลด์ (ทั้งหมดไม่บังคับ ยกเว้นเป้าหมายที่ scope ต้องการ):
+
+      name                      ชื่อที่คนอ่านออก · ไม่เกิน 128 ตัวอักษร
+      scope                     global | workspace | user | key · ไม่ส่ง = อ่านจากเป้าหมาย
+                                ที่ส่งมา (ไม่มีเป้าหมาย = global) · ส่งมาต้องตรงกับเป้าหมาย
+      workspace_id · user_id    เป้าหมายของ scope นั้น — scope ที่เจาะจงต้องมี
+      api_key_id                เฉพาะ scope "key": เพดานของใบเดียว เป็นด่านที่ *บวกเข้ามา*
+      model_alias | access_group_id   เจาะจงโมเดลเดียว หรือทั้งมัด (อย่างใดอย่างหนึ่ง)
+      window                    hour | day (ค่าตั้งต้น) | month | term
+      max_requests · max_input_tokens · max_output_tokens · max_images
+      max_requests_per_minute · max_tokens_per_minute
+                                จำนวนเต็ม ≥ 0 · 0 = ไม่จำกัด (ค่าตั้งต้น) · null ถูกปฏิเสธ
+      expires_in_days           จำนวนเต็ม ≥ 1 · null/ไม่ส่ง = ไม่มีวันหมดอายุ
+
+    ตรวจด้วยตัวตรวจเดียวกับ PATCH — ดูหัวข้อเหนือ `_POLICY_WINDOWS`
+    """
+    name = payload.get("name", "")
+    if name is None:
+        name = ""
+    if not isinstance(name, str) or len(name) > _POLICY_NAME_MAX:
         raise GatewayError(
             ErrorCode.INVALID_REQUEST,
-            "Name one model or one bundle, not both — two answers to the same "
-            "question is a policy nobody can predict.",
+            f"name must be text of at most {_POLICY_NAME_MAX} characters.", param="name",
         )
-    if payload.access_group_id and not await session.get(
-        AccessGroup, payload.access_group_id
-    ):
-        raise GatewayError(ErrorCode.INVALID_REQUEST, "Access group not found.")
-    if payload.scope == "key" and not payload.api_key_id:
-        raise GatewayError(ErrorCode.INVALID_REQUEST, "A key-scoped policy needs api_key_id.")
-    if payload.api_key_id:
-        if not await session.get(ApiKey, payload.api_key_id):
-            raise GatewayError(ErrorCode.INVALID_REQUEST, "API key not found.")
-        # เพดานของ key ไม่ใช่ที่ทางสำหรับเจาะจงคนหรือวิชา — สองเรื่องนี้มีนโยบายของ
-        # ตัวเองอยู่แล้ว และการรวมกันทำให้เดาไม่ออกว่ากฎไหนบังคับใช้จริง
-        if payload.user_id or payload.workspace_id:
-            raise GatewayError(
-                ErrorCode.INVALID_REQUEST,
-                "A key-scoped policy names only the key — set user or workspace "
-                "limits with their own policy.",
-            )
-    fields = payload.model_dump()
-    days = fields.pop("expires_in_days", None)
+    fields: dict[str, Any] = {
+        "name": name,
+        **await _policy_target(session, state, payload),
+        "window": _policy_window(payload.get("window", "day")),
+    }
+    for limit in _EDITABLE_LIMITS:
+        fields[limit] = _policy_limit(limit, payload[limit]) if limit in payload else 0
+    days = _policy_days("expires_in_days", payload.get("expires_in_days"))
+
     policy = QuotaPolicy(
         **fields,
         expires_at=utcnow() + timedelta(days=days) if days else None,
     )
     session.add(policy)
-    await audit(session, request, actor, "quota.create", "quota", payload.scope)
+    await audit(session, request, actor, "quota.create", "quota", fields["scope"])
     await session.commit()
     return {
         "id": policy.id,
