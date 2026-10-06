@@ -92,12 +92,41 @@ def _content_parts_to_openai(content: Any) -> list[dict] | str | None:
     return parts
 
 
+# บทบาทของ Responses API ที่ chat completions ไม่มี
+#
+# `developer` คือชื่อใหม่ของ `system` ฝั่ง OpenAI (Codex ส่งคำสั่งเรื่อง sandbox/สิทธิ์มาใน
+# บทบาทนี้ทุกคำขอ) · chat template ของโมเดลในบ้านรู้จักแค่ system/user/assistant/tool —
+# บทบาทที่ไม่รู้จักถูกบาง template ปฏิเสธทั้งคำขอ และถูกบาง template ข้ามไปเงียบ ๆ ซึ่งแย่กว่า:
+# โมเดลไม่เคยเห็นคำสั่งพวกนั้นเลยและไม่มี error ให้ใครรู้
+_CHAT_ROLE = {"developer": "system"}
+
+
+def _system_text(content: list[dict] | str) -> str | None:
+    """ข้อความของ system message ที่รวมเข้าก้อนแรกได้ · None = มีอย่างอื่นนอกจากข้อความ
+
+    ทำไมต้องรวม ไม่ใช่แค่เปลี่ยนชื่อบทบาท: `instructions` กลายเป็น system message ตัวแรกอยู่
+    แล้ว ถ้า item `developer` ที่ตามมากลายเป็น system message *ตัวที่สอง* template ของ Qwen3
+    รุ่นใหม่โยน "System message must be at the beginning." และของ Gemma/Mistral ที่บังคับสลับ
+    user/assistant ก็ไม่รับ · system ก้อนเดียวที่ตำแหน่งแรกคือรูปเดียวที่ทุก template รับ
+    """
+    if isinstance(content, str):
+        return content
+    if all(part.get("type") == "text" for part in content):
+        return "\n\n".join(part["text"] for part in content)
+    return None
+
+
 def responses_to_openai_request(body: dict[str, Any], upstream_model: str) -> dict[str, Any]:
     messages: list[dict] = []
 
+    # ข้อความระบบทั้งหมดที่มาก่อนบทสนทนา — `instructions` กับ item บทบาท system/developer
+    # ที่อยู่หัว `input` — รวมเป็น system message **ก้อนเดียวที่ตำแหน่งแรก** (ดู _system_text)
+    preamble: list[str] = []
     instructions = body.get("instructions")
     if isinstance(instructions, str) and instructions:
-        messages.append({"role": "system", "content": instructions})
+        preamble.append(instructions)
+    # ยังอยู่ในช่วงหัวของ input ไหม — จบทันทีที่เจอ item แรกที่เป็นบทสนทนาจริง
+    in_preamble = True
 
     payload_input = body.get("input")
     if isinstance(payload_input, str):
@@ -123,6 +152,7 @@ def responses_to_openai_request(body: dict[str, Any], upstream_model: str) -> di
         itype = item.get("type")
 
         if itype == "function_call":
+            in_preamble = False
             pending_calls.append(
                 {
                     "id": item.get("call_id") or item.get("id") or _item_id("call"),
@@ -138,6 +168,7 @@ def responses_to_openai_request(body: dict[str, Any], upstream_model: str) -> di
         flush_calls()
 
         if itype == "function_call_output":
+            in_preamble = False
             output = item.get("output")
             messages.append(
                 {
@@ -152,13 +183,20 @@ def responses_to_openai_request(body: dict[str, Any], upstream_model: str) -> di
             # ไม่ส่งต่อ: เป็นร่องรอยความคิดของ *โมเดลอื่น* backend อ่านแล้วสับสนเปล่า ๆ
             continue
 
-        role = item.get("role") or "user"
+        role = _CHAT_ROLE.get(item.get("role") or "user", item.get("role") or "user")
         content = _content_parts_to_openai(item.get("content"))
         if content is None:
             continue
+        if role == "system" and in_preamble and (text := _system_text(content)) is not None:
+            preamble.append(text)
+            continue
+        in_preamble = False
         messages.append({"role": role, "content": content})
 
     flush_calls()
+
+    if preamble:
+        messages.insert(0, {"role": "system", "content": "\n\n".join(preamble)})
 
     payload: dict[str, Any] = {"model": upstream_model, "messages": messages}
     if body.get("max_output_tokens") is not None:

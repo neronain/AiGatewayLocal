@@ -373,6 +373,9 @@ def profile_responses_request(body: dict[str, Any], policy: VisionPolicy) -> Req
     profile.requires_streaming = bool(body.get("stream"))
     if body.get("tools") or body.get("tool_choice"):
         profile.requires_tools = True
+    # นิยาม tool ถูกส่งทุกเทิร์น — ของ Codex อย่างเดียวหลายพัน token · profiler อีกสองตัวนับ
+    # มาตั้งแต่ต้น ตัวนี้ไม่นับ prompt ของ Codex จึงถูกประมาณต่ำกว่าที่ backend จะเห็นเสมอ
+    profile.add_text(_json_text(body.get("tools")))
 
     instructions = body.get("instructions")
     if isinstance(instructions, str):
@@ -404,7 +407,10 @@ def profile_responses_request(body: dict[str, Any], policy: VisionPolicy) -> Req
         itype = item.get("type")
         if itype in {"function_call", "function_call_output"}:
             profile.requires_tools = True
-            profile.add_text(str(item.get("arguments") or item.get("output") or ""))
+            # ชื่อ tool ที่โมเดลเรียกก็ถูก render ลง prompt เหมือน `tool_use.name` ของ Anthropic
+            profile.add_text(str(item.get("name") or ""))
+            profile.add_text(_json_text(item.get("arguments")))
+            profile.add_text(_json_text(item.get("output")))
             continue
 
         content = item.get("content")
