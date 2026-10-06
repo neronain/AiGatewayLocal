@@ -40,7 +40,7 @@ from app.core.errors import ErrorCode, GatewayError
 from app.core.jsonio import FastJSONResponse
 from app.core.multimodal import profile_anthropic_request
 from app.core.rules import resolve_route
-from app.core.tokens import TokenUsage, resolve_usage
+from app.core.tokens import OutputMeter, TokenUsage, resolve_usage
 from app.db.session import get_session, release_connection
 from app.registry.schema import Endpoint, ModelDefinition
 from app.state import AppState, get_state
@@ -234,6 +234,9 @@ async def _complete_messages(build: BuildAttempt, ctx: _RequestContext) -> FastJ
     attempt: _Attempt = call.extra
     translate = attempt.translate
 
+    # นับจากคำตอบของ backend ก่อนแปล — ใช้เมื่อมันไม่รายงาน usage มา
+    relayed = OutputMeter()
+    lifecycle.meter_for(call.dialect)(relayed, data)
     reported = data.get("usage")
 
     if translate:
@@ -241,7 +244,7 @@ async def _complete_messages(build: BuildAttempt, ctx: _RequestContext) -> FastJ
     else:
         data["model"] = alias
 
-    usage = resolve_usage(ctx.profile, reported, _rate(ctx))
+    usage = resolve_usage(ctx.profile, reported, _rate(ctx), relayed=relayed)
     data["usage"] = {
         "input_tokens": usage.input_tokens,
         "output_tokens": usage.output_tokens,
@@ -282,6 +285,11 @@ async def _stream_messages(
     attempt: _Attempt = stream.call.extra
     translate = attempt.translate
     upstream_usage: dict | None = None
+    # native: backend บอก output สุดท้ายใน message_delta · ก่อนถึงตรงนั้นตัวเลขใน
+    # message_start เป็นแค่ค่าตั้งต้น (1) ซึ่งห้ามเอาไปบันทึกแทนสิ่งที่ส่งต่อไปแล้ว
+    saw_final_output = translate
+    relayed = OutputMeter()
+    meter = lifecycle.meter_for(stream.call.dialect)
     adapter = (
         AnthropicStreamAdapter(
             alias,
@@ -292,13 +300,17 @@ async def _stream_messages(
     )
 
     def usage() -> TokenUsage:
-        return resolve_usage(ctx.profile, upstream_usage, _rate(ctx))
+        reported = upstream_usage
+        if reported and not saw_final_output:
+            reported = {k: v for k, v in reported.items() if k != "output_tokens"}
+        return resolve_usage(ctx.profile, reported, _rate(ctx), relayed=relayed)
 
     async def produce() -> AsyncIterator[bytes]:
-        nonlocal upstream_usage
+        nonlocal upstream_usage, saw_final_output
         async for event, _data, chunk in stream.payloads():
             if chunk is None:
                 continue
+            meter(relayed, chunk)
 
             if adapter is None:
                 # Native stream: relay, masking the model name.
@@ -309,6 +321,8 @@ async def _stream_messages(
                 usage_block = _extract_anthropic_usage(chunk)
                 if usage_block:
                     upstream_usage = {**(upstream_usage or {}), **usage_block}
+                    if chunk.get("type") == "message_delta":
+                        saw_final_output = True
                 yield format_json_sse(chunk, event=event or chunk.get("type"))
                 continue
 
@@ -318,7 +332,10 @@ async def _stream_messages(
                 yield format_json_sse(ev_payload, event=ev_name)
 
         if adapter is not None:
-            for ev_name, ev_payload in adapter.finish_events():
+            final = usage()
+            for ev_name, ev_payload in adapter.finish_events(
+                input_tokens=final.input_tokens, output_tokens=final.output_tokens
+            ):
                 yield format_json_sse(ev_payload, event=ev_name)
 
     def render_error(exc: GatewayError) -> list[bytes]:

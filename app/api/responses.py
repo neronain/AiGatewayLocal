@@ -44,7 +44,7 @@ from app.core.errors import ErrorCode, GatewayError
 from app.core.jsonio import FastJSONResponse
 from app.core.multimodal import profile_responses_request
 from app.core.rules import resolve_route
-from app.core.tokens import TokenUsage, resolve_usage
+from app.core.tokens import OutputMeter, TokenUsage, resolve_usage
 from app.db.session import get_session, release_connection
 from app.registry.schema import Endpoint, ModelDefinition
 from app.state import AppState, get_state
@@ -243,6 +243,9 @@ async def _complete_response(build: BuildAttempt, ctx: _RequestContext) -> FastJ
     call, endpoint, data = await lifecycle.complete(ctx, _plan(build))
     translate = call.extra.translate
 
+    # นับจากคำตอบของ backend ก่อนแปล — ใช้เมื่อมันไม่รายงาน usage มา
+    relayed = OutputMeter()
+    lifecycle.meter_for(call.dialect)(relayed, data)
     reported = _openai_shaped_usage(data.get("usage"))
 
     if translate:
@@ -250,7 +253,7 @@ async def _complete_response(build: BuildAttempt, ctx: _RequestContext) -> FastJ
     else:
         data["model"] = alias
 
-    usage = resolve_usage(ctx.profile, reported, _rate(ctx))
+    usage = resolve_usage(ctx.profile, reported, _rate(ctx), relayed=relayed)
     data["usage"] = {
         "input_tokens": usage.input_tokens,
         "output_tokens": usage.output_tokens,
@@ -304,19 +307,22 @@ async def _stream_response(
     alias = ctx.requested_alias
     translate = stream.call.extra.translate
     upstream_usage: dict | None = None
+    relayed = OutputMeter()
+    meter = lifecycle.meter_for(stream.call.dialect)
     adapter = ResponsesStreamAdapter(alias)
     # native: จำ id กับลำดับของ backend ไว้ เผื่อต้องปิดเองด้วย response.failed
     native_id: str | None = None
     native_seq = 0
 
     def usage() -> TokenUsage:
-        return resolve_usage(ctx.profile, upstream_usage, _rate(ctx))
+        return resolve_usage(ctx.profile, upstream_usage, _rate(ctx), relayed=relayed)
 
     async def produce() -> AsyncIterator[bytes]:
         nonlocal upstream_usage, native_id, native_seq
         async for event, _data, chunk in stream.payloads():
             if chunk is None:
                 continue
+            meter(relayed, chunk)
 
             if not translate:
                 # Native stream: relay, masking the model name.
@@ -337,16 +343,23 @@ async def _stream_response(
                 yield format_json_sse(ev_payload, event=ev_name)
 
         if translate:
-            for ev_name, ev_payload in adapter.finish_events():
+            final = usage()
+            for ev_name, ev_payload in adapter.finish_events(
+                input_tokens=final.input_tokens, output_tokens=final.output_tokens
+            ):
                 yield format_json_sse(ev_payload, event=ev_name)
 
     def render_error(exc: GatewayError) -> list[bytes]:
         if not translate:
             adapter.resume(native_id, native_seq)
+        final = usage()
         return [
             format_json_sse(ev_payload, event=ev_name)
             for ev_name, ev_payload in adapter.fail_events(
-                _FAILURE_CODES.get(exc.code, "server_error"), exc.message
+                _FAILURE_CODES.get(exc.code, "server_error"),
+                exc.message,
+                input_tokens=final.input_tokens,
+                output_tokens=final.output_tokens,
             )
         ]
 

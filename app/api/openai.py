@@ -43,7 +43,7 @@ from app.core.jsonio import FastJSONResponse
 from app.core.multimodal import RequestProfile, profile_openai_request
 from app.core.quota import Consumption
 from app.core.rules import fallback_models, resolve_route
-from app.core.tokens import TokenUsage, resolve_usage
+from app.core.tokens import OutputMeter, TokenUsage, resolve_usage
 from app.db.session import get_session, release_connection
 from app.registry.schema import Endpoint, ModelDefinition
 from app.state import AppState, get_state
@@ -688,7 +688,10 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> FastJSONR
 
     # The member asked for the alias; never leak the upstream repository name.
     data["model"] = alias
-    usage = resolve_usage(ctx.profile, data.get("usage"), _rate(ctx))
+    # backend ที่ตอบ 200 โดยไม่มีบล็อก usage เคยถูกบันทึก output เป็น 0 ทั้งที่ส่งคำตอบเต็ม
+    relayed = OutputMeter()
+    lifecycle.meter_chat(relayed, data)
+    usage = resolve_usage(ctx.profile, data.get("usage"), _rate(ctx), relayed=relayed)
     _augment_usage_payload(data, usage)
     await ctx.finalize(usage)
 
@@ -754,6 +757,7 @@ async def _stream_chat(
 
     alias = ctx.requested_alias
     upstream_usage: dict | None = None
+    relayed = OutputMeter()
 
     async def produce() -> AsyncIterator[bytes]:
         nonlocal upstream_usage
@@ -769,6 +773,7 @@ async def _stream_chat(
                 if not stream.call.client_wants_usage and not chunk.get("choices"):
                     continue
 
+            lifecycle.meter_chat(relayed, chunk)
             chunk["model"] = alias
             yield format_sse(jsonio.dumpb(chunk))
 
@@ -780,7 +785,7 @@ async def _stream_chat(
         return [format_sse(jsonio.dumpb(exc.to_openai(ctx.request_id))), format_sse(DONE)]
 
     def usage() -> TokenUsage:
-        return resolve_usage(ctx.profile, upstream_usage, _rate(ctx))
+        return resolve_usage(ctx.profile, upstream_usage, _rate(ctx), relayed=relayed)
 
     return StreamingResponse(
         lifecycle.relay(ctx, stream, produce, render_error, usage),

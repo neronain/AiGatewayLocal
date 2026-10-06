@@ -163,16 +163,72 @@ class TokenUsage:
         return self.input_tokens + self.output_tokens
 
 
+class OutputMeter:
+    """นับสิ่งที่ backend เขียนออกมาและเกตเวย์ส่งต่อ — ใช้เมื่อ backend ไม่รายงาน usage
+
+    เดิมไม่มีตัวนี้: `resolve_usage(profile, None)` ตอบ `output_tokens=0` ตายตัว ทั้งที่
+    เกตเวย์เป็นคนส่งทุก delta ออกไปเองกับมือ · usage chunk เป็นสิ่ง *สุดท้าย* ที่ backend ส่ง
+    อะไรก็ตามที่จบ stream ก่อนถึงตรงนั้นจึงได้ output ฟรีทั้งก้อน — ผู้เรียกกด Esc ตอนคำตอบ
+    ใกล้จบ · backend หลุดกลางทาง · หรือ backend ที่ตอบ 200 โดยไม่มีบล็อก `usage` เลย
+    (ตรวจพบ 2026-10-06: คำตอบ 2,000 อักขระ แถว usage บันทึก 0 estimated)
+
+    เก็บ *จำนวนอักขระแยกชนิด* ไม่ใช่ตัวข้อความ และไม่ปัดเศษต่อชิ้น: delta หนึ่งชิ้นยาว 2–4
+    อักขระ ถ้าประมาณทีละชิ้นแล้วปัดลง ทุกชิ้นจะเป็น 0 · ปัดครั้งเดียวตอนจบด้วยสูตรเดียวกับ
+    ฝั่ง input (`estimate_text_tokens`) และอัตราของโมเดลเดียวกัน
+    """
+
+    __slots__ = ("letters", "symbols", "wide")
+
+    def __init__(self) -> None:
+        self.letters = 0
+        self.symbols = 0
+        self.wide = 0
+
+    def add(self, text: object) -> None:
+        if not isinstance(text, str) or not text:
+            return
+        if text.isascii():
+            symbols = len(_ASCII_SYMBOL.findall(text))
+            self.symbols += symbols
+            self.letters += len(text) - symbols
+            return
+        plain = text.encode("ascii", "ignore").decode("ascii")
+        symbols = len(_ASCII_SYMBOL.findall(plain))
+        self.wide += len(text) - len(plain)
+        self.symbols += symbols
+        self.letters += len(plain) - symbols
+
+    @property
+    def chars(self) -> int:
+        return self.letters + self.symbols + self.wide
+
+    def tokens(self, rate: float | None = None) -> int:
+        if not self.chars:
+            return 0
+        estimate = (int(self.letters / CHARS_PER_TOKEN)
+                    + int(self.symbols / SYMBOL_CHARS_PER_TOKEN)
+                    + int(self.wide / wide_rate(rate)))
+        # ส่งเนื้อหาออกไปแล้ว = ไม่มีวันเป็น 0 · "ok" สองตัวอักษรปัดลงได้ 0 พอดี
+        return max(estimate, 1)
+
+
 def resolve_usage(profile: RequestProfile, upstream_usage: dict | None,
-                  rate: float | None = None) -> TokenUsage:
+                  rate: float | None = None, *,
+                  relayed: OutputMeter | None = None) -> TokenUsage:
     """Turn a backend usage object (or its absence) into the split we store.
 
     OpenAI-shaped backends report `prompt_tokens` / `completion_tokens`;
     Anthropic-shaped ones report `input_tokens` / `output_tokens`. Neither
     separates visual from text, so we attribute the estimated visual portion and
     treat the remainder as text.
+
+    `relayed` คือสิ่งที่ส่งต่อไปแล้วจริง (ดู OutputMeter) · ใช้ก็ต่อเมื่อ backend ไม่ได้บอก
+    จำนวน output มาเอง — ตัวเลขที่ backend วัดชนะค่าประมาณเสมอ · แถวที่ output มาจากการ
+    ประมาณติดป้าย `estimated` แม้ input จะมาจาก backend เพราะป้ายนี้มีไว้บอกว่า "ในแถวนี้
+    มีตัวเลขที่ไม่ได้วัด" ไม่ใช่ "ทุกตัวเป็นค่าประมาณ"
     """
     visual_estimate = estimate_visual_tokens(profile)
+    relayed_tokens = relayed.tokens(rate) if relayed is not None else 0
 
     if upstream_usage:
         prompt = int(
@@ -187,17 +243,18 @@ def resolve_usage(profile: RequestProfile, upstream_usage: dict | None,
         )
         if prompt or completion:
             visual = min(visual_estimate, prompt) if prompt else visual_estimate
+            measured = completion > 0 or relayed_tokens == 0
             return TokenUsage(
                 text_input_tokens=max(prompt - visual, 0),
                 visual_input_tokens=visual,
-                output_tokens=completion,
-                accounting="upstream",
+                output_tokens=completion if measured else relayed_tokens,
+                accounting="upstream" if measured else "estimated",
             )
 
     return TokenUsage(
         text_input_tokens=estimate_text_tokens(profile, rate),
         visual_input_tokens=visual_estimate,
-        output_tokens=0,
+        output_tokens=relayed_tokens,
         accounting="estimated",
     )
 

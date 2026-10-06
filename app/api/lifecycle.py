@@ -24,6 +24,7 @@ stream กับไม่ stream อีกอย่างละสำเนา) 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator, Callable, Iterable
 from dataclasses import dataclass
@@ -33,10 +34,11 @@ from fastapi import Request
 
 from app.core.errors import ErrorCode, GatewayError, describe
 from app.core.routing import RETRYABLE_ERRORS, is_request_fault, is_retryable_status
-from app.core.tokens import TokenUsage, resolve_usage
+from app.core.tokens import OutputMeter, TokenUsage, resolve_usage
 from app.registry.schema import Endpoint
 from app.upstream import client as upstream
 from app.upstream.client import UpstreamBodyError
+from app.upstream.protocol.reasoning import reasoning_text
 from app.upstream.sse import DONE, iter_sse_payloads, parse_chunk
 
 log = logging.getLogger(__name__)
@@ -91,6 +93,97 @@ def ask_for_usage(call: Call) -> None:
     call.client_wants_usage = bool(options.get("include_usage"))
     options["include_usage"] = True
     call.payload["stream_options"] = options
+
+
+# ---------------------------------------------------------------------------
+# สิ่งที่ส่งต่อไปแล้ว — ใช้ประมาณ output เมื่อ backend ไม่รายงาน usage
+# ---------------------------------------------------------------------------
+def _meter_tool_calls(meter: OutputMeter, calls: Any) -> None:
+    for call in calls or []:
+        if not isinstance(call, dict):
+            continue
+        function = call.get("function") or {}
+        if isinstance(function, dict):
+            meter.add(function.get("name"))
+            meter.add(function.get("arguments"))
+
+
+def meter_chat(meter: OutputMeter, payload: dict[str, Any]) -> None:
+    """นับสิ่งที่โมเดลเขียนใน chunk หรือคำตอบเต็มของ chat completions
+
+    นับทั้งคำตอบ ความคิด และชื่อ+อาร์กิวเมนต์ของ tool call — ทั้งหมดคือ token ที่ backend
+    ผลิตและจะอยู่ใน `completion_tokens` ถ้ามันรายงานมา · ความคิดนับแม้ surface จะไม่ได้ส่งต่อ
+    (ผู้เรียก /v1/messages ที่ไม่ได้ขอ thinking) ด้วยเหตุผลเดียวกัน
+    """
+    for choice in payload.get("choices") or []:
+        if not isinstance(choice, dict):
+            continue
+        part = choice.get("delta") or choice.get("message") or {}
+        if not isinstance(part, dict):
+            continue
+        content = part.get("content")
+        if isinstance(content, str):
+            meter.add(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    meter.add(block.get("text"))
+        meter.add(reasoning_text(part))
+        _meter_tool_calls(meter, part.get("tool_calls"))
+
+
+def meter_anthropic(meter: OutputMeter, payload: dict[str, Any]) -> None:
+    """เหมือน meter_chat สำหรับ backend ที่พูด Anthropic เอง — event ของ stream หรือ message เต็ม"""
+    kind = payload.get("type")
+    if kind == "content_block_delta":
+        delta = payload.get("delta") or {}
+        if isinstance(delta, dict):
+            meter.add(delta.get("text"))
+            meter.add(delta.get("thinking"))
+            meter.add(delta.get("partial_json"))
+        return
+    if kind == "content_block_start":
+        blocks: Any = [payload.get("content_block")]
+    elif kind in (None, "message"):
+        blocks = payload.get("content")
+    else:
+        return
+    for block in blocks if isinstance(blocks, list) else []:
+        if not isinstance(block, dict):
+            continue
+        meter.add(block.get("text"))
+        meter.add(block.get("thinking"))
+        if block.get("type") == "tool_use":
+            meter.add(block.get("name"))
+            if block.get("input"):
+                meter.add(json.dumps(block["input"], ensure_ascii=False))
+
+
+def meter_responses(meter: OutputMeter, payload: dict[str, Any]) -> None:
+    """เหมือน meter_chat สำหรับ backend ที่พูด Responses เอง — event ของ stream หรือ response เต็ม"""
+    kind = payload.get("type") or ""
+    if kind.endswith(".delta"):
+        meter.add(payload.get("delta"))
+        return
+    if kind.startswith("response."):
+        return  # .done/.completed ซ้ำกับ delta ที่นับไปแล้ว
+    for item in payload.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "function_call":
+            meter.add(item.get("name"))
+            meter.add(item.get("arguments"))
+        for field in ("content", "summary"):
+            for part in item.get(field) or []:
+                if isinstance(part, dict):
+                    meter.add(part.get("text"))
+
+
+_METERS = {OPENAI: meter_chat, ANTHROPIC: meter_anthropic, RESPONSES: meter_responses}
+
+
+def meter_for(dialect: str) -> Callable[[OutputMeter, dict[str, Any]], None]:
+    return _METERS[dialect]
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +495,8 @@ async def relay(  # noqa: PLR0913
 
     * **สายไป backend ขาดกลางทาง / error object กลาง stream** → ผู้เรียกได้ event ปิดท้าย
       ของ surface (`render_error`) เสมอ · แถวเป็น `error` พร้อมรหัสจริง · เครื่องถูกนับว่าล้ม
-    * **ผู้เรียกตัดสาย** → แถวเป็น `aborted` (เดิมค้างเป็น success/200)
+    * **ผู้เรียกตัดสาย** → แถวเป็น `aborted` (เดิมค้างเป็น success/200) และยังถูกคิดเท่าที่
+      ส่งไปแล้ว (`usage` อ่านจาก OutputMeter ของ surface)
     * **คืนช่อง + บันทึกแถว usage รันเสมอ** แม้ generator ถูกยกเลิก — ทั้งสองขั้น shield
       ตัวเอง และซ้อน try/finally ไว้เพราะใต้ cancel scope ของ Starlette `await` ทุกตัวใน
       `finally` โยน CancelledError ซ้ำ ขั้นที่อยู่ถัดลงไปในบล็อกเดียวกันจะไม่ได้รัน

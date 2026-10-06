@@ -479,8 +479,13 @@ class AnthropicStreamAdapter:
             )
         return events
 
-    def finish_events(self) -> list[tuple[str, dict]]:
+    def finish_events(
+        self, *, input_tokens: int | None = None, output_tokens: int | None = None
+    ) -> list[tuple[str, dict]]:
         """ปิด block ที่ค้าง แล้วส่ง message_delta + message_stop
+
+        `input_tokens` / `output_tokens` คือตัวเลขที่เกตเวย์บันทึกลงแถว usage (ของ backend
+        ถ้ามันรายงาน ไม่งั้นค่าประมาณ) — ผู้เรียกต้องเห็นตัวเลขชุดเดียวกับที่ถูกคิด
 
         `message_delta.usage` มี `input_tokens` ด้วย: เดิมส่งแค่ `output_tokens` ผู้เรียกแบบ
         stream จึงไม่เคยถูกบอกขนาด input ที่แท้จริงเลย (message_start ออกไปก่อนจะรู้) ·
@@ -490,6 +495,10 @@ class AnthropicStreamAdapter:
         if self._closed:
             return []
         self._closed = True
+        if input_tokens is not None:
+            self.usage["input_tokens"] = int(input_tokens)
+        if output_tokens is not None:
+            self.usage["output_tokens"] = int(output_tokens)
         events: list[tuple[str, dict]] = []
         events.extend(self.start_events())
 

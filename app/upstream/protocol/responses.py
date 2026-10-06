@@ -568,9 +568,17 @@ class ResponsesStreamAdapter:
             self._next("response.output_item.done", {"output_index": index, "item": item}),
         ]
 
-    def finish_events(self) -> list[tuple[str, dict]]:
+    def finish_events(
+        self, *, input_tokens: int | None = None, output_tokens: int | None = None
+    ) -> list[tuple[str, dict]]:
+        """`input_tokens` / `output_tokens` = ตัวเลขที่เกตเวย์บันทึกลงแถว usage
+
+        ผู้เรียกต้องเห็นชุดเดียวกับที่ถูกคิด — backend ที่ไม่รายงาน usage เคยทำให้
+        `response.completed.usage` เป็น 0 ทั้งหมด ทั้งที่แถว usage มีค่าประมาณ
+        """
         events = list(self.start_events())
         events.extend(self._close_open())
+        self._settle_usage(input_tokens, output_tokens)
 
         for _, state in sorted(self._tools.items()):
             events.append(
@@ -614,6 +622,15 @@ class ResponsesStreamAdapter:
         )
         return events
 
+    def _settle_usage(self, input_tokens: int | None, output_tokens: int | None) -> None:
+        if input_tokens is not None:
+            self.usage["input_tokens"] = int(input_tokens)
+        if output_tokens is not None:
+            self.usage["output_tokens"] = int(output_tokens)
+        if input_tokens is not None or output_tokens is not None:
+            # total ของ backend (ถ้ามี) ไม่ตรงกับตัวเลขที่เพิ่งตั้ง — ให้ _usage_block บวกใหม่
+            self.usage.pop("total_tokens", None)
+
     def resume(self, response_id: str | None, next_sequence: int) -> None:
         """ต่อจาก stream ที่ backend พูด Responses เอง — ใช้ id และลำดับของมัน
 
@@ -625,7 +642,14 @@ class ResponsesStreamAdapter:
         self._seq = max(self._seq, next_sequence)
         self._started = True
 
-    def fail_events(self, code: str, message: str) -> list[tuple[str, dict]]:
+    def fail_events(
+        self,
+        code: str,
+        message: str,
+        *,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+    ) -> list[tuple[str, dict]]:
         """ปิด stream ด้วย `response.failed` — event ปิดท้ายของ Responses เมื่อคำตอบไม่จบ
 
         เดิมสายไป backend ขาดกลางทางแล้ว stream หยุดหลัง `response.output_text.delta` เฉย ๆ:
@@ -635,6 +659,7 @@ class ResponsesStreamAdapter:
         item ที่ส่งไปแล้วครึ่งทางไม่ถูกปิดทีละตัว: ผู้อ่านทิ้งทั้ง response เมื่อเห็น failed
         """
         events = list(self.start_events())
+        self._settle_usage(input_tokens, output_tokens)
         final = self._skeleton("failed")
         final["output"] = [self._closed[index] for index in sorted(self._closed)]
         final["error"] = {"code": code, "message": message}
