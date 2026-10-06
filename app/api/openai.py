@@ -17,7 +17,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable, Collection
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,6 +37,7 @@ from app.core.capability import (
     validate_model_capabilities,
     validate_protocol,
 )
+from app.core.codexcatalog import codex_models
 from app.core.errors import ErrorCode, GatewayError
 from app.core.jsonio import FastJSONResponse
 from app.core.multimodal import RequestProfile, profile_openai_request
@@ -108,6 +109,7 @@ def select_or_fall_back(
 
 @router.get("/v1/models")
 async def list_models(
+    client_version: str | None = Query(default=None),
     principal: Principal = Depends(authenticate),
     state: AppState = Depends(get_state),
     session: AsyncSession = Depends(get_session),
@@ -117,13 +119,20 @@ async def list_models(
     Filtered by the same rule that gates the call. Listing a model that would be
     refused is worse than not listing it: the client offers it, the person picks
     it, and the error arrives after they have written their prompt.
+
+    `client_version` คือสิ่งที่ Codex แนบมาเวลาถามหาแค็ตตาล็อกของมันเอง และเป็นสิ่งเดียว
+    ที่แยกมันออกจาก OpenAI SDK ได้ (path กับ header เหมือนกัน) · มีเมื่อไหร่คำตอบจะมี
+    `models` ในรูปที่ Codex decode ได้เพิ่มมา · ไม่มี = คำตอบเดิมทุกไบต์ เพราะรายการของ
+    Codex พก system prompt มาด้วยรายการละ ~21KB ซึ่งไม่ควรไปถึง client ที่ไม่ได้ขอ
     """
     snapshot = state.registry.snapshot
     permission = await permitted_aliases(session, principal, snapshot.gateway)
     data = []
+    offered: list[ModelDefinition] = []
     for model in snapshot.visible_to(principal.role):
         if not permission.allows(model.alias):
             continue
+        offered.append(model)
         entry: dict[str, Any] = {
             "id": model.alias,
             "object": "model",
@@ -153,7 +162,10 @@ async def list_models(
             entry["upstream_model"] = model.spec.upstream_model
             entry["endpoints"] = [e.name for e in model.spec.endpoints]
         data.append(entry)
-    return {"object": "list", "data": data}
+    payload: dict[str, Any] = {"object": "list", "data": data}
+    if client_version is not None:
+        payload["models"] = codex_models(offered)
+    return payload
 
 
 @router.post(CHAT_PATH)

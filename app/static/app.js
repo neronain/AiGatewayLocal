@@ -427,9 +427,22 @@ const CT_TOOLS = {
     // wire_api = responses คือโหมดพื้นเมืองของ Codex · ยิงทดสอบ /v1/responses
     // บนเกตเวย์แล้วตอบ 200 พร้อมข้อความจริง · ถ้าเจอปัญหาให้เปลี่ยนเป็น "chat"
     // ซึ่งวิ่งผ่าน /v1/chat/completions แทน
+    // model_catalog_json ถูกคอมเมนต์ไว้โดยตั้งใจ: Codex **เปิดไม่ขึ้นเลย** ถ้าไฟล์ที่ชี้ไป
+    // ไม่มีอยู่ ("No such file or directory") · วางแล้วใช้ได้ทันทีต้องมาก่อน ส่วนขนาด
+    // context ที่ถูกต้องเป็นขั้นที่สองซึ่งต้องดาวน์โหลดไฟล์ก่อน · บรรทัดนี้ต้องอยู่เหนือ
+    // [model_providers...] ไม่งั้น TOML อ่านเป็นคีย์ของ provider แล้ว Codex เมินมัน
+    //
+    // ต้องมีไฟล์เพราะ Codex ที่ใช้คีย์ล้วน (ไม่ได้ล็อกอิน ChatGPT) ไม่ถาม /v1/models เอง
     build: (o, k, m) => [
       'model_provider = "litegate"',
       `model = "${m}"`,
+      '',
+      '# ให้ Codex รู้ขนาด context จริงของรุ่นนี้ — ไม่งั้นมันใช้ค่าเดา 272K กับทุกรุ่น',
+      '# และขึ้น "Model metadata ... not found" ทุกครั้งที่เริ่มงาน',
+      '#   1) ดาวน์โหลดแค็ตตาล็อก (รันใน terminal · ทำซ้ำเมื่อผู้ดูแลเพิ่มหรือแก้รุ่น):',
+      `#      curl -fsS -H "Authorization: Bearer ${k}" "${o}/v1/models?client_version=codex" -o ~/.codex/litegate-models.json`,
+      '#   2) แล้วค่อยเอา # หน้าบรรทัดถัดไปออก — ถ้าไฟล์ยังไม่มี Codex จะเปิดไม่ขึ้น',
+      '# model_catalog_json = "litegate-models.json"',
       '',
       '[model_providers.litegate]',
       'name = "LiteGate"',
@@ -510,7 +523,10 @@ const CT_TOOLS = {
       'OPENAI_API_KEY=' + k,
       'OPENAI_MODEL=' + m,
     ].join('\n'),
-    note: 'ใช้ได้กับทุกตัวที่ตั้ง base URL เองได้ — Codex, Cline, Continue, Open WebUI และอื่น ๆ',
+    // ไม่มี Codex ในรายชื่อ: Codex CLI 0.149.1 ไม่อ่านตัวแปรสองตัวนี้ มันยิงไป
+    // api.openai.com โดยไม่มีคีย์ (ลองจริง 2026-10-06) — ต้องใช้ตัวเลือก Codex CLI
+    note: 'ใช้ได้กับทุกตัวที่ตั้ง base URL เองได้ — Cline, Continue, Open WebUI และอื่น ๆ · '
+        + 'Codex ไม่อ่านตัวแปรชุดนี้ ให้เลือก "Codex CLI" ในรายการแทน',
     needs: 'openai',
   },
   curl: {

@@ -16,3 +16,9 @@ Licensed under the MIT License. See LICENSE.
 Companion project
   LMDS · Local Model Deploy Studio — https://github.com/neronain/AutoDeployDGXProject
   (LMDS is proprietary and is NOT covered by this MIT license.)
+
+Third-party material
+  app/vendor/codex/prompt.md — the Codex CLI system prompt, from OpenAI Codex
+  (https://github.com/openai/codex, tag rust-v0.149.1). Copyright 2025 OpenAI.
+  Licensed under the Apache License 2.0, NOT under LiteGate's MIT license; the
+  license text and OpenAI's NOTICE are in app/vendor/codex/. Unmodified.

@@ -116,6 +116,101 @@ OpenAI-shaped catalogue, filtered by the caller's role.
 aliases answer on `/v1/embeddings` or `/v1/rerank` and nowhere else, so the list
 is what tells a client which door to knock on.
 
+#### The Codex catalogue
+
+Codex does not read this endpoint the way the SDKs do. Its model manager sends
+`GET /v1/models?client_version=<its version>` and decodes `{"models": [...]}` —
+the OpenAI `data` list alone fails with ``missing field `models` ``, and Codex
+falls back to built-in metadata for every alias (a 272,000-token window, image
+input assumed).
+
+`client_version` is the only thing that tells the two kinds of client apart; the
+path and headers are the same. When it is present — any value, it is not
+interpreted — the response carries `models` **next to** the unchanged `data`:
+
+```json
+{
+  "object": "list",
+  "data": [ ... ],
+  "models": [{
+    "slug": "coding",
+    "display_name": "Local Coder",
+    "description": "Agentic coding model with tool calling and long context.",
+    "context_window": 262144,
+    "max_context_window": 262144,
+    "input_modalities": ["text"],
+    "supported_reasoning_levels": [],
+    "shell_type": "default",
+    "apply_patch_tool_type": null,
+    "truncation_policy": { "mode": "bytes", "limit": 10000 },
+    "support_verbosity": false,
+    "default_verbosity": null,
+    "supports_image_detail_original": false,
+    "experimental_supported_tools": [],
+    "base_instructions": "You are a coding agent running in the Codex CLI, ...",
+    "visibility": "list",
+    "supported_in_api": true,
+    "priority": 0,
+    "availability_nux": null,
+    "upgrade": null
+  }]
+}
+```
+
+Without the parameter the response is what it always was — each Codex entry
+carries a ~21 KB system prompt, which has no business reaching a client that
+did not ask for it.
+
+| Field | Where the value comes from |
+|---|---|
+| `context_window`, `max_context_window` | `spec.limits.context_tokens`. The second is the ceiling for `model_context_window` in the user's Codex config: it can be lowered, not raised past the real window. |
+| `input_modalities` | `text` always; `image` only when the alias has `capabilities.vision` **and** `image` in `modalities.input` — the same condition the gateway enforces on the request. Never `video`: Codex's enum has no such value and an unknown one fails the decode of the whole response. |
+| `slug`, `display_name`, `description` | `metadata.alias`, `metadata.display_name`, `metadata.description`. |
+| `priority` | Position in the list: coding-purpose aliases first, then by alias. Codex picks the first when no model is configured. |
+| `supported_reasoning_levels` | Always empty. The Responses translator does not forward `reasoning.effort` to the backend, so offering levels would offer a control that does nothing. |
+| `shell_type`, `apply_patch_tool_type`, `truncation_policy`, `base_instructions`, … | Not properties of the model. They describe Codex's own harness, and the registry knows nothing about them, so they are the values Codex's fallback already used — `base_instructions` is Codex's own prompt, vendored under `app/vendor/codex/` (Apache-2.0). Codex sends the same request it sent before; only its picture of the model changes. |
+
+There is no `max_output_tokens`: Codex's schema has no field for it and Codex
+does not send one. `spec.limits.max_output_tokens` is enforced by the gateway.
+
+**Which aliases are listed.** The ones this key may call (same rule as `data`)
+that Codex can actually use: `protocols.responses`, and `capabilities.chat`,
+`tools` and `streaming`. Codex attaches tools to every request, so an alias
+without tool calling is refused with `400` however it is listed.
+
+**When Codex asks.** Only when it is signed in with ChatGPT, or the provider is
+configured with command auth (`[model_providers.<id>.auth]`). With a plain key
+(`env_key`, `experimental_bearer_token`) it never requests the catalogue. Save the response to a file and point `model_catalog_json` at it —
+the same body is a valid catalogue file:
+
+```bash
+curl -fsS -H "Authorization: Bearer lg_sk_..." \
+  "http://127.0.0.1:8080/v1/models?client_version=codex" \
+  -o ~/.codex/litegate-models.json
+```
+
+```toml
+# ~/.codex/config.toml, above any [table] — relative paths resolve against ~/.codex
+model_catalog_json = "litegate-models.json"
+```
+
+Three things to know about that file. Codex **will not start** if it is set and
+missing. It replaces Codex's catalogue rather than adding to it, so it belongs
+in a config (or profile) that points at this gateway. And it is a snapshot:
+fetch it again after models are added or their limits change.
+
+Verified against Codex CLI 0.149.1. `ModelInfo` is Codex's internal schema and
+has changed between releases; if a future version rejects this shape, Codex
+prints the decode error and falls back exactly as it did before — the request
+path is unaffected.
+
+When Codex fetches the catalogue itself it caches it in
+`~/.codex/models_cache.json` for five minutes, and that cache is not keyed by
+provider (a `TODO` in Codex's `models-manager/src/manager.rs`). Someone who
+switches between this gateway and another provider inside that window can see
+the other one's model list until it expires. `model_catalog_json` does not use
+the cache.
+
 ### `GET /v1/catalog`
 
 The same models grouped by purpose, for a member-facing UI.

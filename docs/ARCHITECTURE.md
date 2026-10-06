@@ -165,6 +165,7 @@ app/
 │   ├── routing.py        endpoint selection, health with hysteresis
 │   ├── rules.py          model-level routing rules
 │   ├── retrieval.py      embeddings/rerank shapes, batch ceiling, costing
+│   ├── codexcatalog.py   the model catalogue in the shape Codex decodes
 │   ├── inflight.py       concurrency counters (Redis or per-process)
 │   ├── modeltest.py      the capability probe behind Verify
 │   ├── lmds.py           deploy-tool findings that can be applied
@@ -191,9 +192,12 @@ app/
 │   ├── admin.py          /admin/*
 │   └── health.py         /healthz, /readyz, /metrics
 │
-└── db/
-    ├── models.py         SQLAlchemy schema
-    └── session.py        async engine/session
+├── db/
+│   ├── models.py         SQLAlchemy schema
+│   └── session.py        async engine/session
+│
+└── vendor/
+    └── codex/            Codex's own system prompt (Apache-2.0), served in its catalogue
 ```
 
 ---

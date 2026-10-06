@@ -210,16 +210,58 @@ Code uses, not a different endpoint of the same one. The gateway serves
 `/v1/responses` and translates to chat completions on the way out and back on the
 way in, streaming included:
 
-```bash
-export OPENAI_BASE_URL=http://127.0.0.1:8080/v1
-export OPENAI_API_KEY=lg_sk_...
-codex --model coding
+```toml
+# ~/.codex/config.toml
+model_provider = "litegate"
+model = "coding"
+
+[model_providers.litegate]
+name = "LiteGate"
+base_url = "http://127.0.0.1:8080/v1"
+env_key = "LITEGATE_API_KEY"
+wire_api = "responses"
 ```
+
+```bash
+export LITEGATE_API_KEY=lg_sk_...
+codex
+```
+
+Codex needs the provider block: `OPENAI_BASE_URL` and `OPENAI_API_KEY` in the
+environment are not enough — Codex CLI 0.149.1 ignores both and calls
+`api.openai.com` without a key.
 
 Enable each surface per alias (`spec.protocols: { openai, anthropic, responses,
 embeddings, rerank }`). `GET /v1/models` reports which ones an alias exposes, so
 a client can check rather than guess — guessing wrong means a `400` after the
 prompt is already typed.
+
+> **Codex needs a model catalogue to know how big your models are.** Without one
+> it assumes a 272,000-token window for every alias and opens every thread with
+> `Model metadata for 'coding' not found`. It compacts the conversation at 90% of
+> the window it *believes* in, so a 131K model is filled until the gateway
+> refuses the request mid-task. The gateway serves the catalogue from the
+> registry — `GET /v1/models?client_version=…`, see
+> [API.md](docs/API.md#the-codex-catalogue) — but **Codex only asks for it when
+> it is signed in with ChatGPT or the provider uses command auth**
+> (`[model_providers.<id>.auth]`). With a plain API key it never asks, so hand
+> it the file once:
+>
+> ```bash
+> curl -fsS -H "Authorization: Bearer lg_sk_..." \
+>   "http://127.0.0.1:8080/v1/models?client_version=codex" \
+>   -o ~/.codex/litegate-models.json
+> ```
+>
+> ```toml
+> # ~/.codex/config.toml — above [model_providers.litegate]; relative to ~/.codex
+> model_catalog_json = "litegate-models.json"
+> ```
+>
+> Download first: Codex refuses to start when the file is missing. The file is a
+> snapshot — fetch it again after models are added or their limits change. The
+> console's **Connect your tool → Codex CLI** builds both steps with your
+> address and key filled in.
 
 > **`previous_response_id` returns `400` rather than pretending to work.** Codex
 > uses it to have the server keep the conversation, but this gateway writes no

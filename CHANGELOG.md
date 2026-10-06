@@ -38,6 +38,45 @@
 
 ### แก้
 
+- **Codex รู้ขนาดจริงของโมเดลแล้ว** (เจอ 2026-10-06 ระหว่างทดสอบ `/v1/responses` กับ Codex CLI
+  0.149.1 ตัวจริงใน 066dadc) · ทุกรอบที่ชี้ Codex มาที่เกตเวย์ มันพิมพ์
+  ``failed to decode models response: missing field `models` `` แล้วเปิดทุก thread ด้วย
+  ``Model metadata for `coding` not found`` — คือใช้ **หน้าต่าง 272,000 token ที่มันเดาเองกับ
+  ทุก alias** และเชื่อว่าทุกตัวรับรูปได้ · คำขอยังผ่าน จึงไม่มีอะไรฟ้อง · Codex ย่อบทสนทนาที่
+  90% ของหน้าต่างที่มัน *เชื่อ* โมเดลที่เล็กกว่านั้นจึงถูกยัดจนเกตเวย์ปฏิเสธกลางงาน
+  - **`GET /v1/models?client_version=…` คืน `models` เพิ่มข้าง `data`** ในรูปที่ตัวจัดการโมเดล
+    ของ Codex decode ได้ · `client_version` คือสิ่งเดียวที่แยก Codex ออกจาก OpenAI SDK
+    (path กับ header เหมือนกัน) · **ไม่มีพารามิเตอร์นี้ = คำตอบเดิมทุกไบต์** (เทียบ `cmp` กับ
+    โค้ดก่อนแก้แล้ว) เพราะรายการของ Codex พก system prompt ~21KB ต่อโมเดล
+  - **ค่าของโมเดลมาจากทะเบียน**: `context_window` = `limits.context_tokens` · รับรูปเฉพาะ
+    เมื่อด่านของเกตเวย์จะรับจริง (`capabilities.vision` และ `image` ใน `modalities.input`) ·
+    ไม่มี `video` เด็ดขาด — enum ของ Codex ไม่มีค่านี้ และค่าที่มันไม่รู้จัก **ทำให้ decode
+    ล้มทั้งคำตอบ** ไม่ใช่แค่รายการเดียว
+  - **ค่าของตัว Codex เอง** (เครื่องมือ shell, การตัด output, system prompt) ทะเบียนไม่รู้ จึงใช้
+    ค่าเดียวกับ metadata สำรองของ Codex · วัดแล้วว่าคำขอที่ Codex ส่งหลังแก้ **เหมือนเดิม**:
+    instructions 20,751 อักขระ, tools ชุดเดิม, `reasoning` เดิม — เปลี่ยนแค่ภาพของโมเดลในหัวมัน
+  - **เสนอเฉพาะ alias ที่ Codex ใช้ได้จริง**: เปิด `responses` และทำ chat + tools + streaming
+    ได้ · Codex แนบ tools มาทุกคำขอ ตัวที่เรียก tool ไม่ได้จะโดน 400 ไม่ว่าจะขึ้นในรายการไหม ·
+    กรองสิทธิ์ด้วยกติกาเดียวกับ `data`
+  - **system prompt ของ Codex ถูกนำมาไว้ใน `app/vendor/codex/`** (Apache-2.0 ของ OpenAI
+    ไม่ใช่ MIT ของเรา · ใบอนุญาตกับ NOTICE อยู่ข้างไฟล์) · ไม่ใช่ทางเลือก: รายการที่ไม่มี
+    instructions ทำให้ Codex ปฏิเสธทั้งแค็ตตาล็อก (``is missing both `base_instructions` and
+    `model_messages.instructions_template` ``)
+  - ⚠ **Codex ถามหาแค็ตตาล็อกเองเฉพาะตอนล็อกอิน ChatGPT อยู่ หรือ provider ใช้ command auth**
+    · ใช้คีย์ล้วน (`env_key` / `experimental_bearer_token`) มันไม่ยิง `/v1/models` เลยสักครั้ง
+    (นับจาก access log) คำเตือนจึงยังอยู่จนกว่าจะดาวน์โหลดไฟล์แล้วชี้ `model_catalog_json`
+    ไปหา — คำตอบของ endpoint เดียวกันใช้เป็นไฟล์นั้นได้เลย · หน้า **Connect your tool →
+    Codex CLI** ประกอบคำสั่งให้พร้อมที่อยู่กับคีย์ และ **คอมเมนต์บรรทัดนั้นไว้ก่อน** เพราะ Codex
+    เปิดไม่ขึ้นเลยถ้าไฟล์ที่ชี้ไปไม่มีอยู่
+  - พิสูจน์กับ Codex CLI ตัวจริงทั้งสามทาง (ล็อกอิน ChatGPT · คีย์ล้วน + ไฟล์ · command auth):
+    บรรทัด decode error กับ item คำเตือนหายทั้งคู่ และหน้าต่างที่ Codex บันทึกลง rollout
+    เปลี่ยนจาก 258,400 (95% ของ 272,000) เป็น 249,036 (95% ของ 262,144)
+- **README บอกวิธีต่อ Codex ที่ใช้ไม่ได้** · `OPENAI_BASE_URL` + `OPENAI_API_KEY` — Codex CLI
+  0.149.1 ไม่อ่านทั้งสองตัว มันยิงไป `api.openai.com` โดยไม่มีคีย์ (ลองจริง 2026-10-06) ·
+  เปลี่ยนเป็นบล็อก `[model_providers.litegate]` ใน `~/.codex/config.toml` ซึ่งเป็นแบบเดียวกับ
+  ที่คอนโซลประกอบให้อยู่แล้ว · ตัดชื่อ Codex ออกจากหมายเหตุของตัวเลือก "OpenAI-compatible"
+  ในคอนโซลด้วยเหตุเดียวกัน
+
 - **แถว usage เป็นของเกตเวย์ ไม่ใช่ของค่าที่ client เลือกเอง** (ตรวจ 2026-10-05 ระหว่างแก้
   ตัวนับช่องใน 2eb489a · ปัญหาชนิดเดียวกับใบจองช่อง) · `usage_logs.request_id` มี UNIQUE
   แต่ค่านั้นรับมาจาก header `x-request-id` ของ client ตรง ๆ — ส่งค่าเดิมซ้ำสองครั้ง แถวที่สองชน
