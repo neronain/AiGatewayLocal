@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 import httpx
 
 from app.core.capability import endpoint_supports, upstream_model_for
-from app.core.errors import ErrorCode, GatewayError
+from app.core.errors import ErrorCode, GatewayError, describe
 from app.core.inflight import InFlightLimiter, LocalInFlightLimiter
 from app.core.multimodal import RequestProfile
 from app.registry.schema import Endpoint, ModelDefinition
@@ -64,6 +64,8 @@ class EndpointHealth:
     last_checked_at: float = 0.0
     total_requests: int = 0
     total_failures: int = 0
+    # สิ่งที่ health path ตอบครั้งล่าสุด ("HTTP 200") — ว่าง = ยังไม่เคยได้คำตอบ
+    last_probe: str = ""
 
 
 @dataclass
@@ -280,6 +282,7 @@ class Router:
                     "total_requests": state.total_requests,
                     "total_failures": state.total_failures,
                     "last_error": state.last_error,
+                    "last_probe": state.last_probe,
                 }
         return report
 
@@ -346,9 +349,32 @@ class Router:
                     response = await throwaway.get(url)
             else:
                 response = await client.get(url, timeout=timeout)
+            self._note_probe(alias, endpoint, response.status_code)
             if response.status_code < 500:
                 self.report_success(alias, endpoint)
             else:
                 self.report_failure(alias, endpoint, f"health HTTP {response.status_code}")
         except Exception as exc:
-            self.report_failure(alias, endpoint, f"health probe failed: {exc}")
+            # ชนิดของ exception เสมอ — ConnectTimeout/ReadTimeout ของ httpx ไม่มีข้อความ และ
+            # log เดิมจบที่ "health probe failed:" เฉย ๆ (เครื่องจริง 2026-10-06 18:58)
+            self.report_failure(alias, endpoint, f"health probe failed: {describe(exc)}")
+
+    def _note_probe(self, alias: str, endpoint: Endpoint, status: int) -> None:
+        """จำว่า health path ตอบอะไร และเตือนเมื่อมันตอบแบบที่ model server ไม่ตอบ
+
+        กติกา "ต่ำกว่า 500 = ถึงแล้ว" ยังอยู่ เพราะผู้ให้บริการออนไลน์พึ่งมัน (GET /models
+        ไม่ใส่คีย์ตอบ 401 — ดู core/providers.py) และ vLLM ที่ตั้ง base_url ลงท้าย /v1 ตอบ 404
+        ให้ /v1/health ทั้งที่ทำงานปกติ · แต่ 401/404 จาก health path ก็เป็นหน้าตาของ "มีของ
+        อย่างอื่นฟังพอร์ตนี้อยู่" ด้วย (ทีมเคยโดน portainer บน :8000) จึงต้องมีที่ให้เห็น
+        แทนที่จะเป็นเขียวเงียบ ๆ
+        """
+        state = self._state.get(endpoint_key(alias, endpoint))
+        seen = f"HTTP {status}"
+        if seen != state.last_probe and not 200 <= status < 300 and status < 500:
+            log.warning(
+                "endpoint %s:%s answers its health path %s with %s — reachable, but this is "
+                "not what a model server's health route returns; check that the port is the "
+                "model server and not something else",
+                alias, endpoint.name, endpoint.health_path, seen,
+            )
+        state.last_probe = seen

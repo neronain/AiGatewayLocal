@@ -28,6 +28,8 @@ import logging
 import time
 from abc import ABC, abstractmethod
 
+from app.core.errors import describe
+
 log = logging.getLogger(__name__)
 
 # ใบจองมีอายุเท่าไรก่อนถูกถือว่าเป็นของ worker ที่ตายไปแล้ว
@@ -156,7 +158,7 @@ class ResilientInFlightLimiter(InFlightLimiter):
             return result
         except Exception as exc:
             if not self._degraded:
-                log.error("in-flight limiter ตกไปนับในเครื่องชั่วคราว (%s)", exc)
+                log.error("in-flight limiter ตกไปนับในเครื่องชั่วคราว (%s)", describe(exc))
                 self._degraded = True
             return await getattr(self._fallback, name)(*args)
 

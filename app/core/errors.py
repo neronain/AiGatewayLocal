@@ -189,3 +189,17 @@ def capability_error(alias: str, capability: str, hint: str = "") -> GatewayErro
         message,
         details={"model": alias, "required_capability": capability},
     )
+
+
+def describe(exc: BaseException) -> str:
+    """ชนิดของ exception เสมอ และข้อความถ้ามี — ใช้ทุกที่ที่เอา exception ไปใส่ log หรือ last_error
+
+    exception ฝั่งเครือข่ายของ httpx ส่วนใหญ่ `str()` แล้วได้สตริงว่าง — ConnectTimeout ·
+    ReadTimeout · PoolTimeout ไม่มีข้อความเลย · log ที่เขียน `f"...: {exc}"` จึงจบที่
+    เครื่องหมายโคลอน (เครื่องจริง 2026-10-06 18:58 หลังบูต: ทุก endpoint ขึ้น
+    "marked unhealthy after 3 failures: health probe failed:" แล้วไม่มีอะไรต่อ) ·
+    ชื่อชนิดคือสิ่งเดียวที่แยก "เครื่องปิด" ออกจาก "เครื่องช้า" ได้
+    """
+    name = type(exc).__name__
+    text = str(exc).strip()
+    return f"{name}: {text}" if text else name
