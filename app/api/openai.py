@@ -611,6 +611,8 @@ class _RequestContext:
         )
         await self.state.usage.submit(record)
         if not charge:
+            # ไม่มี backend ไหนได้เห็น = ไม่หักโควตา และคืนที่ที่จองไว้ในลิมิตต่อนาทีตอนรับเข้า
+            await self.state.quota.release(self.quota_charge)
             return
         # ตัวเลขชุดเดียวกับที่บันทึกลง UsageLog — ใช้ต่อทันทีสำหรับจัดอันดับ auto
         # บันทึกด้วย alias ที่ *รันจริง* ไม่ใช่ที่สมาชิกขอ ไม่งั้นความเร็วของ coding-long

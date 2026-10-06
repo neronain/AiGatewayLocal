@@ -340,3 +340,112 @@ async def test_no_rate_limit_means_no_extra_write_at_admission(temp_db):
 
     assert charge.minutes == ()
     assert (await store.get("user:u1", "minute")) == Consumption()
+
+
+# ---------------------------------------------------------------------------
+# หลังรับเข้าแล้ว: ช่องของ backend เต็ม · สลับเครื่อง · ผู้เรียกตัดสาย
+# ---------------------------------------------------------------------------
+# คำขอถูกนับเข้าตัวนับนาทีตอนรับเข้า ก่อนจะรู้ว่ามีเครื่องรับได้จริงไหม — สิ่งที่เกิดหลังจากนั้น
+# ต้องไม่ทำให้มันถูกนับผิด: ถูกปฏิเสธที่ด่านช่อง (ไม่มี backend ไหนได้เห็น) ต้องคืนที่ ·
+# สลับเครื่องกลางทางยังเป็นคำขอเดียว
+@pytest.mark.parametrize("surface", ["chat", "messages", "responses"])
+@pytest.mark.parametrize("stream", [False, True], ids=["complete", "stream"])
+def test_a_request_refused_at_the_backend_slot_gate_gives_its_minute_back(
+        client, member_key, surface, stream):
+    """ช่องเต็มทุกเครื่อง → 429 CONCURRENCY_LIMIT_EXCEEDED พร้อม Retry-After: 5 · คนที่ลองใหม่
+    ตามนั้นต้องไม่หมดลิมิตต่อนาทีไปกับคำขอที่ไม่เคยได้ทำงาน"""
+    from tests.realistic_backends import VllmLike, another_worker_holds, request_for
+
+    policy(client, max_requests_per_minute=2)
+    another_worker_holds(client, "coding")
+    path, body = request_for(surface, stream=stream)
+    subject = f"user:{me(client)['id']}"
+
+    with respx.mock:
+        backend = respx.post(CODING).mock(side_effect=VllmLike())
+        for _ in range(4):
+            refused = client.post(path, headers=auth(member_key), json=body)
+            assert refused.status_code == 429, refused.text
+            assert "CONCURRENCY_LIMIT_EXCEEDED" in refused.text, (
+                "ต้องเป็น 429 ของช่อง backend ทุกครั้ง — ไม่ใช่กลายเป็น 429 ของลิมิตต่อนาที")
+        assert not backend.called
+
+    assert minute_counter(client, subject).requests == 0
+
+
+def test_the_place_is_taken_at_admission_and_handed_back_when_the_slot_gate_refuses(
+        client, member_key, monkeypatch):
+    """ไม่ใช่ "ไม่เคยถูกนับ": ถูกนับตอนรับเข้าจริง แล้วถูกคืนเมื่อ finalize บอกว่าไม่คิดโควตา
+    (`charge=False` จาก lifecycle.take_slot — ทางเดียวกับที่ /v1/embeddings และ /v1/rerank ใช้)"""
+    from tests.realistic_backends import another_worker_holds
+
+    policy(client, max_requests_per_minute=2)
+    another_worker_holds(client, "coding")
+    subject = f"user:{me(client)['id']}"
+    services = client.app.state.services
+    taken: list[int] = []
+    real_release = services.quota.release
+
+    async def watching(charge):
+        taken.append((await services.counter_store.get(subject, "minute")).requests)
+        await real_release(charge)
+
+    monkeypatch.setattr(services.quota, "release", watching)
+    for _ in range(3):
+        assert ask(client, member_key).status_code == 429
+
+    assert taken == [1, 1, 1], "แต่ละคำขอถูกนับตอนรับเข้า แล้วถูกคืนเมื่อช่องเต็ม"
+    assert minute_counter(client, subject).requests == 0
+
+
+@pytest.fixture
+def two_machines(writable_config):
+    """coding มีเครื่องที่สอง — ต้องอยู่ใน config ก่อนแอปเริ่ม จึงต้องมาก่อน `client`"""
+    from tests.realistic_backends import add_spare
+
+    add_spare(writable_config)
+    return writable_config
+
+
+def test_a_request_that_fails_over_is_one_request(two_machines, client, member_key):
+    """เครื่องแรกล้ม เครื่องที่สองตอบ — ผู้เรียกส่งคำขอเดียว ต้องถูกนับคำขอเดียว"""
+    from tests.realistic_backends import SPARE, VllmLike
+
+    policy(client, max_requests=100, max_requests_per_minute=10)
+    subject = f"user:{me(client)['id']}"
+
+    with respx.mock:
+        first = respx.post(CODING).mock(side_effect=httpx.ConnectError("refused"))
+        second = respx.post(f"{SPARE}/v1/chat/completions").mock(side_effect=VllmLike())
+        response = ask(client, member_key)
+
+    assert first.called and second.called, "เทสนี้ต้องเดินผ่านสองเครื่องจริง"
+    assert response.status_code == 200, response.text
+    assert minute_counter(client, subject).requests == 1
+    daily = [n for (name, start), n in counter_rows(client).items()
+             if name == subject and start.hour == 0 and start.minute == 0]
+    assert daily == [1]
+
+
+def test_a_backend_that_fails_still_counts_as_the_request_it_was(client, member_key):
+    """ต่างจากช่องเต็ม: คำขอนี้ไปถึง backend แล้ว — ล้มก็ยังเป็นหนึ่งคำขอของนาทีนั้น"""
+    policy(client, max_requests_per_minute=5)
+    with respx.mock:
+        respx.post(CODING).mock(side_effect=httpx.ConnectError("refused"))
+        assert ask(client, member_key).status_code >= 500
+
+    assert minute_counter(client, f"user:{me(client)['id']}").requests == 1
+
+
+async def test_releasing_a_charge_hands_back_every_minute_it_took(temp_db):
+    store = await _store("database")
+    quota = QuotaService(store, QuotaDefaults())
+    person = _limits("user:u1", 5)
+    key = KeyLimits(subject="key:k1", ceilings=[_limits("key:k1", 5, "key")])
+
+    charge = await quota.admit(person, key)
+    await quota.release(charge)
+    await quota.release(None)          # ทางเข้าที่ไม่มี Charge ต้องไม่พัง
+
+    assert (await store.get("user:u1", "minute")).requests == 0
+    assert (await store.get("key:k1", "minute")).requests == 0

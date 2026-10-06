@@ -1122,6 +1122,29 @@ class QuotaService:
         exceeded("image", used.images, limits.max_images, limits.window)
         return used
 
+    async def release(self, charge: Charge | None) -> None:
+        """คำขอที่ถูกรับเข้าแล้ว **ไม่มี backend ไหนได้เห็น** — คืนที่ในลิมิตต่อนาที
+
+        `admit()` นับคำขอเข้าตัวนับนาทีตอนรับเข้า ก่อนจะรู้ว่ามีเครื่องรับได้จริงไหม · ด่าน
+        ช่องของ backend (`router.acquire`) อยู่หลังจากนั้น และเมื่อมันปฏิเสธ (ช่องเต็มทุก
+        เครื่อง → 429 CONCURRENCY_LIMIT_EXCEEDED) คำขอนั้นไม่ได้ถูกคิดโควตา — ก็ต้องไม่กิน
+        ลิมิตต่อนาทีด้วย ไม่งั้นคนที่ลองใหม่ตามที่ `Retry-After: 5` บอก จะหมดลิมิตต่อนาที
+        ไปกับคำขอที่ไม่เคยได้ทำงาน แล้วโดน 429 อีกแบบต่อทั้งที่เครื่องว่างแล้ว
+
+        เรียกแทน `record()` ไม่ใช่เรียกคู่กัน · ล้มแล้วไม่โยน: เหมือน record — คำตอบถึงผู้
+        เรียกไปแล้ว และที่ที่คืนไม่ได้หมดอายุเองในหนึ่งนาที
+        """
+        if charge is None:
+            return
+        for subject in charge.minutes:
+            try:
+                await self._store.release(subject, "minute")
+            except Exception:
+                log.error(
+                    "โควตา: คืนที่ของ %s ในนาทีนี้ไม่สำเร็จ — จะหมดอายุเองเมื่อนาทีนี้จบ",
+                    subject, exc_info=True,
+                )
+
     async def record(
         self,
         user_id: str,
