@@ -29,6 +29,10 @@ comes back as a `reasoning` output item - raw text in `content[].reasoning_text`
 output carries reasoning items whether or not the caller asked, so clients
 already have to step over them. `reasoning` items in the *request* are still
 dropped (see `responses_to_openai_request`).
+
+Nothing else in a request is dropped silently. A part chat completions cannot
+express is reported by `untranslatable` and refused with a 400 naming it; a
+hosted-tool definition is skipped and the caller told (`ignored_in_translation`).
 """
 
 from __future__ import annotations
@@ -38,13 +42,18 @@ import time
 import uuid
 from typing import Any
 
+from app.core.errors import ErrorCode, GatewayError
 from app.upstream.protocol.reasoning import reasoning_text
 
 __all__ = [
     "ResponsesStreamAdapter",
+    "ignored_in_translation",
     "new_response_id",
     "openai_to_responses_response",
+    "response_format",
     "responses_to_openai_request",
+    "tool_output_parts",
+    "untranslatable",
 ]
 
 
@@ -59,6 +68,37 @@ def _item_id(prefix: str = "msg") -> str:
 # ---------------------------------------------------------------------------
 # Responses request -> OpenAI chat completions
 # ---------------------------------------------------------------------------
+# กติกาของขาเข้าเหมือนตัวแปลของ Anthropic (app/upstream/protocol/anthropic.py): ไม่มีอะไรหาย
+# เงียบ ๆ — ส่งต่อ/แปล · ปฏิเสธพร้อมบอกตำแหน่ง (`untranslatable`) · เพิกเฉยโดยตั้งใจ ·
+# และอีกหนึ่งอย่างที่มีเฉพาะฝั่งนี้: **ข้ามแล้วบอก** (`ignored_in_translation`) สำหรับนิยาม
+# เครื่องมือที่ OpenAI รันเอง ซึ่ง client บางตัวแนบมาทุกคำขอโดยผู้ใช้ไม่ได้สั่ง
+#
+# เคสที่ตรวจพบ 2026-10-06: `text.format` เป็น json_schema กับ tool ชนิด `custom` → backend ได้
+# แค่ ['max_tokens', 'messages', 'model', 'tools'] · ไม่มี `response_format` (ทั้งที่ทาง chat
+# ส่งให้) และ tool ชนิด custom หายไปจากรายการโดยไม่มีใครรู้
+
+_TEXT_PARTS = frozenset({"input_text", "output_text", "text"})
+# item ที่ตัวแปลรู้จัก · None กับ "message" คือข้อความ
+_MESSAGE_ITEMS = (None, "message")
+# เครื่องมือที่ client รันเอง · ชนิดอื่นทั้งหมดคือของที่ OpenAI รันให้ (web_search ·
+# file_search · code_interpreter · image_generation · mcp · computer_use_preview …)
+_FUNCTION_TOOL = (None, "function")
+
+Problem = tuple[str, str]  # (ตำแหน่งในคำขอ, ทำไมแปลไม่ได้)
+
+
+def _image_part(part: dict[str, Any]) -> dict[str, Any] | None:
+    url = part.get("image_url")
+    if isinstance(url, dict):
+        url = url.get("url")
+    if not isinstance(url, str) or not url:
+        return None
+    image: dict[str, Any] = {"url": url}
+    if part.get("detail"):
+        image["detail"] = part["detail"]
+    return {"type": "image_url", "image_url": image}
+
+
 def _content_parts_to_openai(content: Any) -> list[dict] | str | None:
     """Responses content parts -> chat content. Returns a bare string when it can."""
     if isinstance(content, str):
@@ -71,17 +111,14 @@ def _content_parts_to_openai(content: Any) -> list[dict] | str | None:
         if not isinstance(part, dict):
             continue
         ptype = part.get("type")
-        if ptype in {"input_text", "output_text", "text"}:
+        if ptype in _TEXT_PARTS:
             parts.append({"type": "text", "text": part.get("text") or ""})
-        elif ptype == "input_image":
-            url = part.get("image_url")
-            if isinstance(url, dict):
-                url = url.get("url")
-            if isinstance(url, str) and url:
-                image: dict[str, Any] = {"url": url}
-                if part.get("detail"):
-                    image["detail"] = part["detail"]
-                parts.append({"type": "image_url", "image_url": image})
+        elif ptype == "refusal":
+            # คำปฏิเสธที่โมเดลเคยตอบ — เป็นส่วนของประวัติ ถ้าหายไป โมเดลจะเห็นเทิร์นของ
+            # ตัวเองว่างเปล่า
+            parts.append({"type": "text", "text": part.get("refusal") or ""})
+        elif ptype == "input_image" and (image := _image_part(part)):
+            parts.append(image)
 
     if not parts:
         return None
@@ -90,6 +127,154 @@ def _content_parts_to_openai(content: Any) -> list[dict] | str | None:
     if len(parts) == 1 and parts[0]["type"] == "text":
         return parts[0]["text"]
     return parts
+
+
+def tool_output_parts(output: Any) -> tuple[str, list[dict[str, Any]]] | None:
+    """`function_call_output.output` → (ข้อความของ tool message, รูปที่ตามไปใน user message)
+
+    None = มีชิ้นส่วนที่แสดงเป็น chat ไม่ได้ · `output` เป็นสตริงก็ได้ เป็นรายการชิ้นส่วน
+    (`input_text` / `input_image`) ก็ได้ — Codex คืนภาพที่ tool อ่านมาด้วยรูปหลัง · เดิมรายการ
+    ถูก `json.dumps` ทั้งก้อน โมเดลจึงได้ base64 ของรูปเป็น *ข้อความ* หลายแสนอักขระ
+    """
+    if output is None:
+        return "", []
+    if isinstance(output, str):
+        return output, []
+    if not isinstance(output, list):
+        return json.dumps(output, ensure_ascii=False), []
+    texts: list[str] = []
+    images: list[dict[str, Any]] = []
+    for part in output:
+        if not isinstance(part, dict):
+            return None
+        ptype = part.get("type")
+        if ptype in _TEXT_PARTS:
+            texts.append(part.get("text") or "")
+        elif ptype == "input_image" and (image := _image_part(part)):
+            images.append(image)
+        else:
+            return None
+    if images:
+        count = len(images)
+        texts.append(
+            f"[{count} image{'s' if count != 1 else ''} returned by this tool - "
+            "attached in the next message]"
+        )
+    return "\n".join(texts), images
+
+
+def response_format(body: dict[str, Any]) -> dict[str, Any] | None:
+    """`text.format` → `response_format` ของ chat completions · None = ข้อความธรรมดา"""
+    text = body.get("text")
+    wanted = text.get("format") if isinstance(text, dict) else None
+    if not isinstance(wanted, dict):
+        return None
+    kind = wanted.get("type")
+    if kind == "json_object":
+        return {"type": "json_object"}
+    if kind == "json_schema" and isinstance(wanted.get("schema"), dict):
+        schema: dict[str, Any] = {
+            "name": wanted.get("name") or "response", "schema": wanted["schema"]}
+        for key in ("strict", "description"):
+            if wanted.get(key) is not None:
+                schema[key] = wanted[key]
+        return {"type": "json_schema", "json_schema": schema}
+    return None
+
+
+def ignored_in_translation(body: dict[str, Any]) -> list[str]:
+    """นิยามเครื่องมือที่จะถูกข้ามเมื่อแปลเป็น chat completions — ผู้เรียกจะถูกบอกทาง header
+
+    เครื่องมือที่ OpenAI รันให้เอง ไม่มีใครรันให้บน backend ในบ้าน · ที่ไม่ปฏิเสธทั้งคำขอ
+    เพราะ client อย่าง Codex แนบ `web_search` มากับ *ทุก* คำขอโดยผู้ใช้ไม่ได้เลือก — ตอบ 400
+    คือปิดประตูใส่ client ทั้งตัว · แต่ถ้าคำขอ *บังคับ* ให้ใช้เครื่องมือนั้น (`tool_choice`)
+    หรือมีผลของมันอยู่ในประวัติ คำขอนั้นทำตามไม่ได้จริง ๆ และถูกปฏิเสธใน `untranslatable`
+    """
+    tools = body.get("tools")
+    return [
+        f"tools[{index}]:{tool.get('type')}"
+        for index, tool in enumerate(tools if isinstance(tools, list) else [])
+        if isinstance(tool, dict) and tool.get("type") not in (*_FUNCTION_TOOL, "custom")
+    ]
+
+
+def untranslatable(body: dict[str, Any]) -> list[Problem]:
+    """ส่วนของคำขอที่ chat completions แสดงไม่ได้ — ว่าง = แปลได้ทั้งคำขอ
+
+    ตรวจอย่างเดียว ไม่สร้าง payload (ดูคำอธิบายที่ตัวคู่ใน protocol/anthropic.py)
+    """
+    problems: list[Problem] = []
+
+    tools = body.get("tools")
+    for index, tool in enumerate(tools if isinstance(tools, list) else []):
+        if isinstance(tool, dict) and tool.get("type") == "custom":
+            problems.append((
+                f"tools[{index}]",
+                "custom (free-form) tools cannot be offered to a model served through "
+                "chat-completions translation: its calls come back as function calls, "
+                "not custom_tool_call items. Declare it as a function tool",
+            ))
+
+    choice = body.get("tool_choice")
+    if isinstance(choice, dict) and not (
+        choice.get("type") in _FUNCTION_TOOL and choice.get("name")
+    ):
+        problems.append((
+            "tool_choice",
+            f"tool_choice of type '{choice.get('type')}' has no chat-completions "
+            "equivalent; use \"auto\", \"none\", \"required\" or name a function tool",
+        ))
+
+    for field, why in (
+        ("conversation", "this gateway keeps no conversation state; send the full input"),
+        ("prompt", "stored prompt templates live on OpenAI's servers, not on this gateway"),
+    ):
+        if body.get(field):
+            problems.append((field, why))
+    if body.get("background") is True:
+        problems.append(("background", "background responses need server-side storage"))
+
+    items = body.get("input")
+    for index, item in enumerate(items if isinstance(items, list) else []):
+        if not isinstance(item, dict):
+            continue
+        path = f"input[{index}]"
+        itype = item.get("type")
+        if itype in ("function_call", "reasoning"):
+            continue
+        if itype == "function_call_output":
+            if tool_output_parts(item.get("output")) is None:
+                problems.append((
+                    f"{path}.output",
+                    "this tool output holds parts other than input_text and input_image, "
+                    "which a chat-completions tool message cannot carry",
+                ))
+            continue
+        if itype == "item_reference":
+            problems.append((
+                path,
+                "item_reference points at an item stored on the server; this gateway "
+                "keeps no conversation state. Send the item itself",
+            ))
+            continue
+        if itype not in _MESSAGE_ITEMS:
+            problems.append((
+                path,
+                f"input items of type '{itype}' have no chat-completions equivalent, so "
+                "the model would answer without them. Remove them from the input",
+            ))
+            continue
+        content = item.get("content")
+        for p_index, part in enumerate(content if isinstance(content, list) else []):
+            if isinstance(part, dict) and part.get("type") not in (
+                *_TEXT_PARTS, "refusal", "input_image"
+            ):
+                problems.append((
+                    f"{path}.content[{p_index}]",
+                    f"content parts of type '{part.get('type')}' have no "
+                    "chat-completions equivalent",
+                ))
+    return problems
 
 
 # บทบาทของ Responses API ที่ chat completions ไม่มี
@@ -117,6 +302,11 @@ def _system_text(content: list[dict] | str) -> str | None:
 
 
 def responses_to_openai_request(body: dict[str, Any], upstream_model: str) -> dict[str, Any]:
+    # ด่านสุดท้าย · ทางปกติถูกปฏิเสธไปตั้งแต่ด่าน capability แล้ว (ดู `untranslatable`)
+    if problems := untranslatable(body):
+        path, why = problems[0]
+        raise GatewayError(ErrorCode.INVALID_REQUEST, f"{path}: {why}.", param=path)
+
     messages: list[dict] = []
 
     # ข้อความระบบทั้งหมดที่มาก่อนบทสนทนา — `instructions` กับ item บทบาท system/developer
@@ -146,10 +336,22 @@ def responses_to_openai_request(body: dict[str, Any], upstream_model: str) -> di
             )
             pending_calls.clear()
 
+    # รูปที่ tool คืนมา · tool message พกได้แต่ข้อความ รูปจึงไปใน user message ที่ตามหลัง —
+    # **หลังผลของ tool ทั้งชุด** ไม่ใช่แทรกกลาง: chat completions ให้ tool message ของการเรียก
+    # ชุดเดียวกันอยู่ติดกัน
+    pending_images: list[dict] = []
+
+    def flush_images() -> None:
+        if pending_images:
+            messages.append({"role": "user", "content": list(pending_images)})
+            pending_images.clear()
+
     for item in items:
         if not isinstance(item, dict):
             continue
         itype = item.get("type")
+        if itype != "function_call_output":
+            flush_images()
 
         if itype == "function_call":
             in_preamble = False
@@ -169,14 +371,13 @@ def responses_to_openai_request(body: dict[str, Any], upstream_model: str) -> di
 
         if itype == "function_call_output":
             in_preamble = False
-            output = item.get("output")
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": item.get("call_id") or "",
-                    "content": output if isinstance(output, str) else json.dumps(output),
-                }
-            )
+            call_id = item.get("call_id") or ""
+            text, images = tool_output_parts(item.get("output")) or ("", [])
+            messages.append({"role": "tool", "tool_call_id": call_id, "content": text})
+            if images:
+                pending_images.append(
+                    {"type": "text", "text": f"[image returned by tool call {call_id}]"})
+                pending_images.extend(images)
             continue
 
         if itype == "reasoning":
@@ -194,6 +395,7 @@ def responses_to_openai_request(body: dict[str, Any], upstream_model: str) -> di
         messages.append({"role": role, "content": content})
 
     flush_calls()
+    flush_images()
 
     if preamble:
         messages.insert(0, {"role": "system", "content": "\n\n".join(preamble)})
@@ -205,8 +407,13 @@ def responses_to_openai_request(body: dict[str, Any], upstream_model: str) -> di
         if body.get(key) is not None:
             payload[key] = body[key]
 
+    if (wanted := response_format(body)) is not None:
+        payload["response_format"] = wanted
+
     tools = body.get("tools")
     if isinstance(tools, list) and tools:
+        # ชนิด custom ถูกปฏิเสธไปแล้วข้างบน · ชนิดที่ OpenAI รันเองถูกข้ามและผู้เรียกถูกบอก
+        # (ดู ignored_in_translation)
         converted = [
             {
                 "type": "function",
@@ -217,7 +424,7 @@ def responses_to_openai_request(body: dict[str, Any], upstream_model: str) -> di
                 },
             }
             for tool in tools
-            if isinstance(tool, dict) and tool.get("type") in (None, "function")
+            if isinstance(tool, dict) and tool.get("type") in _FUNCTION_TOOL
         ]
         if converted:
             payload["tools"] = converted

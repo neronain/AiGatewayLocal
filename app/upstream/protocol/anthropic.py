@@ -5,10 +5,14 @@ Ollama, SGLang) speak the OpenAI Chat Completions API. When a model's endpoint
 declares `protocols.anthropic: true` the gateway forwards natively; otherwise it
 translates here, in both directions, including the streaming event sequence.
 
-Scope of the translation: text, images, system prompts, tool definitions,
-tool_use / tool_result, stop reasons, usage. Anthropic-only features that have
-no OpenAI equivalent (citations, prompt caching hints) are dropped on the way
-out and never fabricated on the way back.
+Scope of the translation: text, images, text documents, system prompts, tool
+definitions, tool_use / tool_result (including images a tool returned),
+structured output, stop reasons, usage. Nothing in a request is dropped
+silently: a part chat completions cannot express - a PDF document, a tool that
+only Anthropic's API can run - is reported by `untranslatable` and refused with
+a 400 naming it, before anything is forwarded. Hints that do not change what the
+model is asked (prompt caching, metadata, service tier) are ignored on purpose
+and never fabricated on the way back.
 
 Reasoning is the one thing that crosses in a single direction. A reasoning model
 behind an OpenAI backend returns its chain of thought in `reasoning_content`;
@@ -23,6 +27,7 @@ import json
 import uuid
 from typing import Any
 
+from app.core.errors import ErrorCode, GatewayError
 from app.upstream.protocol.reasoning import reasoning_text as _reasoning_text
 
 # Anthropic finish reasons keyed by the OpenAI reason that produced them.
@@ -60,32 +65,225 @@ def _thinking_block(text: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Anthropic request -> OpenAI request
 # ---------------------------------------------------------------------------
-def _content_blocks_to_openai(content: Any) -> tuple[list[dict], list[dict]]:
-    """Return (openai content parts, tool_calls) for one Anthropic message."""
-    if isinstance(content, str):
-        return ([{"type": "text", "text": content}] if content else []), []
+# กติกาของขาเข้า: **ไม่มีอะไรหายเงียบ ๆ** · ทุกส่วนของคำขอเป็นหนึ่งในสี่อย่าง
+#
+#   ส่งต่อ / แปล   chat completions แสดงมันได้
+#   ปฏิเสธ         แสดงไม่ได้ และเนื้อหานั้นคือสิ่งที่ผู้ใช้ส่งมาให้โมเดลอ่านหรือใช้
+#                  → `untranslatable` รายงาน ด่าน capability ตอบ 400 ที่ระบุตำแหน่ง
+#                  (เครื่องที่พูด Anthropic เองยังรับได้ — ดู capability.validate_model_capabilities)
+#   เพิกเฉยโดยตั้งใจ  ไม่เปลี่ยนสิ่งที่โมเดลถูกถาม (cache_control · metadata · service_tier …)
+#
+# เคสที่ทำให้ต้องเขียนกติกานี้ (ตรวจ 2026-10-06): `tool_result` ที่มีรูป + บล็อก `document`
+# → backend ได้ `{"role":"tool","tool_call_id":"toolu_1","content":""}` · ไบต์ของรูปกับข้อความ
+# ในเอกสารไม่เคยไปถึง แต่เกตเวย์ยังบังคับ vision และบันทึก visual_input_tokens = 50
 
-    parts: list[dict] = []
-    tool_calls: list[dict] = []
+# เครื่องมือที่ผู้เรียกนิยามเอง (มี input_schema) · ชนิดอื่นคือของที่ API ของ Anthropic รันเอง
+# (web_search_…) หรือรู้ schema เอง (bash_… · text_editor_… · computer_…) — โมเดลในบ้านไม่มีทั้งคู่
+_CLIENT_TOOL_TYPES = (None, "custom")
+_TOOL_CHOICES = ("auto", "any", "tool", "none")
+
+Problem = tuple[str, str]  # (ตำแหน่งในคำขอ, ทำไมแปลไม่ได้)
+
+
+def _text_part(text: str) -> dict[str, Any]:
+    return {"type": "text", "text": text}
+
+
+def _image_part(block: dict[str, Any]) -> dict[str, Any] | None:
+    source = block.get("source") or {}
+    if source.get("type") == "base64":
+        media_type = source.get("media_type", "image/png")
+        url = f"data:{media_type};base64,{source.get('data', '')}"
+    else:
+        url = source.get("url", "")
+    return {"type": "image_url", "image_url": {"url": url}} if url else None
+
+
+def document_parts(block: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """บล็อก `document` เป็นชิ้นส่วนของ chat · None = เป็นเอกสารที่แสดงเป็น chat ไม่ได้
+
+    แปลได้: `source.type` = `text` (ข้อความล้วน) และ `content` (ข้อความ/รูปที่ผู้เรียกแตกมาแล้ว)
+    แปลไม่ได้: `base64` · `url` · `file` — PDF ที่ต้องมีคนแตกหน้าออกมา ซึ่งเกตเวย์ไม่ทำ (PRD §13)
+
+    `title` กับ `context` คือสิ่งที่ผู้เรียกบอกโมเดลเกี่ยวกับเอกสาร จึงไปด้วยเป็นบรรทัดนำ
+    """
+    source = block.get("source")
+    if not isinstance(source, dict):
+        return None
+    parts: list[dict[str, Any]] = []
+    kind = source.get("type")
+    if kind == "text" and isinstance(source.get("data"), str):
+        parts.append(_text_part(source["data"]))
+    elif kind == "content":
+        inner = source.get("content")
+        if isinstance(inner, str):
+            parts.append(_text_part(inner))
+        elif isinstance(inner, list):
+            for item in inner:
+                if not isinstance(item, dict):
+                    return None
+                if item.get("type") == "text":
+                    parts.append(_text_part(item.get("text") or ""))
+                elif item.get("type") == "image" and (image := _image_part(item)):
+                    parts.append(image)
+                else:
+                    return None
+        else:
+            return None
+    else:
+        return None
+    label = " - ".join(
+        str(block[key]) for key in ("title", "context") if isinstance(block.get(key), str)
+        and block[key]
+    )
+    if label:
+        parts.insert(0, _text_part(f"[document: {label}]"))
+    return parts
+
+
+def tool_result_parts(block: dict[str, Any]) -> tuple[str, list[dict[str, Any]]] | None:
+    """(ข้อความของ tool message, รูปที่ต้องตามไปใน user message ถัดไป) · None = แปลไม่ได้
+
+    chat completions ให้ `role: "tool"` พกได้แต่ข้อความ · รูปที่ tool คืนมา (ภาพหน้าจอ · ไฟล์
+    ภาพที่ Read) จึงไปใน user message ที่ตามหลังทันที ซึ่งเป็นท่าที่ตัวเชื่อม Anthropic→OpenAI
+    ใช้กัน · ข้อความของ tool message บอกไว้ว่ามีรูปตามมา โมเดลจะได้โยงสองอย่างเข้าหากัน
+    """
+    inner = block.get("content")
+    if inner is None:
+        return "", []
+    if isinstance(inner, str):
+        return inner, []
+    if not isinstance(inner, list):
+        return json.dumps(inner, ensure_ascii=False), []
+    texts: list[str] = []
+    images: list[dict[str, Any]] = []
+    for item in inner:
+        if not isinstance(item, dict):
+            return None
+        kind = item.get("type")
+        if kind == "text":
+            texts.append(item.get("text") or "")
+        elif kind == "image":
+            if image := _image_part(item):
+                images.append(image)
+        elif kind == "document":
+            parts = document_parts(item)
+            if parts is None:
+                return None
+            for part in parts:
+                if part["type"] == "text":
+                    texts.append(part["text"])
+                else:
+                    images.append(part)
+        else:
+            return None
+    if images:
+        count = len(images)
+        texts.append(
+            f"[{count} image{'s' if count != 1 else ''} returned by this tool - "
+            "attached in the next message]"
+        )
+    return "\n".join(texts), images
+
+
+def untranslatable(body: dict[str, Any]) -> list[Problem]:
+    """ส่วนของคำขอที่ chat completions แสดงไม่ได้ — ว่าง = แปลได้ทั้งคำขอ
+
+    ตรวจอย่างเดียว ไม่สร้าง payload: ถูกเรียกตอนอ่านรูปร่างคำขอ (ก่อนโควตา ก่อนเปิดสตรีม)
+    เพื่อให้คำตอบเป็น 400 ทั้งก้อน ไม่ใช่สตรีมที่เปิดแล้วพังตอนแปล · `anthropic_to_openai_request`
+    เรียกซ้ำเป็นด่านสุดท้าย และใช้ตัวช่วยชุดเดียวกัน (`document_parts` · `tool_result_parts`)
+    สองที่จึงตัดสินไม่ตรงกันไม่ได้
+    """
+    problems: list[Problem] = []
+
+    tools = body.get("tools")
+    for index, tool in enumerate(tools if isinstance(tools, list) else []):
+        if isinstance(tool, dict) and tool.get("type") not in _CLIENT_TOOL_TYPES:
+            problems.append((
+                f"tools[{index}]",
+                f"tool type '{tool.get('type')}' is run or defined by Anthropic's own API; "
+                "a model served through chat-completions translation cannot use it. "
+                "Send it as a custom tool with an input_schema, or leave it out",
+            ))
+
+    choice = body.get("tool_choice")
+    if isinstance(choice, dict) and choice.get("type") not in _TOOL_CHOICES:
+        problems.append((
+            "tool_choice",
+            f"tool_choice type '{choice.get('type')}' has no chat-completions equivalent",
+        ))
+
+    if body.get("mcp_servers"):
+        problems.append((
+            "mcp_servers",
+            "remote MCP servers are connected by Anthropic's API, not by this gateway",
+        ))
+
+    messages = body.get("messages")
+    for m_index, message in enumerate(messages if isinstance(messages, list) else []):
+        if not isinstance(message, dict) or not isinstance(message.get("content"), list):
+            continue
+        assistant = message.get("role") == "assistant"
+        for b_index, block in enumerate(message["content"]):
+            if not isinstance(block, dict):
+                continue
+            path = f"messages[{m_index}].content[{b_index}]"
+            kind = block.get("type")
+            if kind == "document" and document_parts(block) is None:
+                problems.append((path, _DOCUMENT_PROBLEM))
+            elif kind == "tool_result":
+                if assistant:
+                    problems.append((path, "a tool_result block belongs in a user message"))
+                elif tool_result_parts(block) is None:
+                    problems.append((
+                        f"{path}.content",
+                        "this tool_result holds content other than text, images and text "
+                        "documents, which a chat-completions tool message cannot carry",
+                    ))
+            elif kind == "tool_use" and not assistant:
+                problems.append((path, "a tool_use block belongs in an assistant message"))
+    return problems
+
+
+_DOCUMENT_PROBLEM = (
+    "only documents with a 'text' or 'content' source can be sent to a model served "
+    "through chat-completions translation; PDF, URL and file sources need Anthropic's own "
+    "document handling. Extract the text and send that instead"
+)
+
+
+def _collapse(parts: list[dict[str, Any]]) -> Any:
+    # Collapse a lone text part to a plain string: some backends only accept
+    # the array form for genuinely multimodal turns.
+    if len(parts) == 1 and parts[0]["type"] == "text":
+        return parts[0]["text"]
+    return parts
+
+
+def _turn_to_openai(role: str, content: Any) -> list[dict[str, Any]]:
+    """ข้อความ Anthropic หนึ่งเทิร์น → ข้อความ chat หนึ่งตัวหรือมากกว่า ตามลำดับที่ต้องส่ง"""
+    if isinstance(content, str):
+        return [{"role": role, "content": content}] if content else []
     if not isinstance(content, list):
-        return parts, tool_calls
+        return []
+
+    tool_messages: list[dict[str, Any]] = []
+    carried: list[dict[str, Any]] = []   # รูปจาก tool_result — ไปกับ user message ที่ตามมา
+    parts: list[dict[str, Any]] = []
+    tool_calls: list[dict[str, Any]] = []
 
     for block in content:
         if not isinstance(block, dict):
             continue
-        btype = block.get("type")
-        if btype == "text":
-            parts.append({"type": "text", "text": block.get("text", "")})
-        elif btype == "image":
-            source = block.get("source") or {}
-            if source.get("type") == "base64":
-                media_type = source.get("media_type", "image/png")
-                url = f"data:{media_type};base64,{source.get('data', '')}"
-            else:
-                url = source.get("url", "")
-            if url:
-                parts.append({"type": "image_url", "image_url": {"url": url}})
-        elif btype == "tool_use":
+        kind = block.get("type")
+        if kind == "text":
+            parts.append(_text_part(block.get("text", "")))
+        elif kind == "image":
+            if image := _image_part(block):
+                parts.append(image)
+        elif kind == "document":
+            parts.extend(document_parts(block) or [])
+        elif kind == "tool_use":
             tool_calls.append(
                 {
                     "id": block.get("id", f"call_{uuid.uuid4().hex[:16]}"),
@@ -96,40 +294,54 @@ def _content_blocks_to_openai(content: Any) -> tuple[list[dict], list[dict]]:
                     },
                 }
             )
-        # thinking / redacted_thinking have no OpenAI equivalent: dropped.
-    return parts, tool_calls
+        elif kind == "tool_result":
+            text, images = tool_result_parts(block) or ("", [])
+            call_id = block.get("tool_use_id", "")
+            tool_messages.append({"role": "tool", "tool_call_id": call_id, "content": text})
+            if images:
+                carried.append(_text_part(f"[image returned by tool call {call_id}]"))
+                carried.extend(images)
+        # thinking / redacted_thinking: ความคิดของโมเดลอื่น ไม่มีที่ให้ใส่ใน chat completion
+        # และ backend อ่านแล้วสับสนเปล่า ๆ — ทิ้งโดยตั้งใจ (ไม่ถูกนับในค่าประมาณด้วย)
+
+    # Tool results must be emitted as their own role=tool messages, before
+    # whatever else the same user turn contained.
+    out = tool_messages
+    parts = carried + parts
+    if role == "assistant" and tool_calls:
+        out.append({"role": role, "content": _collapse(parts) if parts else None,
+                    "tool_calls": tool_calls})
+    elif parts:
+        out.append({"role": role, "content": _collapse(parts)})
+    return out
 
 
-def _tool_results(content: Any) -> list[dict]:
-    """Anthropic puts tool results in a user message; OpenAI uses role=tool."""
-    results: list[dict] = []
-    if not isinstance(content, list):
-        return results
-    for block in content:
-        if not isinstance(block, dict) or block.get("type") != "tool_result":
-            continue
-        inner = block.get("content")
-        if isinstance(inner, list):
-            text = "\n".join(
-                b.get("text", "")
-                for b in inner
-                if isinstance(b, dict) and b.get("type") == "text"
-            )
-        elif isinstance(inner, str):
-            text = inner
-        else:
-            text = json.dumps(inner, ensure_ascii=False) if inner is not None else ""
-        results.append(
-            {
-                "role": "tool",
-                "tool_call_id": block.get("tool_use_id", ""),
-                "content": text,
-            }
-        )
-    return results
+def response_format(body: dict[str, Any]) -> dict[str, Any] | None:
+    """`output_config.format` (structured outputs) → `response_format` ของ chat completions"""
+    config = body.get("output_config")
+    wanted = config.get("format") if isinstance(config, dict) else None
+    if not isinstance(wanted, dict):
+        wanted = body.get("output_format")      # ชื่อฟิลด์ช่วง beta
+    if not isinstance(wanted, dict) or wanted.get("type") != "json_schema":
+        return None
+    schema = wanted.get("schema")
+    if not isinstance(schema, dict):
+        return None
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": wanted.get("name") or "response", "schema": schema,
+                        "strict": True},
+    }
 
 
 def anthropic_to_openai_request(body: dict[str, Any], upstream_model: str) -> dict[str, Any]:
+    # ด่านสุดท้าย · ทางปกติถูกปฏิเสธไปตั้งแต่ด่าน capability แล้ว (ดู `untranslatable`)
+    if problems := untranslatable(body):
+        path, why = problems[0]
+        raise GatewayError(
+            ErrorCode.INVALID_CONTENT_BLOCK, f"{path}: {why}.", param=path
+        )
+
     messages: list[dict] = []
 
     system = body.get("system")
@@ -145,32 +357,7 @@ def anthropic_to_openai_request(body: dict[str, Any], upstream_model: str) -> di
     for message in body.get("messages", []):
         if not isinstance(message, dict):
             continue
-        role = message.get("role", "user")
-        content = message.get("content")
-
-        # Tool results must be emitted as their own role=tool messages, before
-        # whatever else the same user turn contained.
-        results = _tool_results(content)
-        if results:
-            messages.extend(results)
-
-        parts, tool_calls = _content_blocks_to_openai(content)
-        if not parts and not tool_calls:
-            continue
-
-        entry: dict[str, Any] = {"role": role}
-        if parts:
-            # Collapse a lone text part to a plain string: some backends only
-            # accept the array form for genuinely multimodal turns.
-            if len(parts) == 1 and parts[0]["type"] == "text":
-                entry["content"] = parts[0]["text"]
-            else:
-                entry["content"] = parts
-        else:
-            entry["content"] = None
-        if tool_calls and role == "assistant":
-            entry["tool_calls"] = tool_calls
-        messages.append(entry)
+        messages.extend(_turn_to_openai(message.get("role", "user"), message.get("content")))
 
     payload: dict[str, Any] = {
         "model": upstream_model,
@@ -180,11 +367,16 @@ def anthropic_to_openai_request(body: dict[str, Any], upstream_model: str) -> di
     for src, dst in (
         ("temperature", "temperature"),
         ("top_p", "top_p"),
+        # ไม่อยู่ในสเปกของ OpenAI แต่ vLLM · llama.cpp · Ollama · SGLang รับชื่อนี้ตรง ๆ
+        ("top_k", "top_k"),
         ("stop_sequences", "stop"),
         ("stream", "stream"),
     ):
         if body.get(src) is not None:
             payload[dst] = body[src]
+
+    if (wanted := response_format(body)) is not None:
+        payload["response_format"] = wanted
 
     tools = body.get("tools")
     if isinstance(tools, list) and tools:
@@ -215,6 +407,8 @@ def anthropic_to_openai_request(body: dict[str, Any], upstream_model: str) -> di
             }
         elif ctype == "none":
             payload["tool_choice"] = "none"
+        if choice.get("disable_parallel_tool_use") is True:
+            payload["parallel_tool_calls"] = False
 
     return payload
 

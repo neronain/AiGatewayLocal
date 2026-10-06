@@ -294,7 +294,7 @@ def create_app() -> FastAPI:
             expose_headers=[
                 "x-request-id", "x-litegate-request-id",
                 "x-litegate-model", "x-litegate-endpoint",
-                notices.OUTPUT_CAP,
+                notices.OUTPUT_CAP, notices.IGNORED,
             ],
         )
 

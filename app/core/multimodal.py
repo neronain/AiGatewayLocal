@@ -22,6 +22,8 @@ from urllib.parse import urlparse
 
 from app.core.errors import ErrorCode, GatewayError
 from app.registry.schema import VisionPolicy
+from app.upstream.protocol import anthropic as anthropic_protocol
+from app.upstream.protocol import responses as responses_protocol
 
 
 def _json_text(value: Any) -> str:
@@ -98,6 +100,18 @@ class RequestProfile:
     pretokenized_tokens: int = 0
     batch_items: int = 0
     largest_item_tokens: int = 0
+
+    # ── คำขอที่เข้ามาทาง surface ซึ่งเกตเวย์อาจต้องแปลเป็น chat completions ──
+    #
+    # `surface` = ทางที่คำขอเข้ามา ("openai" · "anthropic" · "responses")
+    # `native_only` = ส่วนของคำขอที่ chat completions แสดงไม่ได้ เป็น (ตำแหน่ง, เหตุผล) ·
+    # ไม่ว่าง = รับได้เฉพาะเครื่องที่พูด protocol ของ `surface` เอง — ด่าน capability ใช้ตัดสิน
+    # ทั้งระดับโมเดล (ไม่มีเครื่องแบบนั้นเลย = 400 ที่บอกตำแหน่ง) และระดับเครื่อง (failover
+    # ต้องไม่พาไปเครื่องที่ต้องแปล) · ดู app/upstream/protocol/*.untranslatable
+    # `skipped_in_translation` = นิยามเครื่องมือที่ตัวแปลจะข้าม ซึ่งผู้เรียกต้องถูกบอก
+    surface: str = ""
+    native_only: list[tuple[str, str]] = field(default_factory=list)
+    skipped_in_translation: list[str] = field(default_factory=list)
 
     # จำนวนคำตอบที่ขอในคำขอเดียว (`n` ของ chat completions) · backend เขียนคำตอบละ
     # `max_tokens` แยกกัน เพดาน output ต่อคำขอจึงต้องหารด้วยค่านี้ — ดู
@@ -284,7 +298,7 @@ def _handle_image_source(url: str, policy: VisionPolicy) -> ImageRef:
 
 def profile_openai_request(body: dict[str, Any], policy: VisionPolicy) -> RequestProfile:
     """Inspect an OpenAI /v1/chat/completions body. Body is not mutated."""
-    profile = RequestProfile()
+    profile = RequestProfile(surface="openai")
     profile.requires_streaming = bool(body.get("stream"))
     choices = body.get("n")
     if isinstance(choices, int) and not isinstance(choices, bool) and choices > 1:
@@ -369,13 +383,17 @@ def profile_responses_request(body: dict[str, Any], policy: VisionPolicy) -> Req
     size estimate, which is exactly the traffic that makes Codex conversations
     long in the first place.
     """
-    profile = RequestProfile()
+    profile = RequestProfile(surface="responses")
+    profile.native_only = responses_protocol.untranslatable(body)
+    profile.skipped_in_translation = responses_protocol.ignored_in_translation(body)
     profile.requires_streaming = bool(body.get("stream"))
     if body.get("tools") or body.get("tool_choice"):
         profile.requires_tools = True
     # นิยาม tool ถูกส่งทุกเทิร์น — ของ Codex อย่างเดียวหลายพัน token · profiler อีกสองตัวนับ
     # มาตั้งแต่ต้น ตัวนี้ไม่นับ prompt ของ Codex จึงถูกประมาณต่ำกว่าที่ backend จะเห็นเสมอ
     profile.add_text(_json_text(body.get("tools")))
+    # schema ของ structured output ไปถึง backend เป็น `response_format` และกิน context
+    profile.add_text(_json_text(responses_protocol.response_format(body)))
 
     instructions = body.get("instructions")
     if isinstance(instructions, str):
@@ -410,7 +428,29 @@ def profile_responses_request(body: dict[str, Any], policy: VisionPolicy) -> Req
             # ชื่อ tool ที่โมเดลเรียกก็ถูก render ลง prompt เหมือน `tool_use.name` ของ Anthropic
             profile.add_text(str(item.get("name") or ""))
             profile.add_text(_json_text(item.get("arguments")))
-            profile.add_text(_json_text(item.get("output")))
+            output = item.get("output")
+            if not isinstance(output, list):
+                profile.add_text(_json_text(output))
+                continue
+            # ผลของ tool เป็นรายการชิ้นส่วน — ข้อความนับเป็นข้อความ รูปผ่านนโยบายภาพเหมือน
+            # รูปที่ผู้ใช้แนบเอง (เดิมทั้งก้อนถูกนับเป็นข้อความ รวม base64 ของรูป)
+            for o_idx, part in enumerate(output):
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") in {"input_text", "output_text", "text"}:
+                    profile.add_text(part.get("text") or "")
+                elif part.get("type") == "input_image":
+                    url = part.get("image_url")
+                    if isinstance(url, dict):
+                        url = url.get("url")
+                    if not isinstance(url, str) or not url:
+                        raise GatewayError(
+                            ErrorCode.INVALID_CONTENT_BLOCK,
+                            f"{path}.output[{o_idx}].image_url is required for input_image.",
+                            param=f"{path}.output[{o_idx}]",
+                        )
+                    profile.modalities.add("image")
+                    profile.images.append(_handle_image_source(url, policy))
             continue
 
         content = item.get("content")
@@ -435,6 +475,8 @@ def profile_responses_request(body: dict[str, Any], policy: VisionPolicy) -> Req
             ptype = part.get("type")
             if ptype in {"input_text", "output_text", "text"}:
                 profile.add_text(part.get("text") or "")
+            elif ptype == "refusal":
+                profile.add_text(part.get("refusal") or "")
             elif ptype == "input_image":
                 url = part.get("image_url")
                 if isinstance(url, dict):  # tolerated: some clients send the chat shape
@@ -460,12 +502,15 @@ def profile_responses_request(body: dict[str, Any], policy: VisionPolicy) -> Req
 
 def profile_anthropic_request(body: dict[str, Any], policy: VisionPolicy) -> RequestProfile:
     """Inspect an Anthropic /v1/messages body (Claude Code's native shape)."""
-    profile = RequestProfile()
+    profile = RequestProfile(surface="anthropic")
+    profile.native_only = anthropic_protocol.untranslatable(body)
     profile.requires_streaming = bool(body.get("stream"))
     if body.get("tools") or body.get("tool_choice"):
         profile.requires_tools = True
     # นิยาม tool ของ Claude Code อย่างเดียวก็หลักหมื่น token และถูกส่งทุกเทิร์น
     profile.add_text(_json_text(body.get("tools")))
+    # schema ของ structured output ไปถึง backend เป็น `response_format` และกิน context
+    profile.add_text(_json_text(anthropic_protocol.response_format(body)))
 
     system = body.get("system")
     if isinstance(system, str):
@@ -518,22 +563,25 @@ def profile_anthropic_request(body: dict[str, Any], policy: VisionPolicy) -> Req
                 nested = block.get("content")
                 if isinstance(nested, str):
                     profile.add_text(nested)
-                # tool_result may itself carry images.
+                # tool_result may itself carry images and documents.
                 if isinstance(nested, list):
                     for n_idx, nested_block in enumerate(nested):
-                        if isinstance(nested_block, dict) and nested_block.get("type") == "text":
+                        if not isinstance(nested_block, dict):
+                            continue
+                        npath = f"{path}.content[{n_idx}]"
+                        if nested_block.get("type") == "text":
                             profile.add_text(nested_block.get("text") or "")
-                        if (
-                            isinstance(nested_block, dict)
-                            and nested_block.get("type") == "image"
-                        ):
+                        elif nested_block.get("type") == "image":
                             profile.modalities.add("image")
                             profile.images.append(
-                                _profile_anthropic_image(
-                                    nested_block, policy, f"{path}.content[{n_idx}]"
-                                )
+                                _profile_anthropic_image(nested_block, policy, npath)
                             )
-            elif btype in {"document", "thinking", "redacted_thinking"}:
+                        elif nested_block.get("type") == "document":
+                            _profile_anthropic_document(profile, nested_block, policy, npath)
+            elif btype == "document":
+                _profile_anthropic_document(profile, block, policy, path)
+            elif btype in {"thinking", "redacted_thinking"}:
+                # ไม่ถูกส่งต่อเมื่อแปล (ความคิดของโมเดลอื่น) จึงไม่ถูกนับ
                 continue
             else:
                 raise GatewayError(
@@ -543,6 +591,29 @@ def profile_anthropic_request(body: dict[str, Any], policy: VisionPolicy) -> Req
                 )
 
     return _checked(profile, policy)
+
+
+def _profile_anthropic_document(
+    profile: RequestProfile, block: dict[str, Any], policy: VisionPolicy, path: str
+) -> None:
+    """นับสิ่งที่บล็อก `document` จะกลายเป็นเมื่อส่งให้ backend — ข้อความกับรูปของมัน
+
+    เดิมบล็อกนี้ถูกข้ามทั้งใน profiler และในตัวแปล: เอกสาร 200 หน้าที่แนบมาเป็นข้อความ
+    ไม่ถูกนับ และไม่ถูกส่ง (ตรวจ 2026-10-06) · ตอนนี้ตัวแปลส่งข้อความของมันไป ที่นี่จึงต้อง
+    นับของชิ้นเดียวกัน — ใช้ `document_parts` ตัวเดียวกับตัวแปล ไม่เดาเอง · เอกสารที่แปล
+    ไม่ได้ (PDF) ไม่ถูกนับ: ถูกปฏิเสธผ่าน `native_only` หรือไปถึงเครื่องที่นับเองได้
+    """
+    for part in anthropic_protocol.document_parts(block) or []:
+        if part["type"] == "text":
+            profile.add_text(part["text"])
+    source = block.get("source")
+    inner = source.get("content") if isinstance(source, dict) else None
+    for i_idx, item in enumerate(inner if isinstance(inner, list) else []):
+        if isinstance(item, dict) and item.get("type") == "image":
+            profile.modalities.add("image")
+            profile.images.append(
+                _profile_anthropic_image(item, policy, f"{path}.source.content[{i_idx}]")
+            )
 
 
 def _profile_anthropic_image(

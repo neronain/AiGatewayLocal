@@ -27,10 +27,14 @@ middleware เปิดสมุดจดหนึ่งเล่มต่อค
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 
 # เพดานคำตอบที่ส่งให้ backend ต่ำกว่าที่ผู้เรียกขอ (หรือต่ำกว่าเพดานของโมเดลเมื่อไม่ได้ขอ)
 OUTPUT_CAP = "x-litegate-output-cap"
+# นิยามเครื่องมือที่ตัวแปลข้ามไป เพราะ backend ในบ้านรันไม่ได้ (เครื่องมือที่ผู้ให้บริการรันเอง)
+IGNORED = "x-litegate-ignored"
 
 _book: ContextVar[dict[str, str] | None] = ContextVar("litegate_notices", default=None)
 
@@ -51,6 +55,20 @@ def put(header: str, value: str | None) -> None:
         book.pop(header, None)
     else:
         book[header] = value
+
+
+@contextmanager
+def muted() -> Iterator[None]:
+    """ปิดสมุดชั่วคราว — สำหรับด่านที่ถูกเรียกเพื่อ *ลองถาม* ว่าโมเดลอื่นรับได้ไหม
+
+    `rules.can_serve` รันด่านจริงกับโมเดลผู้สมัคร (routing rule · fallback · auto) · สิ่งที่ด่าน
+    จดระหว่างนั้นเป็นเรื่องของโมเดลที่อาจไม่ได้ถูกเลือก จึงต้องไม่ไปถึงผู้เรียก
+    """
+    token = _book.set(None)
+    try:
+        yield
+    finally:
+        _book.reset(token)
 
 
 def current() -> dict[str, str]:

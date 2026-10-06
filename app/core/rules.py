@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from app.core import notices
 from app.core.capability import (
     CONTEXT_TOLERANCE,
     validate_model_capabilities,
@@ -73,8 +74,10 @@ def can_serve(
     if not model.spec.enabled:
         return False
     try:
-        validate_protocol(model, protocol)
-        validate_model_capabilities(model, profile)
+        # แค่ลองถาม — สิ่งที่ด่านจะแจ้งผู้เรียกเป็นเรื่องของโมเดลที่ยังไม่ได้ถูกเลือก
+        with notices.muted():
+            validate_protocol(model, protocol)
+            validate_model_capabilities(model, profile)
     except GatewayError:
         return False
     return True

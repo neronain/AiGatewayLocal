@@ -60,6 +60,41 @@ def validate_model_capabilities(model: ModelDefinition, profile: RequestProfile)
     if not caps.chat:
         raise capability_error(alias, "chat completions")
 
+    _validate_translatable(model, profile)
+
+
+def _speaks_natively(model: ModelDefinition, surface: str) -> bool:
+    return any(
+        e.enabled and getattr(e.protocols, surface, False) for e in model.spec.endpoints
+    )
+
+
+def _validate_translatable(model: ModelDefinition, profile: RequestProfile) -> None:
+    """คำขอมีส่วนที่ chat completions แสดงไม่ได้ และโมเดลนี้เสิร์ฟ surface นี้ผ่านตัวแปลเท่านั้น
+
+    เดิมตัวแปลทิ้งส่วนพวกนั้นเงียบ ๆ แล้วโมเดลตอบโดยไม่เห็นสิ่งที่ผู้ใช้ส่งมา · ตอบ 400 ที่
+    ระบุตำแหน่งตรงนี้ — ก่อนโควตา ก่อนจองช่อง ก่อนเปิดสตรีม · โมเดลที่มีเครื่องพูด protocol
+    นั้นเองผ่านด่านนี้ และ `endpoint_supports` จะกันไม่ให้คำขอไปลงเครื่องที่ต้องแปล
+
+    นิยามเครื่องมือที่ตัวแปลจะ *ข้าม* ไม่ใช่เหตุให้ปฏิเสธ แต่ต้องบอก: header
+    `x-litegate-ignored` (เฉพาะเมื่อโมเดลนี้ต้องแปลแน่ ๆ)
+    """
+    if not profile.surface or _speaks_natively(model, profile.surface):
+        return
+    if profile.native_only:
+        path, why = profile.native_only[0]
+        more = len(profile.native_only) - 1
+        raise GatewayError(
+            ErrorCode.INVALID_CONTENT_BLOCK,
+            f"{path}: {why}." + (f" ({more} more part(s) like this.)" if more else ""),
+            param=path,
+            details={
+                "model": model.alias,
+                "unsupported": [where for where, _ in profile.native_only][:20],
+            },
+        )
+    notices.put(notices.IGNORED, ", ".join(profile.skipped_in_translation[:20]) or None)
+
 
 def validate_protocol(model: ModelDefinition, protocol: str) -> None:
     """Gate 1b - is this API surface enabled for the model?"""
@@ -88,6 +123,10 @@ def endpoint_supports(endpoint: Endpoint, profile: RequestProfile, protocol: str
     if not endpoint.enabled:
         return False
     if not getattr(endpoint.protocols, protocol, False):
+        return False
+    # มีส่วนที่แปลไม่ได้ → เฉพาะเครื่องที่พูด protocol ของ surface ที่คำขอเข้ามาเอง · ไม่งั้น
+    # failover จากเครื่อง native ไปเครื่อง openai-only จะพาคำขอไปถูกแปลแบบของหาย
+    if profile.native_only and protocol != profile.surface:
         return False
     for modality in profile.modalities:
         try:

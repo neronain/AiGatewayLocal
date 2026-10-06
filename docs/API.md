@@ -352,6 +352,7 @@ curl -X POST $GW/v1/chat/completions \
 | `x-litegate-endpoint` | Which backend machine answered |
 | `x-litegate-failed-over` | Backends tried and skipped before this one |
 | `x-litegate-output-cap` | Present **only when the gateway sent the backend a lower output limit than you asked for** (or, if you named none, lower than the model's own limit): `granted=256; requested=4000; reason=context`. `reason` is `model-limit` (above the model's `max_output_tokens`), `n` (the limit is shared between `n` choices) or `context` (the estimated prompt leaves less room in the context window). `requested=default` means you sent no limit. Sent on `/v1/chat/completions`, `/v1/messages` and `/v1/responses`, streaming or not; on a stream it describes the model chosen before the first byte |
+| `x-litegate-ignored` | Present **only on `/v1/responses` served by translation, when the request declared tools the backend cannot run** (OpenAI-hosted tools such as `web_search`): `tools[1]:web_search, tools[2]:image_generation`. Those definitions were not offered to the model; everything else was. A request that *depends* on such a tool (`tool_choice` forcing it, or its calls in `input`) is refused with a 400 instead |
 | `x-litegate-by` | Author attribution (present on every response) |
 
 ---
