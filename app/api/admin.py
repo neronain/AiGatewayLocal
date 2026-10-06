@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import config
 from app.core import assistant_fit, lmds, release
+from app.core.audit import audit
 from app.core.auth import (
     Principal,
     extract_bearer_token,
@@ -159,34 +160,44 @@ async def _visible_users(session: AsyncSession, actor: Principal) -> set[str] | 
     return await users_in_workspaces(session, scope) | {actor.user_id}
 
 
-async def audit(
-    session: AsyncSession,
-    request: Request,
-    actor: Principal,
-    action: str,
-    target_type: str = "",
-    target_id: str = "",
-    payload: dict | None = None,
-) -> None:
-    session.add(
-        AuditLog(
-            actor_user_id=actor.user_id,
-            action=action,
-            target_type=target_type,
-            target_id=target_id,
-            payload=payload or {},
-            ip=request.client.host if request.client else "",
+# ---------------------------------------------------------------------------
+# Field lengths
+# ---------------------------------------------------------------------------
+# SQLite stores a 400-character name in a VARCHAR(128) without complaint;
+# PostgreSQL refuses it, at commit, as an HTTP 500 with a driver error nobody
+# at the console can act on. Every piece of text a caller can send is therefore
+# checked against the column it lands in *before* it reaches the database, and
+# the width is read from the model so the two cannot drift apart.
+def _width(column) -> int:
+    return int(column.type.length)
+
+
+def _check_text(payload: dict[str, Any], name: str, column, *, nullable: bool = False) -> None:
+    """Length check for the routes that take a free-form JSON object.
+
+    Those bypass pydantic entirely, so a number, a list or a novel would
+    otherwise travel straight into `setattr`.
+    """
+    if name not in payload:
+        return
+    value = payload[name]
+    if value is None and nullable:
+        return
+    limit = _width(column)
+    if not isinstance(value, str) or len(value) > limit or "\x00" in value:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            f"{name} must be text of at most {limit} characters.",
         )
-    )
 
 
 # ---------------------------------------------------------------------------
 # Users
 # ---------------------------------------------------------------------------
 class UserIn(BaseModel):
-    external_id: str = Field(min_length=1, max_length=128)
-    display_name: str = ""
-    email: str | None = None
+    external_id: str = Field(min_length=1, max_length=_width(User.__table__.c.external_id))
+    display_name: str = Field(default="", max_length=_width(User.__table__.c.display_name))
+    email: str | None = Field(default=None, max_length=_width(User.__table__.c.email))
     role: str = "member"
     status: str = "active"
 
@@ -297,6 +308,8 @@ async def update_user(
                 "there is no way back through the console.",
             )
         payload = {**payload, "role": new_role}
+    _check_text(payload, "display_name", User.__table__.c.display_name)
+    _check_text(payload, "email", User.__table__.c.email, nullable=True)
     for field_name in ("display_name", "email", "role", "status"):
         if field_name in payload:
             setattr(user, field_name, payload[field_name])
@@ -411,9 +424,9 @@ def _user_dict(user: User) -> dict[str, Any]:
 # Workspaces
 # ---------------------------------------------------------------------------
 class WorkspaceIn(BaseModel):
-    code: str = Field(min_length=1, max_length=64)
-    name: str
-    term: str = ""
+    code: str = Field(min_length=1, max_length=_width(Workspace.__table__.c.code))
+    name: str = Field(max_length=_width(Workspace.__table__.c.name))
+    term: str = Field(default="", max_length=_width(Workspace.__table__.c.term))
 
 
 @router.post("/workspaces", status_code=201)
@@ -444,8 +457,10 @@ async def create_workspace(
 # Access groups — a named bundle of aliases, handed out whole
 # ---------------------------------------------------------------------------
 class AccessGroupIn(BaseModel):
-    name: str = Field(min_length=1, max_length=64)
-    description: str = ""
+    name: str = Field(min_length=1, max_length=_width(AccessGroup.__table__.c.name))
+    description: str = Field(
+        default="", max_length=_width(AccessGroup.__table__.c.description)
+    )
     models: list[str] = Field(default_factory=list)
     enabled: bool = True
 
@@ -543,6 +558,12 @@ async def update_access_group(
         models = [str(a) for a in payload["models"]]
         await _known_aliases(state, models)
         group.models = models
+    _check_text(payload, "name", AccessGroup.__table__.c.name)
+    _check_text(payload, "description", AccessGroup.__table__.c.description)
+    if "name" in payload and not payload["name"].strip():
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "name cannot be empty.")
+    if "enabled" in payload and not isinstance(payload["enabled"], bool):
+        raise GatewayError(ErrorCode.INVALID_REQUEST, "enabled must be true or false.")
     for field_name in ("name", "description", "enabled"):
         if field_name in payload:
             setattr(group, field_name, payload[field_name])
@@ -1013,6 +1034,7 @@ async def join(
     if await session.get(Workspace, workspace_id) is None:
         raise GatewayError(ErrorCode.INVALID_REQUEST, "Workspace not found.")
     await _assert_owns(session, actor, workspace_id)
+    _check_text(payload, "role", Membership.__table__.c.role)
     existing = await session.execute(
         select(Membership).where(
             Membership.workspace_id == workspace_id, Membership.user_id == user_id
@@ -1057,7 +1079,7 @@ async def join(
 class ApiKeyIn(BaseModel):
     user_id: str
     workspace_id: str | None = None
-    name: str = ""
+    name: str = Field(default="", max_length=_width(ApiKey.__table__.c.name))
     expires_in_days: int | None = 180
     scopes: list[str] = Field(default_factory=list)
     # จำกัด key ใบนี้ให้ใช้ได้เฉพาะ alias เหล่านี้ · ว่าง = ไม่จำกัดเพิ่ม
@@ -1607,10 +1629,15 @@ async def purge_api_key(
             "off whoever is holding it with no record of which key it was.",
         )
 
-    detail = f"{api_key.name or '(unnamed)'} {api_key.key_prefix}"
     dropped = await _drop_key_ceilings(session, [key_id])
-    await audit(session, request, actor, "apikey.purge", "apikey", f"{key_id} {detail}",
-                {"key_policies_removed": dropped})
+    # The id goes in `target_id`; what the row carried goes in the payload,
+    # which has room for it. Both used to be glued into `target_id`, which is
+    # VARCHAR(128): a key named with more than ~82 characters could not be
+    # purged on PostgreSQL at all - the audit row was refused and took the
+    # delete down with it.
+    await audit(session, request, actor, "apikey.purge", "apikey", key_id,
+                {"name": api_key.name or "", "key_prefix": api_key.key_prefix,
+                 "owner": api_key.user_id, "key_policies_removed": dropped})
     await session.delete(api_key)
     await session.commit()
     return {"id": key_id, "purged": True}
@@ -1640,9 +1667,9 @@ async def purge_revoked_api_keys(
         await session.delete(api_key)
     # One audit line for the sweep - a line per key would bury the log with the
     # thing being cleaned up.
-    await audit(session, request, actor, "apikey.purge_revoked", "apikey",
-                f"{len(keys)} key(s), older_than_days={older_than_days}",
-                {"key_policies_removed": dropped})
+    await audit(session, request, actor, "apikey.purge_revoked", "apikey", "",
+                {"purged": len(keys), "older_than_days": older_than_days,
+                 "key_policies_removed": dropped})
     await session.commit()
     return {"purged": len(keys)}
 
@@ -1787,10 +1814,16 @@ async def delete_quota_policy(
     if policy is None:
         raise GatewayError(ErrorCode.INVALID_REQUEST, "Quota policy not found.")
 
-    detail = (f"scope={policy.scope} window={policy.window} "
-              f"requests={policy.max_requests} user={policy.user_id or '-'} "
-              f"workspace={policy.workspace_id or '-'} model={policy.model_alias or '-'}")
-    await audit(session, request, actor, "quota.delete", "quota", f"{policy_id} {detail}")
+    # What the policy was goes in the payload, not after the id in `target_id`
+    # (VARCHAR(128)): for a workspace-and-model policy the old one-line form was
+    # 138 characters, PostgreSQL refused the audit row, and the delete rolled
+    # back with an HTTP 500.
+    await audit(session, request, actor, "quota.delete", "quota", policy_id, {
+        "name": policy.name or "", "scope": policy.scope, "window": policy.window,
+        "max_requests": policy.max_requests, "user_id": policy.user_id,
+        "workspace_id": policy.workspace_id, "api_key_id": policy.api_key_id,
+        "model_alias": policy.model_alias, "access_group_id": policy.access_group_id,
+    })
     await session.delete(policy)
     await session.commit()
     return {"id": policy_id, "deleted": True}

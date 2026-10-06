@@ -51,7 +51,9 @@ class Credentials(BaseModel):
 
 
 class SetupRequest(Credentials):
-    display_name: str = ""
+    # users.display_name is VARCHAR(255). SQLite does not care; PostgreSQL turns
+    # a longer one into an HTTP 500 on the very first screen anyone sees.
+    display_name: str = Field(default="", max_length=255)
 
 
 def _set_session_cookie(response: Response, request: Request, token: str) -> None:
