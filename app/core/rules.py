@@ -56,10 +56,15 @@ class RouteDecision:
         return bool(self.hops)
 
 
-def _can_serve(
+def can_serve(
     model: ModelDefinition, profile: RequestProfile, protocol: str
 ) -> bool:
     """Would this model accept the request if we sent it there?
+
+    The one predicate for "may this request be moved to that model" - used by
+    overflow/small-prompt routing, by `fallback_models`, and by `model="auto"`
+    (app/core/auto.py). It runs the very gates the request path runs next, so a
+    model that passes here cannot then be refused by them.
 
     Routing must never turn a clean 400 into a confusing one. If the target
     cannot do vision and the request has an image, we leave the request where it
@@ -73,6 +78,9 @@ def _can_serve(
     except GatewayError:
         return False
     return True
+
+
+_can_serve = can_serve
 
 
 def _prompt_tokens(model: ModelDefinition, profile: RequestProfile) -> int:

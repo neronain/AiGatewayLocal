@@ -44,7 +44,7 @@ from app.core.jsonio import FastJSONResponse
 from app.core.multimodal import RequestProfile, profile_openai_request
 from app.core.quota import Consumption
 from app.core.rules import fallback_models, resolve_route
-from app.core.tokens import OutputMeter, TokenUsage, resolve_usage
+from app.core.tokens import OutputMeter, TokenUsage, estimate_prompt_tokens, resolve_usage
 from app.db.session import get_session, release_connection
 from app.registry.schema import Endpoint, ModelDefinition
 from app.state import AppState, get_state
@@ -224,13 +224,7 @@ async def run_chat(
             perf=state.perf,
         )
         if auto_choice is None:
-            raise GatewayError(
-                ErrorCode.MODEL_NOT_FOUND,
-                "ไม่มีโมเดลที่คุณใช้ได้ตัวไหนรับคำขอรูปนี้ได้ "
-                "(ลองระบุชื่อโมเดลตรง ๆ แทน auto)",
-                param="model",
-                details={"available_models": sorted(m.alias for m in allowed)},
-            )
+            raise _nothing_for_auto(allowed, draft)
         alias = auto_choice.model.alias
         log.info("auto -> %s (%s, request %s)", alias, auto_choice.reason, request_id)
 
@@ -808,6 +802,35 @@ async def _read_json(request: Request) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise GatewayError(ErrorCode.INVALID_REQUEST, "Request body must be a JSON object.")
     return body
+
+
+def _nothing_for_auto(allowed: list[ModelDefinition], profile: RequestProfile) -> GatewayError:
+    """`model="auto"` หาโมเดลไม่ได้ — บอกว่าคำขอต้องการอะไร และดูตัวไหนไปแล้วบ้าง
+
+    "ไม่มีตัวไหนรับได้" เฉย ๆ ไม่ช่วยอะไร: ผู้เรียกไม่รู้ว่าติดที่ภาพ ที่ tools หรือที่ความยาว ·
+    รายชื่อที่ให้คือโมเดลที่เขาใช้ได้อยู่แล้ว (กรองสิทธิ์มาก่อนถึงตรงนี้) — เรียกชื่อตรง ๆ แล้ว
+    จะได้ข้อความของโมเดลตัวนั้นว่าปฏิเสธเพราะอะไร
+    """
+    considered = sorted(m.alias for m in allowed)
+    if not considered:
+        return GatewayError(
+            ErrorCode.MODEL_NOT_FOUND,
+            "model=\"auto\" has nothing to choose from: no model is available to this key.",
+            param="model",
+            details={"available_models": []},
+        )
+    needs = profile.required_capabilities()
+    wanted = (
+        f"it needs {', '.join(needs)} and " if needs else ""
+    ) + f"is about {estimate_prompt_tokens(profile):,} prompt tokens"
+    return GatewayError(
+        ErrorCode.MODEL_NOT_FOUND,
+        "model=\"auto\" found no model that can serve this request over the "
+        f"chat completions API: {wanted}. Considered: {', '.join(considered)}. "
+        "Name one of them instead of \"auto\" to see why it refuses.",
+        param="model",
+        details={"available_models": considered, "required_capabilities": needs},
+    )
 
 
 def _offered_aliases(snapshot, principal: Principal, permission: Permission) -> list[str]:

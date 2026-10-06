@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from app.core.capability import endpoint_supports
 from app.core.multimodal import RequestProfile
 from app.core.perf import ModelPerf, PerfStore
+from app.core.rules import can_serve
 from app.core.tokens import estimate_prompt_tokens
 from app.registry.schema import ModelDefinition
 
@@ -48,8 +49,17 @@ class AutoChoice:
         return self.ranked[1:]
 
 
+# surface ที่เกตเวย์แปลเป็น chat completions ให้ได้ — เครื่องที่พูดแต่ openai จึงเสิร์ฟได้ด้วย
+# (ตรงกับ `_select` ใน app/api/anthropic.py และ app/api/responses.py)
+_TRANSLATED_SURFACES = frozenset({"anthropic", "responses"})
+
+
 def _serves(model: ModelDefinition, profile: RequestProfile, protocol: str) -> bool:
-    return any(endpoint_supports(e, profile, protocol) for e in model.spec.endpoints)
+    """มีเครื่องของโมเดลนี้อย่างน้อยหนึ่งเครื่องที่รับคำขอรูปนี้ได้ไหม (ด่านที่สองของ capability)"""
+    wire = (protocol, "openai") if protocol in _TRANSLATED_SURFACES else (protocol,)
+    return any(
+        endpoint_supports(e, profile, p) for e in model.spec.endpoints for p in wire
+    )
 
 
 def _fits(model: ModelDefinition, profile: RequestProfile) -> bool:
@@ -70,10 +80,22 @@ def candidates(
     profile: RequestProfile,
     protocol: str,
 ) -> list[ModelDefinition]:
-    """โมเดลที่รับคำขอรูปนี้ได้จริง — กรองด้วยข้อเท็จจริง ไม่ใช่ความชอบ"""
+    """โมเดลที่รับคำขอรูปนี้ได้จริง — กรองด้วยข้อเท็จจริง ไม่ใช่ความชอบ
+
+    **ต้องกรองด้วยด่านชุดเดียวกับที่ทางเดินคำขอจะตรวจต่อ** (`rules.can_serve`: โมเดลเปิดอยู่ ·
+    เปิด surface นี้ · ประกาศ capability ที่คำขอต้องใช้) ไม่ใช่แค่ดูเครื่องกับขนาด context ·
+    เดิมดูแค่สองอย่างหลัง แล้วด่าน capability กับ surface ไปตรวจทีหลังกับ *ตัวที่ชนะตัวเดียว*:
+    ตั้ง `coding` เป็น `tools: false` แล้วขอ `auto` พร้อม tools ได้ 400
+    MODEL_CAPABILITY_NOT_SUPPORTED ทั้งที่ gemma-vision กับ muse-local รับได้ · ปิด
+    `protocols.openai` ของ `coding` ได้ 400 PROTOCOL_NOT_SUPPORTED ทั้งที่อีกสองตัวเสิร์ฟ chat
+    อยู่ (ตรวจ 2026-10-06) — `auto` ที่เลือกตัวซึ่งด่านถัดไปปฏิเสธ แย่กว่าไม่มี `auto`
+    """
     return [
         m for m in models
-        if m.alias != ALIAS and _serves(m, profile, protocol) and _fits(m, profile)
+        if m.alias != ALIAS
+        and can_serve(m, profile, protocol)
+        and _serves(m, profile, protocol)
+        and _fits(m, profile)
     ]
 
 
