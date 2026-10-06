@@ -348,8 +348,7 @@ def profile_openai_request(body: dict[str, Any], policy: VisionPolicy) -> Reques
                     param=f"{path}.type",
                 )
 
-    _enforce_image_count(profile, policy)
-    return profile
+    return _checked(profile, policy)
 
 
 def profile_responses_request(body: dict[str, Any], policy: VisionPolicy) -> RequestProfile:
@@ -378,7 +377,7 @@ def profile_responses_request(body: dict[str, Any], policy: VisionPolicy) -> Req
                 ErrorCode.INVALID_REQUEST, "'input' must not be empty.", param="input"
             )
         profile.add_text(payload)
-        return profile
+        return _checked(profile, policy)
 
     if not isinstance(payload, list) or not payload:
         raise GatewayError(
@@ -442,7 +441,7 @@ def profile_responses_request(body: dict[str, Any], policy: VisionPolicy) -> Req
                     param=ppath,
                 )
 
-    return profile
+    return _checked(profile, policy)
 
 
 def profile_anthropic_request(body: dict[str, Any], policy: VisionPolicy) -> RequestProfile:
@@ -529,8 +528,7 @@ def profile_anthropic_request(body: dict[str, Any], policy: VisionPolicy) -> Req
                     param=f"{path}.type",
                 )
 
-    _enforce_image_count(profile, policy)
-    return profile
+    return _checked(profile, policy)
 
 
 def _profile_anthropic_image(
@@ -564,6 +562,20 @@ def _profile_anthropic_image(
         f"{path}.source.type '{stype}' is not supported.",
         param=path,
     )
+
+
+def _checked(profile: RequestProfile, policy: VisionPolicy) -> RequestProfile:
+    """ทางออกเดียวของ profiler ทั้งสาม — นโยบายที่ตัดสินจาก *ทั้งคำขอ* อยู่ที่นี่ที่เดียว
+
+    นโยบายต่อภาพ (ขนาด · ชนิด · URL ภายนอก) บังคับตอนอ่านภาพแต่ละใบใน `_handle_image_source`
+    ซึ่งทั้งสาม surface เรียกตัวเดียวกันอยู่แล้ว · ที่เคยหลุดคือนโยบาย *ต่อคำขอ*: แต่ละ profiler
+    เรียก `_enforce_image_count` เองตอนท้าย และ `profile_responses_request` ไม่ได้เรียก —
+    9 ภาพบน /v1/chat/completions กับ /v1/messages ได้ 400 แต่ /v1/responses ส่งทั้ง 9 ใบ
+    ไปถึง backend (ตรวจ 2026-10-06 · เพดานคือ 4) · ด่านที่ต้องจำเรียกเองคือด่านที่วันหนึ่ง
+    จะมีทางที่สี่ลืม จึงให้ทุก profiler `return _checked(...)` แทน `return profile`
+    """
+    _enforce_image_count(profile, policy)
+    return profile
 
 
 def _enforce_image_count(profile: RequestProfile, policy: VisionPolicy) -> None:
