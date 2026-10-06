@@ -272,18 +272,50 @@ def _valid_role(value: str) -> str:
     return role
 
 
-async def _would_remove_last_admin(session: AsyncSession, user: User, new_role: str) -> bool:
-    """เปลี่ยน role นี้แล้วจะไม่เหลือ admin เลยไหม
+# สถานะของบัญชี — ชุดเดียวกับที่ `core/auth.authenticate` ใช้ตัดสิน และมันเทียบ
+# `!= "active"` ตรง ๆ · ค่าอื่นทุกค่าจึงแปลว่า "เข้าไม่ได้" รวมถึงค่าที่พิมพ์ผิด:
+# `{"status": "Suspended"}` เคยถูกบันทึกลงไปทั้งอย่างนั้น ซึ่งระงับบัญชีได้จริง แต่ไม่มี
+# อะไรในระบบรู้จักค่านี้ และ `{"status": "Active"}` คือการระงับโดยตั้งใจจะเปิด
+USER_STATUSES = ("active", "suspended")
 
-    ไม่มี admin = ไม่มีใครออก key ใหม่ ตั้ง quota หรือแก้ registry ได้อีก และไม่มี
-    ทางกลับผ่านหน้าเว็บด้วย ต้องไปแก้ในฐานข้อมูลเอง
+
+def _valid_status(value: Any) -> str:
+    # ตรงตัวอักษร ไม่ตัดช่องว่าง ไม่แปลงตัวพิมพ์: ค่านี้ถูกเทียบแบบตรงตัวทุกที่ที่อ่าน
+    if not isinstance(value, str) or value not in USER_STATUSES:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            f"status must be one of {', '.join(USER_STATUSES)} (got {value!r}).",
+        )
+    return value
+
+
+async def _leaves_no_active_admin(
+    session: AsyncSession, user: User, new_role: str, new_status: str
+) -> bool:
+    """เปลี่ยนแล้วจะไม่เหลือ admin ที่ *ใช้งานได้* เลยไหม
+
+    ไม่มี admin ที่ใช้งานได้ = ไม่มีใครออก key ใหม่ ตั้ง quota หรือแก้ registry ได้อีก
+    และไม่มีทางกลับผ่านหน้าเว็บด้วย ต้องไปแก้ในฐานข้อมูลเอง · `/auth/setup` ก็ไม่เปิดให้
+    เพราะยังมีแถว admin อยู่ (ตรวจ 2026-10-06: ระงับ admin คนสุดท้ายแล้วทุกคำขอของ
+    ผู้ดูแลได้ 403 และ `needs_setup` ยังเป็น false)
+
+    ด่านเดิมดูแค่ `role` และนับ admin ทุกคนไม่ว่าสถานะอะไร จึงหลุดสองทาง: ระงับ admin
+    คนสุดท้ายได้ตรง ๆ และลดขั้น admin คนเดียวที่ยังใช้งานได้ก็ผ่าน ถ้ามี admin อีกคนที่
+    ถูกระงับอยู่แล้วให้นับ · นับเฉพาะคนที่ทั้งเป็น admin และ active และถามทั้งสองช่อง
+    ที่เปลี่ยนได้พร้อมกัน
     """
-    if user.role != "admin" or new_role == "admin":
+    is_one = user.role == "admin" and user.status == "active"
+    stays_one = new_role == "admin" and new_status == "active"
+    if not is_one or stays_one:
         return False
-    result = await session.execute(
-        select(func.count()).select_from(User).where(User.role == "admin")
+    # FOR UPDATE บน PostgreSQL: admin สองคนลดขั้นกันและกันพร้อมกันต้องต่อคิว ไม่ใช่ต่างคน
+    # ต่างนับได้ "ยังเหลืออีกหนึ่ง" แล้วจบที่ศูนย์ · SQLite ไม่มีและไม่ต้องมี (write ทีละตัว)
+    others = await session.execute(
+        select(User.id)
+        .where(User.role == "admin", User.status == "active", User.id != user.id)
+        .with_for_update()
     )
-    return int(result.scalar() or 0) <= 1
+    return others.first() is None
 
 
 @router.post("/users", status_code=201)
@@ -294,6 +326,7 @@ async def create_user(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     payload.role = _valid_role(payload.role)
+    payload.status = _valid_status(payload.status)
     existing = await session.execute(
         select(User).where(User.external_id == payload.external_id)
     )
@@ -352,15 +385,17 @@ async def update_user(
     user = await session.get(User, user_id)
     if user is None:
         raise GatewayError(ErrorCode.INVALID_REQUEST, "User not found.")
+    new_role = _valid_role(payload["role"]) if "role" in payload else user.role
+    new_status = _valid_status(payload["status"]) if "status" in payload else user.status
+    if await _leaves_no_active_admin(session, user, new_role, new_status):
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            "This is the only administrator who can still sign in. Give someone "
+            "else the admin role first (and make sure their account is active) — "
+            "with none, nobody can issue keys or change settings, and there is no "
+            "way back through the console.",
+        )
     if "role" in payload:
-        new_role = _valid_role(payload["role"])
-        if await _would_remove_last_admin(session, user, new_role):
-            raise GatewayError(
-                ErrorCode.INVALID_REQUEST,
-                "This is the only administrator. Give someone else the admin role "
-                "first — with none, nobody can issue keys or change settings, and "
-                "there is no way back through the console.",
-            )
         payload = {**payload, "role": new_role}
     _check_text(payload, "display_name", User.__table__.c.display_name)
     _check_text(payload, "email", User.__table__.c.email, nullable=True)
