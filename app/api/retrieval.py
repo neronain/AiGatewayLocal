@@ -82,7 +82,7 @@ router = APIRouter(tags=["retrieval"])
 EMBEDDINGS_PATH = "/v1/embeddings"
 RERANK_PATH = "/v1/rerank"
 
-Profiler = Callable[[dict[str, Any]], RequestProfile]
+Profiler = Callable[[dict[str, Any], TokenRates], RequestProfile]
 
 
 @router.post(EMBEDDINGS_PATH)
@@ -161,7 +161,9 @@ async def _serve(
     )
     validate_protocol(model, surface)
 
-    profile = profiler(body)
+    # อัตราของโมเดลตัวนี้ — ตัวเดียวกับที่ `_rate(context)` จะใช้คิดยอดที่บันทึก · ด่านกับบิล
+    # ต้องเห็นคำขอเป็นขนาดเดียวกัน
+    profile = profiler(body, rates_of(model.spec))
     validate_batch_context(model, profile)
 
     limits = await state.quota.resolve_limits(

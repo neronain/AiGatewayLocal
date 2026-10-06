@@ -28,7 +28,7 @@ from typing import Any
 from app.config import get_settings
 from app.core.errors import ErrorCode, GatewayError
 from app.core.multimodal import RequestProfile
-from app.core.tokens import estimate_chars
+from app.core.tokens import TokenRates, estimate_chars
 
 # เส้นทางที่ยิงไปหา backend · ตรงกับที่ bundle ของ LMDS บอกว่าเสิร์ฟจริง
 # (bundles/qwen3-embedding-8b, bundles/qwen3-reranker-4b → MODEL_PROFILE.yaml)
@@ -36,14 +36,16 @@ UPSTREAM_EMBEDDINGS_PATH = "/v1/embeddings"
 UPSTREAM_RERANK_PATH = "/v1/rerank"
 
 
-def _tokens(text: str = "", token_ids: int = 0) -> int:
+def _tokens(text: str = "", token_ids: int = 0, rates: TokenRates | None = None) -> int:
     """ต้นทุนของงานย่อยหนึ่งชิ้น · token id นับเป๊ะ ส่วนข้อความต้องประมาณ
 
-    ใช้ตัวประมาณตัวเดียวกับที่นับโควตา — ไม่งั้นด่านตรวจ context กับยอดที่บันทึกจะ
-    ไม่ตรงกัน · เอกสารภาษาไทยยาว ๆ เคยถูกประเมินต่ำกว่าจริงเท่าตัว แล้วปล่อยผ่านด่านนี้
-    ไปให้ backend ปฏิเสธเอง
+    ใช้ตัวประมาณตัวเดียวกับที่นับโควตา **ด้วยอัตราของโมเดลตัวเดียวกัน** — ไม่งั้นด่านตรวจ
+    context กับยอดที่บันทึกจะไม่ตรงกัน · เดิมด่านนี้ใช้ค่ากลาง (1.6 อักขระนอก ASCII ต่อ token)
+    เสมอ ขณะที่บิลใช้อัตราของโมเดล: เอกสารไทย 16,000 อักขระบนโมเดลที่วัดได้ 3.86 กับหน้าต่าง
+    8,192 ถูกคิดเงิน 4,145 token แต่ด่านเชื่อว่า 10,000 แล้วปฏิเสธ · กลับกัน โมเดลที่อัตราต่ำ
+    กว่า 1.6 ถูกปล่อยผ่านด่านไปให้ backend ตอบ 400 เอง (ตรวจ 2026-10-06)
     """
-    return estimate_chars(text) + token_ids
+    return estimate_chars(text, rates) + token_ids
 
 
 def _check_batch_size(count: int, param: str) -> None:
@@ -72,8 +74,13 @@ def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def profile_embeddings_request(body: dict[str, Any]) -> RequestProfile:
+def profile_embeddings_request(
+    body: dict[str, Any], rates: TokenRates | None = None
+) -> RequestProfile:
     """ตรวจ body ของ /v1/embeddings · ไม่แก้ body (เกตเวย์ส่งต่อของเดิม)
+
+    `rates` = อัตรา tokenizer ของโมเดลที่จะรับคำขอ — ใช้คิด `largest_item_tokens` ที่ด่าน
+    context อ่าน · ไม่ส่งมา = ค่ากลาง (สำหรับผู้เรียกที่ยังไม่รู้ว่าโมเดลไหน)
 
     `input` รับได้สี่แบบตามสเปกของ OpenAI ซึ่ง vLLM ทำตาม:
     สตริงเดียว · อาร์เรย์ของสตริง · อาร์เรย์ของ token id · อาร์เรย์ของอาร์เรย์ token id
@@ -141,12 +148,16 @@ def profile_embeddings_request(body: dict[str, Any]) -> RequestProfile:
         profile.add_text(text)
     profile.pretokenized_tokens = sum(ids for _, ids in items)
     profile.batch_items = len(items)
-    profile.largest_item_tokens = max(_tokens(text, ids) for text, ids in items)
+    profile.largest_item_tokens = max(_tokens(text, ids, rates) for text, ids in items)
     return profile
 
 
-def profile_rerank_request(body: dict[str, Any]) -> RequestProfile:
+def profile_rerank_request(
+    body: dict[str, Any], rates: TokenRates | None = None
+) -> RequestProfile:
     """ตรวจ body ของ /v1/rerank (รูปแบบ Cohere/Jina ที่ vLLM เสิร์ฟจริง)
+
+    `rates` — ดู `profile_embeddings_request`
 
     **query ถูกนับซ้ำตามจำนวนเอกสาร** และนี่คือหัวใจของไฟล์นี้ · cross-encoder ไม่ได้
     อ่าน query ครั้งเดียวแล้วเทียบกับทุกเอกสาร — มันรันใหม่ทั้ง (query + doc_i) ทีละคู่
@@ -197,7 +208,12 @@ def profile_rerank_request(body: dict[str, Any]) -> RequestProfile:
         profile.add_text(query)
         profile.add_text(document)
     profile.batch_items = len(documents)
-    profile.largest_item_tokens = _tokens(query + max(documents, key=len))
+    # คู่ที่ใหญ่ที่สุด *ตามที่โมเดลนี้จะนับ* ไม่ใช่ตามจำนวนอักขระ: เอกสารตัวเลขสั้น ๆ กิน token
+    # มากกว่าร้อยแก้วที่ยาวกว่าได้ และอัตราต่างกันตามโมเดล
+    query_tokens = _tokens(query, rates=rates)
+    profile.largest_item_tokens = query_tokens + max(
+        _tokens(document, rates=rates) for document in documents
+    )
     return profile
 
 
