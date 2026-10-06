@@ -26,7 +26,7 @@ from app.api import lifecycle
 from app.api.openai import (
     _read_json,
     _RequestContext,
-    _resolve_model,
+    resolve_model,
     select_or_fall_back,
 )
 from app.core.auth import Principal, assert_model_permitted, authenticate
@@ -86,7 +86,7 @@ async def messages(
     if not isinstance(alias, str) or not alias:
         raise GatewayError(ErrorCode.INVALID_REQUEST, "'model' is required.", param="model")
 
-    model = _resolve_model(state, alias, principal)
+    model = await resolve_model(state, session, alias, principal)
     await assert_model_permitted(
         session, principal, alias, state.registry.snapshot.gateway
     )
@@ -368,6 +368,7 @@ async def count_tokens(
     request: Request,
     principal: Principal = Depends(authenticate),
     state: AppState = Depends(get_state),
+    session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Claude Code calls this before long requests. Estimated, never tokenized.
 
@@ -377,7 +378,7 @@ async def count_tokens(
     """
     body = await _read_json(request)
     alias = body.get("model", "")
-    model = _resolve_model(state, alias, principal)
+    model = await resolve_model(state, session, alias, principal)
     policy = state.registry.snapshot.vision_policy_for(model)
     profile = profile_anthropic_request(body, policy)
     usage = resolve_usage(profile, None, model.spec.wide_chars_per_token)

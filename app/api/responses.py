@@ -30,7 +30,7 @@ from app.api import lifecycle
 from app.api.openai import (
     _read_json,
     _RequestContext,
-    _resolve_model,
+    resolve_model,
     select_or_fall_back,
 )
 from app.core.auth import Principal, assert_model_permitted, authenticate
@@ -101,7 +101,7 @@ async def create_response(
             param="previous_response_id",
         )
 
-    model = _resolve_model(state, alias, principal)
+    model = await resolve_model(state, session, alias, principal)
     await assert_model_permitted(
         session, principal, alias, state.registry.snapshot.gateway
     )

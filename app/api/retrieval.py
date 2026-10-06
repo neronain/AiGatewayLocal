@@ -41,7 +41,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import lifecycle
-from app.api.openai import _read_json, _RequestContext, _resolve_model
+from app.api.openai import _read_json, _RequestContext, resolve_model
 from app.core import jsonio
 from app.core.auth import Principal, assert_model_permitted, authenticate
 from app.core.capability import (
@@ -156,7 +156,7 @@ async def _serve(
             ErrorCode.INVALID_REQUEST, "'model' is required.", param="model"
         )
 
-    model = _resolve_model(state, alias, principal)
+    model = await resolve_model(state, session, alias, principal)
     await assert_model_permitted(
         session, principal, alias, state.registry.snapshot.gateway
     )

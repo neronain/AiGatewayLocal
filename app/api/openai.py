@@ -25,6 +25,7 @@ from app.core import auto as auto_mod
 from app.core import jsonio, responsecache
 from app.core import usage as usage_mod
 from app.core.auth import (
+    Permission,
     Principal,
     assert_model_permitted,
     authenticate,
@@ -233,7 +234,7 @@ async def run_chat(
         alias = auto_choice.model.alias
         log.info("auto -> %s (%s, request %s)", alias, auto_choice.reason, request_id)
 
-    model = _resolve_model(state, alias, principal)
+    model = await resolve_model(state, session, alias, principal)
     await assert_model_permitted(
         session, principal, alias, state.registry.snapshot.gateway
     )
@@ -809,17 +810,63 @@ async def _read_json(request: Request) -> dict[str, Any]:
     return body
 
 
+def _offered_aliases(snapshot, principal: Principal, permission: Permission) -> list[str]:
+    """alias ที่ผู้เรียก *ใช้ได้จริง* — กฎเดียวกับที่ /v1/models ใช้กรองรายการ"""
+    return sorted(
+        m.alias
+        for m in snapshot.visible_to(principal.role)
+        if permission.allows(m.alias)
+    )
+
+
+def _unknown_model(alias: str, offered: list[str] | None) -> GatewayError:
+    """404 ของ alias ที่ไม่มี · `offered` = None แปลว่าไม่รู้สิทธิ์ของผู้เรียก จึงไม่ระบุชื่อใครเลย"""
+    if offered is None:
+        return GatewayError(
+            ErrorCode.MODEL_NOT_FOUND,
+            f"Model '{alias}' does not exist. Call GET /v1/models for the models you can use.",
+            param="model",
+        )
+    listing = ", ".join(offered) if offered else "none"
+    return GatewayError(
+        ErrorCode.MODEL_NOT_FOUND,
+        f"Model '{alias}' does not exist. Available models: {listing}.",
+        param="model",
+        details={"available_models": offered},
+    )
+
+
+async def resolve_model(
+    state: AppState, session: AsyncSession, alias: str, principal: Principal
+) -> ModelDefinition:
+    """`_resolve_model` ที่รู้สิทธิ์ของผู้เรียก — ทุก surface เรียกตัวนี้
+
+    ข้อความ "ไม่มีโมเดลนี้" พ่วงรายชื่อโมเดลที่ใช้ได้มาด้วยเพื่อให้คนพิมพ์ผิดแก้ได้ทันที ·
+    เดิมรายชื่อนั้นกรองแค่ตาม role: key ที่จำกัดไว้ที่ `[coding]` พิมพ์ชื่อผิดครั้งเดียวก็ได้
+    `Available models: coding, gemma-vision, muse-local` กลับมา — เห็นแค็ตตาล็อกที่ /v1/models
+    ตั้งใจซ่อนจากมัน (ตรวจ 2026-10-06) · ตอนนี้กรองด้วยกฎเดียวกับ /v1/models: role *และ*
+    สิทธิ์ของ key/workspace
+
+    ถามสิทธิ์เฉพาะตอน alias ไม่มีจริง — ทางปกติไม่เสีย query เพิ่ม (ด่านสิทธิ์ของ alias ที่มีอยู่
+    คือ `assert_model_permitted` ซึ่งผู้เรียกเรียกต่ออยู่แล้ว)
+    """
+    snapshot = state.registry.snapshot
+    if not isinstance(alias, str) or alias not in snapshot.models:
+        permission = await permitted_aliases(session, principal, snapshot.gateway)
+        raise _unknown_model(alias, _offered_aliases(snapshot, principal, permission))
+    return _resolve_model(state, alias, principal)
+
+
 def _resolve_model(state: AppState, alias: str, principal: Principal) -> ModelDefinition:
+    """ตัวซิงก์ที่ไม่รู้สิทธิ์ของผู้เรียก — ใช้ `resolve_model` แทนเมื่อมี session
+
+    เมื่อ alias ไม่มี ตัวนี้ **ไม่ระบุชื่อโมเดลใดเลย**: มันไม่รู้ว่าผู้เรียกเห็นอะไรได้บ้าง
+    และการเดาว่า "เห็นทุกตัวที่ role เห็น" คือบั๊กที่ `resolve_model` มีไว้แก้
+    """
     snapshot = state.registry.snapshot
     model = snapshot.models.get(alias)
     if model is None:
-        available = sorted(m.alias for m in snapshot.visible_to(principal.role))
-        raise GatewayError(
-            ErrorCode.MODEL_NOT_FOUND,
-            f"Model '{alias}' does not exist. Available models: {', '.join(available)}.",
-            param="model",
-            details={"available_models": available},
-        )
+        raise _unknown_model(alias, None)
     if not model.spec.enabled:
         raise GatewayError(
             ErrorCode.MODEL_DISABLED,
