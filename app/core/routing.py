@@ -92,6 +92,8 @@ class Router:
         # แก้ระหว่างที่คำขอยังวิ่ง (เปลี่ยน base_url/upstream_model แล้วคีย์ที่คำนวณใหม่
         # ไม่ตรงกับตอนจอง = ตัวนับค้างถาวร และ endpoint นั้น "เต็ม" ไปจนกว่าจะ restart)
         self._held: dict[tuple[str, str], str] = {}
+        # ใบจองที่กำลังคืนอยู่เบื้องหลัง (ดู release)
+        self._releases: set[asyncio.Task] = set()
         self._rr: dict[str, itertools.count] = {}
         self._lock = asyncio.Lock()
         self._health_task: asyncio.Task | None = None
@@ -196,7 +198,15 @@ class Router:
         และก้อนนั้นต้องอยู่ตรงจุดที่กำลังจะยิง upstream จริง ๆ
         """
         slot = self._slot(alias, endpoint)
-        if not await self._limiter.acquire(slot, endpoint.max_concurrency, lease):
+        try:
+            granted = await self._limiter.acquire(slot, endpoint.max_concurrency, lease)
+        except BaseException:
+            # ถูกยกเลิก (หรือพัง) ระหว่างรอคำตอบจากที่เก็บร่วม — ใบจองอาจถูกเขียนไปแล้วทั้งที่
+            # เราไม่มีวันได้รู้ · คืนไว้ก่อนเสมอ: คืนใบที่ไม่มีอยู่ไม่เสียอะไร ไม่คืนใบที่มีอยู่
+            # คือช่องหายไป 15 นาทีสำหรับทุก worker
+            self._release_lease(slot, lease)
+            raise
+        if not granted:
             raise GatewayError(
                 ErrorCode.CONCURRENCY_LIMIT_EXCEEDED,
                 f"All backends for '{alias}' are at capacity. Please retry shortly.",
@@ -209,18 +219,58 @@ class Router:
         self._state.get(key).total_requests += 1
 
     async def release(self, alias: str, endpoint: Endpoint, lease: str) -> None:
-        """คืนช่อง — เรียกซ้ำได้ และคืนที่คีย์เดิมที่ใช้ตอนจองเสมอ"""
+        """คืนช่อง — เรียกซ้ำได้ และคืนที่คีย์เดิมที่ใช้ตอนจองเสมอ
+
+        **บัญชีในเครื่องต้องเสร็จก่อน `await` ตัวแรก และการคืนใบจองต้องไม่ตายไปกับผู้เรียก**
+
+        เดิมลำดับคือ pop `_held` → `await limiter.release()` → ลด `_in_flight` · จุดเรียกอยู่ใน
+        `finally` ของ generator ซึ่งตอนผู้ใช้ตัดสาย (Esc ใน Claude Code) รันใต้ cancel scope ของ
+        Starlette: `await` ตัวแรกที่แตะเครือข่ายโยน CancelledError ทันที บรรทัดที่ลด `_in_flight`
+        จึงไม่เคยรัน และเพราะ `_held` ถูก pop ไปแล้ว ก็ไม่มีใครคืนซ้ำได้อีก · กับ Redis จริง
+        (2026-10-06): hint ในเครื่อง = 1 ทั้งที่ตัวนับร่วม = 0 → โมเดล 1 ช่องตอบ 429
+        "at capacity" ทุกคำขอบน worker นั้นจน restart · ถ้า ZREM ยังไม่ทันออกจากเครื่อง ใบจอง
+        ก็ค้างใน Redis ครบ 15 นาทีให้ทุก worker เห็น
+
+        ตัวนับในเครื่องไม่มีเหตุผลต้องรอเครือข่าย จึงลดก่อน · ส่วนการคืนใบจองย้ายไปเป็น task
+        ของตัวเองที่ shield ไว้ แบบเดียวกับ finalize ของแถว usage (app/api/openai.py)
+        """
         slot = self._held.pop((lease, endpoint_key(alias, endpoint)), None)
         if slot is None:
             # ไม่เคยจองสำเร็จ หรือคืนไปแล้ว — ห้ามลดตัวนับ ไม่งั้นเป็นการคืนช่องของคนอื่น
-            await self._limiter.release(self._slot(alias, endpoint), lease)
+            await self._settle(self._release_lease(self._slot(alias, endpoint), lease))
             return
-        await self._limiter.release(slot, lease)
         remaining = self._in_flight.get(slot, 0) - 1
         if remaining > 0:
             self._in_flight[slot] = remaining
         else:
             self._in_flight.pop(slot, None)
+        await self._settle(self._release_lease(slot, lease))
+
+    def _release_lease(self, slot: str, lease: str) -> asyncio.Task:
+        """คืนใบจองในที่เก็บ (ร่วม) เป็น task ที่ไม่ขึ้นกับอายุของผู้เรียก"""
+
+        async def run() -> None:
+            try:
+                await self._limiter.release(slot, lease)
+            except Exception as exc:  # noqa: BLE001 - ใบจองหมดอายุเองได้ อย่าให้คำขอพังเพราะคืนไม่ได้
+                log.warning("could not return in-flight lease for %s: %s", slot, describe(exc))
+
+        task = asyncio.get_running_loop().create_task(run())
+        # asyncio ถือ task ไว้แค่ weak reference — ไม่เก็บเอง GC เก็บทิ้งกลางทางได้
+        self._releases.add(task)
+        task.add_done_callback(self._releases.discard)
+        return task
+
+    @staticmethod
+    async def _settle(task: asyncio.Task) -> None:
+        """รอ task ถ้ารอได้ · ถ้าผู้เรียกถูกยกเลิก task ยังวิ่งต่อจนจบ"""
+        await asyncio.shield(task)
+
+    async def drain_releases(self, timeout: float = 5.0) -> None:
+        """รอใบจองที่กำลังคืนให้คืนครบ — เรียกตอนปิดแอป ก่อนปิดการเชื่อมต่อ Redis"""
+        pending = set(self._releases)
+        if pending:
+            await asyncio.wait(pending, timeout=timeout)
 
     def report_success(self, alias: str, endpoint: Endpoint) -> None:
         gateway = self._registry.snapshot.gateway

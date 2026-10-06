@@ -112,6 +112,8 @@ class AppState:
         await self.router.stop_health_checks()
         await self.usage.stop()
         await self.registry.stop()
+        # ใบจองช่องที่กำลังคืนอยู่เบื้องหลัง (client ตัดสายกลาง stream) ต้องได้คืนก่อนปิด Redis
+        await self.router.drain_releases()
         if self.redis is not None:
             try:
                 await self.redis.aclose()
