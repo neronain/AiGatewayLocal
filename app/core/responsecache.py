@@ -71,12 +71,50 @@ def cacheable_reason(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def unstorable_reason(data: Any) -> str | None:
+    """คืนเหตุผลที่ *เก็บคำตอบนี้ไม่ได้* — None แปลว่าเก็บได้
+
+    HTTP 200 ที่ parse เป็น JSON ได้ยังไม่พอ: backend บางตัวตอบ 200 พร้อม
+    `{"error": {...}}` ตอนโมเดลกำลังโหลด และคำตอบที่ถูกตัดกลางทางไม่มี `finish_reason` ·
+    เก็บของพวกนี้ = เสิร์ฟ error เดิมซ้ำไปอีก 5 นาทีหลังเครื่องหายแล้ว
+    """
+    if not isinstance(data, dict):
+        return "คำตอบไม่ใช่ JSON object"
+    if data.get("error"):
+        return "คำตอบมี error"
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return "คำตอบไม่มี choices"
+    for choice in choices:
+        if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+            return "choice ไม่มี message"
+        if not choice.get("finish_reason"):
+            return "คำตอบไม่มี finish_reason (ยังไม่จบ)"
+    return None
+
+
 def build_key(principal, *, alias: str, upstream_model: str, protocol: str,
               payload: dict[str, Any]) -> str | None:
     """key ของคำขอนี้ — None เมื่อไม่เข้าเงื่อนไขให้แคช
 
     `upstream_model` อยู่ใน key ด้วยเพราะ alias เดียวกันชี้ไปคนละ weights ได้เมื่อ
     routing เปลี่ยน · ไม่ใส่ = สลับ weights แล้วยังได้คำตอบของตัวเก่าไปอีก 5 นาที
+
+    สิ่งที่อยู่ใน key (ครบทุกอย่างที่เปลี่ยนคำตอบได้):
+
+    * **tenant** เป็น prefix — workspace ของ key ถ้ามี ไม่มีก็เจ้าของ key (ดูหัวไฟล์)
+    * `alias` ที่สมาชิกขอ · `upstream_model` = alias ของโมเดลที่จะ *เสิร์ฟ* (หลังกฎ routing) ·
+      `protocol`
+    * **ทุกฟิลด์ของ payload ที่จะส่งให้ backend** ยกเว้นสี่ตัวใน `_IGNORED_FIELDS` — กรองแบบ
+      "ตัดเฉพาะที่รู้ว่าไม่มีผล" ไม่ใช่ "เก็บเฉพาะที่รู้จัก": ฟิลด์ใหม่ที่ client ส่งมาวันหน้า
+      (`response_format` · `seed` · `stop` · `reasoning_effort` · `chat_template_kwargs` ·
+      `top_p` …) จึงอยู่ใน key เองโดยไม่ต้องมีใครมาเพิ่ม · payload นั้นรวม `messages` ทั้งก้อน
+      (system · ภาพเป็น data URL · ประวัติ tool) · `model` = ชื่อ weights จริงของเครื่องที่เลือก ·
+      `max_tokens` = เพดานที่เกตเวย์จะส่งจริง (หลัง clamp) ไม่ใช่ค่าที่ client พิมพ์มา
+
+    คำตอบไม่ขึ้นกับกฎราย key: สิทธิ์ใช้โมเดลกับโควตาถูกตรวจ *ก่อน* ถึงแคชเสมอ และไม่มีอะไร
+    ราย key ที่ถูกเติมลงใน payload — ถ้าวันหนึ่งมี (เช่น system prompt ประจำ key) ต้องเติม
+    ลงใน payload ก่อนเรียกฟังก์ชันนี้ มันจึงเข้า key เอง
     """
     if cacheable_reason(payload) is not None:
         return None

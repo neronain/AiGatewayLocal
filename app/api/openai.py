@@ -688,7 +688,7 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> FastJSONR
                 )
 
     # จองช่อง · เรียก · สลับเครื่อง/โมเดลสำรอง · ตรวจว่า body ของ 200 ใช้ได้จริง — ดู lifecycle
-    _call, endpoint, data = await lifecycle.complete(ctx, _chat_plan(build))
+    call, endpoint, data = await lifecycle.complete(ctx, _chat_plan(build))
 
     # The member asked for the alias; never leak the upstream repository name.
     data["model"] = alias
@@ -699,9 +699,29 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> FastJSONR
     _augment_usage_payload(data, usage)
     await ctx.finalize(usage)
 
-    # เก็บเฉพาะคำตอบที่สำเร็จจริง — error ไม่แคช (ตรวจแล้วข้างบน: ถึงตรงนี้คือ 200 + JSON)
+    # เก็บเฉพาะคำตอบที่ (1) มาจากคำขอเดียวกับที่ key นี้บรรยาย และ (2) เป็นคำตอบจริงครบก้อน
+    #
+    # (1) key ถูกสร้าง *ก่อน* วง failover จากโมเดลและเครื่องที่เลือกไว้ตอนนั้น · ถ้าระหว่างทาง
+    # ล้มไปโมเดลสำรอง (หรือเครื่องที่ชี้ไปคนละ weights) คำตอบที่ได้ไม่ใช่ของ key นี้ — เดิมถูก
+    # เก็บทั้งอย่างนั้น: coding ล่ม muse-local ตอบแทน แล้วคำขอถัดไปตอน coding กลับมาได้
+    # "ANSWER FROM muse-local" พร้อม `x-litegate-served-by: coding, x-litegate-cache: hit`
+    # ไปอีก 5 นาที (ตรวจ 2026-10-06) · สร้าง key ใหม่จาก payload ที่ *ส่งไปจริง* แล้วเทียบ:
+    # ไม่ตรง = ไม่เก็บ ไม่ต้องไล่ว่าต่างเพราะอะไร · `call` คือรอบที่ lifecycle.complete
+    # ส่งสำเร็จ — รอบสุดท้ายหลังการสลับเครื่อง/โมเดลทั้งหมด
     if cache is not None and cache_key is not None:
-        await cache.put(cache_key, {"data": data})
+        served_key = responsecache.build_key(
+            ctx.principal, alias=alias, upstream_model=ctx.model.alias,
+            protocol=ctx.protocol, payload=call.payload,
+        )
+        if served_key != cache_key:
+            log.info(
+                "ไม่แคชคำขอ %s: ตอบโดย %s/%s ซึ่งไม่ใช่ตัวที่ key ถูกสร้างไว้",
+                ctx.request_id, ctx.model.alias, endpoint.name,
+            )
+        elif (why := responsecache.unstorable_reason(data)) is not None:
+            log.info("ไม่แคชคำขอ %s: %s", ctx.request_id, why)
+        else:
+            await cache.put(cache_key, {"data": data})
 
     return FastJSONResponse(
         content=data,
