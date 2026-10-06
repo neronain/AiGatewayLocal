@@ -87,13 +87,28 @@ def test_the_key_counter_is_a_separate_pile(client):
     assert QuotaService.key_subject("a1") != QuotaService.subject_key("a1")
 
 
-def test_consumption_lands_in_the_key_pile_only_when_a_policy_exists():
-    """ไม่มีนโยบายของ key = ไม่มีตัวนับเพิ่ม · deployment ที่ไม่ใช้จะไม่จ่ายอะไรเลย"""
-    from pathlib import Path
+def test_consumption_lands_in_the_key_pile_only_when_a_policy_exists(client):
+    """ไม่มีนโยบายของ key = ไม่มีตัวนับเพิ่ม · deployment ที่ไม่ใช้จะไม่จ่ายอะไรเลย
 
-    source = (Path(__file__).resolve().parents[1] / "app/core/quota.py").read_text()
-    block = source.split("async def record(")[1][:1800]
-    assert "if api_key_id and key_window:" in block
+    เดิมยืนยันด้วยการหาบรรทัด `if api_key_id and key_window:` ในซอร์ส ซึ่งพังทันทีที่
+    record() ถูกจัดใหม่โดยพฤติกรรมไม่เปลี่ยน · ดูที่ตัวนับจริงแทน
+    """
+    from tests.test_quota_counter_identity import counter_rows
+
+    body = {"model": "coding", "messages": [{"role": "user", "content": "hi"}]}
+
+    _user, plain = _member(client, "6499000031")
+    client.post("/v1/chat/completions", json=body, headers=auth(plain["api_key"]))
+    assert not [name for name, _ in counter_rows(client) if name.startswith("key:")]
+
+    _user, capped = _member(client, "6499000032")
+    client.post("/admin/quota-policies", headers=auth(client.admin_key),
+                json={"scope": "key", "api_key_id": capped["id"], "window": "day",
+                      "max_requests": 5})
+    client.post("/v1/chat/completions", json=body, headers=auth(capped["api_key"]))
+    assert [name for name, _ in counter_rows(client) if name.startswith("key:")] == [
+        f"key:{capped['id']}"
+    ]
 
 
 def test_the_key_ceiling_actually_refuses_the_second_call(client):

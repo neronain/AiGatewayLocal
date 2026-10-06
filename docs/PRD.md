@@ -438,6 +438,17 @@ path. The cost is a bounded overrun: under a concurrent burst a member can
 exceed the limit by at most (in-flight requests × per-request cost), which
 self-corrects on the next check. Accepted as **NFR-Q1**.
 
+**One limit is not check-then-record: requests per minute.** A burst limiter
+that counts completions lets the burst through — ten requests sent together all
+read a counter of zero before any of them has finished — and counts a long
+stream in the minute it ends rather than the minute it starts. That count is
+taken at admission, atomically, after every other gate has passed
+(`QuotaService.admit` → `CounterStore.reserve`: one `HINCRBY` on Redis, one
+conditional `UPDATE … WHERE requests < :limit` on the database). A request that
+is refused is not counted, so retrying while limited does not extend the wait.
+Tokens per minute are still settled after the response, like every other token
+count: nobody knows them earlier.
+
 Counters live in Redis when configured (shared across workers) and fall back to
 the database otherwise (correct for single-worker deployments).
 

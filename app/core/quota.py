@@ -11,6 +11,12 @@ member can overshoot by at most (in-flight requests x per-request cost). That
 is accepted deliberately (NFR-Q1) because reserving would require holding a
 lock across a multi-minute generation. Overrun self-corrects on the next check.
 
+One limit is the exception: **requests per minute**. A burst limiter that
+counts completions lets the whole burst through - every request passes the
+check before any of them has finished - so that one count is taken at
+admission, atomically (`admit()` -> `CounterStore.reserve`). Tokens are still
+settled after the response, because nobody knows them before.
+
 Counters live in Redis when configured (shared across workers) and fall back to
 the database otherwise, which is correct for a single-worker deployment.
 """
@@ -121,6 +127,13 @@ class KeyLimits:
     def rate_limited(self) -> bool:
         return any(c.rate_limited for c in self.ceilings)
 
+    @property
+    def max_requests_per_minute(self) -> int:
+        """อันที่เข้มที่สุดในบรรดาที่ตั้งไว้ · 0 = ไม่มีอันไหนจำกัดจำนวนคำขอต่อนาที"""
+        set_limits = [c.max_requests_per_minute for c in self.ceilings
+                      if c.max_requests_per_minute]
+        return min(set_limits) if set_limits else 0
+
 
 @dataclass(frozen=True)
 class Charge:
@@ -133,7 +146,8 @@ class Charge:
 
     # (subject, หน้าต่าง) ที่ต้องบวกการใช้งานจริงเมื่อคำขอจบ
     windows: tuple[tuple[str, str], ...] = ()
-    # subject ที่มีลิมิตต่อนาที
+    # subject ที่มีลิมิตต่อนาที · **คำขอถูกนับเข้าตัวนับนาทีไปแล้วตอนรับเข้า** — เมื่อจบ
+    # จึงบวกเฉพาะ token ถ้าบวกคำขออีกรอบคือนับสองครั้ง
     minutes: tuple[str, ...] = ()
 
 
@@ -250,6 +264,24 @@ class CounterStore(ABC):
         reports are built from — clearing a quota must not erase the evidence
         of what was spent.
         """
+
+    async def reserve(self, key: str, window: str, limit: int) -> bool:
+        """นับคำขอหนึ่งคำขอเข้าหน้าต่างนี้ **ถ้ายังมีที่** · False = เต็มแล้ว และไม่ได้นับ
+
+        `limit` 0 = ไม่จำกัด (นับเสมอ) · คำขอที่ถูกปฏิเสธต้องไม่กินที่: ไม่งั้น client ที่
+        ยิงซ้ำระหว่างรอจะดันตัวนับขึ้นไปเรื่อย ๆ ทั้งที่ไม่มีคำขอไหนได้ทำงาน
+
+        ตัวตั้งต้นนี้อ่านแล้วค่อยบวก — ไม่ atomic · มีไว้ให้ store ที่ไม่ได้เขียนของตัวเอง
+        ยังทำงานได้ · store ที่ใช้จริงทั้งสองตัวเขียนทับด้วยคำสั่งเดียวที่ที่เก็บเป็นคนตัดสิน
+        """
+        if limit and (await self.get(key, window)).requests >= limit:
+            return False
+        await self.increment(key, window, Consumption(requests=1))
+        return True
+
+    async def release(self, key: str, window: str) -> None:
+        """คืนที่ที่ `reserve` จองไว้ — คำขอนั้นถูกปฏิเสธที่ด่านถัดไป ไม่ได้ถูกส่งต่อ"""
+        await self.increment(key, window, Consumption(requests=-1))
 
 
 # รอบลองใหม่เมื่อ SQLite บอกว่าไฟล์ถูกล็อก — สั้น ๆ พอให้คนเขียนที่คิวหน้าเขียนจบ
@@ -391,6 +423,74 @@ class DatabaseCounterStore(CounterStore):
                 await session.delete(row)
                 await session.commit()
 
+    async def reserve(self, key: str, window: str, limit: int) -> bool:
+        """`UPDATE … SET requests = requests + 1 WHERE … AND requests < :limit`
+
+        เงื่อนไขกับการบวกอยู่ในคำสั่งเดียว ฐานข้อมูลจึงเป็นคนตัดสินใต้ row lock:
+        สิบคำขอที่มาพร้อมกันกับลิมิต 2 ได้ rowcount = 1 แค่สองตัว · บน PostgreSQL ตัวที่
+        รอ lock จะประเมิน WHERE ใหม่กับค่าที่เพิ่ง commit (READ COMMITTED) และ SQLite
+        ให้เขียนทีละคนอยู่แล้ว — ทางสำรองนี้จึงถูกต้องแม้มีหลาย worker ไม่ใช่แค่ "พอใช้"
+        """
+        start, end = window_bounds(window)
+        key = counter_key(key, window, start)
+
+        if await self._take_one(key, start, limit):
+            return True
+        # rowcount 0 = ยังไม่มีแถวของหน้าต่างนี้ หรือเต็มแล้ว · ลองเป็นคนสร้างแถวแรก
+        async with self._session_factory() as session:
+            session.add(
+                QuotaCounter(subject_key=key, window_start=start, window_end=end, requests=1)
+            )
+            try:
+                await session.commit()
+                return True
+            except IntegrityError:
+                # มีแถวอยู่แล้ว: เต็มจริง หรืออีก worker เพิ่งสร้างตัดหน้า — ถามอีกรอบ
+                await session.rollback()
+        return await self._take_one(key, start, limit)
+
+    async def _take_one(self, key: str, start: datetime, limit: int) -> bool:
+        for attempt in range(_LOCK_RETRIES):
+            try:
+                async with self._session_factory() as session:
+                    result = await session.execute(self._take_one_statement(key, start, limit))
+                    if result.rowcount:
+                        await session.commit()
+                        return True
+                    await session.rollback()
+                    return False
+            except OperationalError as exc:
+                if "locked" not in str(exc).lower() or attempt == _LOCK_RETRIES - 1:
+                    raise
+                await asyncio.sleep(_LOCK_BACKOFF_S * (attempt + 1))
+        return False
+
+    @staticmethod
+    def _take_one_statement(key: str, start: datetime, limit: int):
+        used = func.coalesce(QuotaCounter.requests, 0)
+        statement = update(QuotaCounter).where(
+            QuotaCounter.subject_key == key,
+            QuotaCounter.window_start == start,
+        )
+        if limit:
+            statement = statement.where(used < limit)
+        return statement.values(requests=used + 1)
+
+    async def release(self, key: str, window: str) -> None:
+        start, _ = window_bounds(window)
+        key = counter_key(key, window, start)
+        async with self._session_factory() as session:
+            await session.execute(
+                update(QuotaCounter)
+                .where(
+                    QuotaCounter.subject_key == key,
+                    QuotaCounter.window_start == start,
+                    QuotaCounter.requests > 0,
+                )
+                .values(requests=QuotaCounter.requests - 1)
+            )
+            await session.commit()
+
     @staticmethod
     async def _fetch(session: AsyncSession, key: str, start: datetime):
         result = await session.execute(
@@ -433,13 +533,39 @@ class RedisCounterStore(CounterStore):
             value = getattr(delta, field_name)
             if value:
                 pipe.hincrby(redis_key, field_name, value)
-        ttl = max(int((end - datetime.now(timezone.utc)).total_seconds()), 60)
-        pipe.expire(redis_key, ttl)
+        pipe.expire(redis_key, self._ttl(end))
         await pipe.execute()
+
+    @staticmethod
+    def _ttl(end: datetime) -> int:
+        return max(int((end - datetime.now(timezone.utc)).total_seconds()), 60)
 
     async def reset(self, key: str, window: str) -> None:
         start, _ = window_bounds(window)
         await self._redis.delete(self._redis_key(key, window, start))
+
+    async def reserve(self, key: str, window: str, limit: int) -> bool:
+        """บวกก่อน แล้วดูว่าตัวเองเป็นลำดับที่เท่าไร
+
+        HINCRBY คืนค่าหลังบวก และ Redis ทำทีละคำสั่ง — ทุก worker จึงได้ลำดับไม่ซ้ำกัน
+        ใครได้เลขเกินลิมิตคือคนที่มาช้าไป ถอยออกด้วยการลบคืน · ระหว่างบวกกับลบคืนตัวนับ
+        จะสูงเกินจริงชั่วครู่ ซึ่งไม่ทำให้ใครถูกปฏิเสธผิด: จะมีคนถอยได้ก็ต่อเมื่อที่เต็มไปแล้ว
+        """
+        start, end = window_bounds(window)
+        redis_key = self._redis_key(key, window, start)
+        pipe = self._redis.pipeline()
+        pipe.hincrby(redis_key, "requests", 1)
+        # ตั้งอายุไปด้วยเสมอ: คำขอที่ถูกรับแต่ไม่เคยจบ (worker ตาย) ต้องไม่ทิ้งคีย์ค้างตลอดกาล
+        pipe.expire(redis_key, self._ttl(end))
+        position = int((await pipe.execute())[0])
+        if limit and position > limit:
+            await self._redis.hincrby(redis_key, "requests", -1)
+            return False
+        return True
+
+    async def release(self, key: str, window: str) -> None:
+        start, _ = window_bounds(window)
+        await self._redis.hincrby(self._redis_key(key, window, start), "requests", -1)
 
 
 class ResilientCounterStore(CounterStore):
@@ -540,6 +666,33 @@ class ResilientCounterStore(CounterStore):
             except Exception as exc:
                 self._mark_down(exc)
         await self._database.increment(key, window, delta)
+
+    async def reserve(self, key: str, window: str, limit: int) -> bool:
+        """Redis ตัดสินเมื่อมันตอบ ฐานข้อมูลตัดสินเมื่อมันไม่ตอบ — ทั้งคู่ atomic
+
+        ไม่ reseed จากฐานข้อมูลเหมือน `get`: ลิมิตที่จองตอนรับคำขอคือลิมิตต่อนาที ยอดที่
+        ตกค้างอยู่อีกฝั่งหลัง Redis กลับมามีอายุไม่เกินหกสิบวินาที
+        """
+        if self.using_redis:
+            try:
+                admitted = await self._redis.reserve(key, window, limit)
+                QUOTA_DEGRADED.set(0)
+                return admitted
+            except Exception as exc:
+                self._mark_down(exc)
+        return await self._database.reserve(key, window, limit)
+
+    async def release(self, key: str, window: str) -> None:
+        if self.using_redis:
+            try:
+                await self._redis.release(key, window)
+                return
+            except Exception as exc:
+                self._mark_down(exc)
+                # ที่ที่จองไว้อยู่ใน Redis ซึ่งเพิ่งหายไป · ไปลบที่ฐานข้อมูลแทนจะเป็นการ
+                # ลบที่ของคำขออื่น — ปล่อยไว้ มันหมดอายุเองในหนึ่งนาที
+                return
+        await self._database.release(key, window)
 
     async def reset(self, key: str, window: str) -> None:
         """Both ledgers, always — clearing one is worse than clearing neither.
@@ -803,7 +956,36 @@ class QuotaService:
         เรียกหลังด่าน `check`/`check_key` ผ่านแล้ว ก่อนส่งต่อให้ backend · ใบที่ได้ต้อง
         ถูกส่งต่อให้ `record()` — ถ้าไม่ส่ง record จะนับลงกองรวมของคน (พฤติกรรมเดิม)
         ซึ่งผิดกองสำหรับนโยบายที่มีเป้าหมาย
+
+        **ลิมิตคำขอต่อนาทีถูกนับตรงนี้ ไม่ใช่ตอนคำขอจบ** · เดิม `check` อ่านตัวนับ
+        และ `record` บวกหลังคำตอบจบ — คำขอสิบตัวที่มาพร้อมกันจึงอ่านเจอ 0 ทั้งสิบตัว
+        (ตรวจพบ 2026-10-06: ลิมิต 2 ครั้ง/นาที backend ตอบช้า 0.4 วินาที → ผ่านสิบตัว
+        แล้วตัวที่ 11 ได้ "(10 of 2)") และ stream ยาว ๆ ถูกนับในนาทีที่มันจบ ไม่ใช่นาทีที่
+        มันเริ่มกินเครื่อง · ตัวกัน burst ที่นับตอนจบกันได้ทุกอย่างยกเว้น burst
+
+        จองทีละด่าน (ของคน แล้วของ key) · ด่านหลังเต็ม = คืนที่ที่ด่านแรกจองไว้ ไม่งั้น
+        key ที่ชนเพดานของตัวเองจะกินลิมิตต่อนาทีของเจ้าของไปทุกครั้งที่ลองใหม่
         """
+        gates: list[tuple[str, int, str]] = []
+        if limits.rate_limited:
+            gates.append((limits.subject, limits.max_requests_per_minute, "user"))
+        if key_limits is not None and key_limits.rate_limited:
+            gates.append((key_limits.subject, key_limits.max_requests_per_minute, "key"))
+
+        held: list[str] = []
+        for subject, per_minute, whose in gates:
+            if await self._store.reserve(subject, "minute", per_minute):
+                held.append(subject)
+                continue
+            for earlier in held:
+                try:
+                    await self._store.release(earlier, "minute")
+                except Exception:
+                    log.exception("โควตา: คืนที่ของ %s ในนาทีนี้ไม่สำเร็จ", earlier)
+            # ที่เต็มพอดี — ไม่อ่านตัวนับซ้ำเพื่อเอาเลขมาโชว์ เพราะเลขนั้นรวมคำขอที่
+            # กำลังถอยออกอยู่ และ "10 of 2" ไม่ได้บอกอะไรที่ "2 of 2" ไม่ได้บอก
+            raise _exhausted("request", per_minute, per_minute, "minute", whose)
+
         windows: list[tuple[str, str]] = [(limits.subject, limits.window)]
         minutes: list[str] = [limits.subject] if limits.rate_limited else []
         if key_limits is not None:
@@ -821,31 +1003,15 @@ class QuotaService:
         def exceeded(name: str, used_value: int, limit: int, window: str) -> None:
             if not limit or used_value < limit:
                 return
-            wait = _seconds_to_reset(window)
-            when = (
-                f"It clears in {wait} second{'s' if wait != 1 else ''}."
-                if window == "minute"
-                else f"It resets at the start of the next {window}."
-            )
-            whose = "This API key's" if subject == "key" else "Your"
-            raise GatewayError(
-                ErrorCode.QUOTA_EXCEEDED,
-                f"{whose} {window} {name} quota is exhausted "
-                f"({used_value:,} of {limit:,}). {when}",
-                retry_after=wait,
-                details={
-                    "quota": name,
-                    "subject": subject,
-                    "used": used_value,
-                    "limit": limit,
-                    "window": window,
-                    "resets_at": window_bounds(window)[1].isoformat(),
-                },
-            )
+            raise _exhausted(name, used_value, limit, window, subject)
 
         # The burst check comes first. Both can be over at once, and being told
         # to wait forty seconds is a more useful answer than being told to come
         # back tomorrow when the daily figure was not the binding one.
+        #
+        # อ่านอย่างเดียว: ด่านนี้ตอบคนที่เกินไปแล้วโดยไม่เขียนอะไร · การนับคำขอเข้าตัวนับ
+        # นาทีจริง ๆ ทำที่ admit() หลังทุกด่านผ่าน — ถ้านับตรงนี้ คำขอที่ไปตกด่านโควตา
+        # รายวันในบรรทัดถัดไปจะกินที่ของนาทีนี้ไปฟรี ๆ
         if limits.rate_limited:
             per_minute = await self._store.get(key, "minute")
             exceeded("request", per_minute.requests, limits.max_requests_per_minute, "minute")
@@ -879,8 +1045,16 @@ class QuotaService:
             try:
                 for subject, charged_window in charge.windows:
                     await self._store.increment(subject, charged_window, delta)
+                # คำขอถูกนับเข้าตัวนับนาทีไปแล้วตอน admit — ตรงนี้เหลือแค่ token
+                tokens_only = Consumption(
+                    text_input_tokens=delta.text_input_tokens,
+                    visual_input_tokens=delta.visual_input_tokens,
+                    output_tokens=delta.output_tokens,
+                    images=delta.images,
+                )
                 for subject in charge.minutes:
-                    await self._store.increment(subject, "minute", delta)
+                    if tokens_only != Consumption():
+                        await self._store.increment(subject, "minute", tokens_only)
             except Exception:
                 log.exception("failed to record quota consumption for user %s", user_id)
             return
@@ -938,6 +1112,31 @@ class QuotaService:
                 "images": used.images,
             },
         }
+
+
+def _exhausted(name: str, used_value: int, limit: int, window: str, subject: str) -> GatewayError:
+    """429 ของโควตา — ข้อความเดียวกันไม่ว่าจะถูกจับที่ด่านอ่าน (check) หรือตอนจอง (admit)"""
+    wait = _seconds_to_reset(window)
+    when = (
+        f"It clears in {wait} second{'s' if wait != 1 else ''}."
+        if window == "minute"
+        else f"It resets at the start of the next {window}."
+    )
+    whose = "This API key's" if subject == "key" else "Your"
+    return GatewayError(
+        ErrorCode.QUOTA_EXCEEDED,
+        f"{whose} {window} {name} quota is exhausted "
+        f"({used_value:,} of {limit:,}). {when}",
+        retry_after=wait,
+        details={
+            "quota": name,
+            "subject": subject,
+            "used": used_value,
+            "limit": limit,
+            "window": window,
+            "resets_at": window_bounds(window)[1].isoformat(),
+        },
+    )
 
 
 def _aware(value: datetime) -> datetime:
