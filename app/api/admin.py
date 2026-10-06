@@ -1293,7 +1293,13 @@ async def create_api_key(
         expires_at=expires_at,
     )
     session.add(api_key)
-    await audit(session, request, actor, "apikey.create", "user", payload.user_id)
+    # Which key, not only whose: "a key was issued to this person" does not say
+    # which of their five it was. The flush is what assigns the id.
+    await session.flush()
+    await audit(session, request, actor, "apikey.create", "user", payload.user_id, {
+        "key_id": api_key.id, "key_prefix": prefix, "name": api_key.name or "",
+        "workspace_id": payload.workspace_id, "kind": api_key.kind,
+    })
     await session.commit()
     return {
         "id": api_key.id,
@@ -2415,7 +2421,8 @@ async def check_for_updates(actor: Principal = Depends(require_admin)) -> dict[s
 
 @router.post("/version/update")
 async def apply_update(request: Request,
-                       actor: Principal = Depends(require_admin)) -> dict[str, Any]:
+                       actor: Principal = Depends(require_admin),
+                       session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """สั่งให้เครื่องนี้ติดตั้งโค้ดใหม่ทับของเดิม — **ไม่รอให้จบ**
 
     เกตเวย์เขียนโค้ดของตัวเองไม่ได้ (รันเป็น `litegate` ไม่มี sudo · unit ตั้ง
@@ -2441,8 +2448,16 @@ async def apply_update(request: Request,
         body = await request.json()
     except Exception:
         body = {}
+    skip_deps = bool((body or {}).get("skip_deps")) if isinstance(body, dict) else False
+    # บันทึกก่อนสั่ง ไม่ใช่หลัง · นี่คือการกระทำเดียวในคอนโซลที่แทนที่โค้ดของเกตเวย์
+    # ทั้งตัวและ restart มัน แต่เดิมไม่ทิ้งร่องรอยไว้ในตาราง audit เลย — มีแค่ชื่อในไฟล์
+    # คำขอ ซึ่งสคริปต์ลบทิ้งเมื่อเริ่มงาน · commit ก่อน เพราะงานที่ตามมาจะ restart
+    # process นี้ และแถวที่ยังไม่ commit ตอนนั้นคือแถวที่ไม่เคยมี
+    await audit(session, request, actor, "version.update", "gateway", config.VERSION,
+                {"from_version": config.VERSION, "skip_deps": skip_deps})
+    await session.commit()
     return release.request_update(actor=getattr(actor, "external_id", "") or "admin",
-                                  skip_deps=bool((body or {}).get("skip_deps")))
+                                  skip_deps=skip_deps)
 
 
 @router.get("/version/update")

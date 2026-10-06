@@ -24,6 +24,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.core.audit import audit
 from app.core.auth import Principal, authenticate, generate_api_key, normalise_role
 from app.core.errors import ErrorCode, GatewayError
 from app.core.passwords import (
@@ -226,6 +227,10 @@ async def change_password(
 
     user.session_epoch = int(user.session_epoch or 0) + 1
     user.must_change_password = False
+    # Who changed a password, when and from where is the first thing anyone asks
+    # after "I did not do that". Nothing about the password itself is recorded.
+    await audit(session, request, principal, "user.password", "user", user.id,
+                {"other_sessions_signed_out": True})
     await session.commit()
 
     # Keep the caller signed in on the session they used to make the change.
@@ -253,12 +258,38 @@ def _key_view(key: ApiKey) -> dict[str, Any]:
     }
 
 
+def _require_console(principal: Principal, doing: str) -> None:
+    """Managing your keys is for a signed-in person, never for a key.
+
+    One rule for all three - list, issue, revoke - because they are one
+    capability: deciding which credentials exist for this account. Issuing was
+    always console-only ("a leaked key must not be able to mint replacements for
+    itself"), and then revoking was left open: the same leaked key could list
+    its owner's other keys and revoke the one production runs on (2026-10-06).
+    That is the half of the damage that does not even need the key to be
+    powerful.
+
+    Listing is held to the same rule rather than left as "read-only, so
+    harmless". What it returns is the map of the account - which keys exist,
+    what they are called, which were used a minute ago - and its only use to a
+    program is choosing what to attack next. A key can still read everything
+    about *itself* at `/v1/me/key`.
+    """
+    if principal.via != "session":
+        raise GatewayError(
+            ErrorCode.INSUFFICIENT_SCOPE,
+            f"Sign in to the console to {doing}. An API key cannot manage the "
+            "account's keys - it can read its own details at /v1/me/key.",
+        )
+
+
 @router.get("/v1/me/api-keys")
 async def list_my_keys(
     principal: Principal = Depends(authenticate),
     session: AsyncSession = Depends(get_session),
     state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
+    _require_console(principal, "see your keys")
     result = await session.execute(
         select(ApiKey).where(ApiKey.user_id == principal.user_id).order_by(
             ApiKey.created_at.desc()
@@ -276,6 +307,7 @@ async def list_my_keys(
 @router.post("/v1/me/api-keys", status_code=201)
 async def create_my_key(
     payload: SelfKeyRequest,
+    request: Request,
     principal: Principal = Depends(authenticate),
     session: AsyncSession = Depends(get_session),
     state: AppState = Depends(get_state),
@@ -286,11 +318,7 @@ async def create_my_key(
     itself. Capped because keys are the thing nobody ever cleans up, and an
     unbounded list is one nobody can audit.
     """
-    if principal.via != "session":
-        raise GatewayError(
-            ErrorCode.INSUFFICIENT_SCOPE,
-            "Sign in to the console to issue a key. An API key cannot mint another.",
-        )
+    _require_console(principal, "issue a key")
 
     result = await session.execute(
         select(func.count())
@@ -319,6 +347,16 @@ async def create_my_key(
         expires_at=(utcnow() + timedelta(days=days)) if days else None,
     )
     session.add(api_key)
+    # A credential that came into existence with no record of it is the one
+    # nobody can account for a year later. The row needs the key's id, which
+    # the flush assigns; the prefix is what a human matches against a config
+    # file. Never the key, never its hash.
+    await session.flush()
+    await audit(session, request, principal, "apikey.create", "apikey", api_key.id, {
+        "owner": principal.user_id, "name": api_key.name, "key_prefix": prefix,
+        "expires_at": api_key.expires_at.isoformat() if api_key.expires_at else None,
+        "via": "self-service",
+    })
     await session.commit()
 
     return {
@@ -331,16 +369,25 @@ async def create_my_key(
 @router.delete("/v1/me/api-keys/{key_id}")
 async def revoke_my_key(
     key_id: str,
+    request: Request,
     principal: Principal = Depends(authenticate),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
+    _require_console(principal, "revoke a key")
     api_key = await session.get(ApiKey, key_id)
     # Same answer for "not yours" and "does not exist": no probing other
     # people's key ids.
     if api_key is None or api_key.user_id != principal.user_id:
         raise GatewayError(ErrorCode.INVALID_REQUEST, "API key not found.")
-    api_key.revoked_at = utcnow()
-    await session.commit()
+    # Revoking twice keeps the first timestamp: when a key stopped working is a
+    # fact, and pressing the button again should not rewrite it.
+    if api_key.revoked_at is None:
+        api_key.revoked_at = utcnow()
+        await audit(session, request, principal, "apikey.revoke", "apikey", key_id, {
+            "owner": principal.user_id, "name": api_key.name or "",
+            "key_prefix": api_key.key_prefix, "via": "self-service",
+        })
+        await session.commit()
     return {"id": key_id, "revoked": True}
 
 
