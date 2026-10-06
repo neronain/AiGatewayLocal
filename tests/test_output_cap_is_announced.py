@@ -194,3 +194,31 @@ def test_one_requests_notice_never_leaks_into_the_next(backend, client, member_k
     plain = client.post(PATHS["chat"], headers=auth(member_key),
                         json=_body("chat", "hi", max_tokens=100))
     assert HEADER not in plain.headers
+
+
+def test_a_stream_that_fell_back_is_told_about_the_model_that_serves_it(
+        writable_config, client, member_key):
+    """สตรีมตัดสินเครื่อง/โมเดลสำรอง *ก่อน* เริ่มตอบ — header จึงต้องเป็นของตัวที่เสิร์ฟจริงด้วย
+
+    coding (เพดาน 16,384) ล่ม · muse-local (เพดาน 8,192) รับแทน · ขอ 12,000
+    """
+    path = writable_config / "models" / "coding.yaml"
+    document = yaml.safe_load(path.read_text())
+    document["spec"]["routing"] = {"fallback": ["muse-local"]}
+    path.write_text(yaml.safe_dump(document, sort_keys=False, allow_unicode=True))
+    client.app.state.services.registry.reload()
+
+    with respx.mock:
+        respx.post(f"{CODING}/v1/chat/completions").mock(
+            side_effect=httpx.ConnectError("refused"))
+        muse = respx.post(f"{MUSE}/v1/chat/completions").mock(return_value=httpx.Response(
+            200, content=STREAM, headers={"content-type": "text/event-stream"}))
+        with client.stream("POST", PATHS["chat"], headers=auth(member_key),
+                           json=_body("chat", "hi", max_tokens=12_000, stream=True)) as response:
+            response.read()
+
+    assert response.status_code == 200
+    assert response.headers["x-litegate-served-by"] == "muse-local"
+    assert _sent(muse)["max_tokens"] == 8192
+    assert _parse(response.headers[HEADER]) == {
+        "granted": "8192", "requested": "12000", "reason": "model-limit"}
