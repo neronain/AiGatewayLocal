@@ -157,50 +157,75 @@ def sanitize_response_headers(headers: httpx.Headers) -> dict[str, str]:
     }
 
 
+def _transport_error(endpoint: Endpoint, exc: httpx.HTTPError, *, mid_stream: bool) -> GatewayError:
+    if isinstance(exc, httpx.TimeoutException):
+        return GatewayError(
+            ErrorCode.UPSTREAM_TIMEOUT,
+            "The model server stopped responding before the answer was complete. Please retry."
+            if mid_stream
+            else "The model server did not respond in time. Please retry.",
+            details={"endpoint": endpoint.name, "cause": type(exc).__name__},
+        )
+    return GatewayError(
+        ErrorCode.UPSTREAM_UNAVAILABLE,
+        f"The model server closed the connection before the answer was complete: "
+        f"{type(exc).__name__}."
+        if mid_stream
+        else f"Could not reach the model server: {type(exc).__name__}.",
+        details={"endpoint": endpoint.name, "cause": type(exc).__name__},
+    )
+
+
 async def post_json(
     endpoint: Endpoint, path: str, payload: dict[str, Any], headers: dict[str, str]
 ) -> httpx.Response:
     url = upstream_url(endpoint, path)
     try:
         return await get_client().post(url, json=payload, headers=headers)
-    except httpx.TimeoutException as exc:
-        raise GatewayError(
-            ErrorCode.UPSTREAM_TIMEOUT,
-            "The model server did not respond in time. Please retry.",
-            details={"endpoint": endpoint.name},
-        ) from exc
     except httpx.HTTPError as exc:
-        raise GatewayError(
-            ErrorCode.UPSTREAM_UNAVAILABLE,
-            f"Could not reach the model server: {type(exc).__name__}.",
-            details={"endpoint": endpoint.name},
-        ) from exc
+        raise _transport_error(endpoint, exc, mid_stream=False) from exc
+
+
+async def open_stream(
+    endpoint: Endpoint, path: str, payload: dict[str, Any], headers: dict[str, str]
+) -> httpx.Response:
+    """เปิด stream ไปหา backend แล้วคืน response ที่ยังไม่ได้อ่าน body
+
+    **ผู้เรียกต้อง `aclose()` เอง** — ใช้กับวงจรที่ response ต้องอยู่ข้ามฟังก์ชัน (เปิดก่อนตอบ
+    ผู้เรียก แล้วไปอ่านต่อใน generator) ซึ่ง `async with` ครอบไม่ได้ · ที่อื่นใช้ `stream_json`
+    """
+    url = upstream_url(endpoint, path)
+    request = get_client().build_request("POST", url, json=payload, headers=headers)
+    try:
+        return await get_client().send(request, stream=True)
+    except httpx.HTTPError as exc:
+        raise _transport_error(endpoint, exc, mid_stream=False) from exc
 
 
 @asynccontextmanager
 async def stream_json(
     endpoint: Endpoint, path: str, payload: dict[str, Any], headers: dict[str, str]
 ) -> AsyncIterator[httpx.Response]:
-    url = upstream_url(endpoint, path)
-    request = get_client().build_request("POST", url, json=payload, headers=headers)
-    try:
-        response = await get_client().send(request, stream=True)
-    except httpx.TimeoutException as exc:
-        raise GatewayError(
-            ErrorCode.UPSTREAM_TIMEOUT,
-            "The model server did not respond in time. Please retry.",
-            details={"endpoint": endpoint.name},
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise GatewayError(
-            ErrorCode.UPSTREAM_UNAVAILABLE,
-            f"Could not reach the model server: {type(exc).__name__}.",
-            details={"endpoint": endpoint.name},
-        ) from exc
+    response = await open_stream(endpoint, path, payload, headers)
     try:
         yield response
     finally:
         await response.aclose()
+
+
+async def iter_lines(endpoint: Endpoint, response: httpx.Response) -> AsyncIterator[str]:
+    """บรรทัดของ body — ความล้มเหลวของสายระหว่างอ่านกลายเป็น GatewayError
+
+    เดิมมีแค่ `send()` ที่ถูกห่อ · `httpx.ReadTimeout` กับ `RemoteProtocolError` ที่เกิด *ตอน
+    ไล่อ่าน body* หลุดไปเป็น exception ทั่วไป ซึ่ง generator ทั้งสาม surface จับแล้ว `return`
+    เฉย ๆ: ผู้เรียกได้คำตอบครึ่งเดียวที่จบเหมือนจบปกติ ไม่มี error ไม่มี `[DONE]` และ
+    backend ที่ตอบ 200 แล้วเงียบจนหมดเวลาก็ไม่ถูกสลับไปเครื่องสำรองทั้งที่ยังไม่มีอะไรถึงผู้เรียก
+    """
+    try:
+        async for line in response.aiter_lines():
+            yield line
+    except httpx.HTTPError as exc:
+        raise _transport_error(endpoint, exc, mid_stream=True) from exc
 
 
 async def read_error_body(response: httpx.Response) -> str:

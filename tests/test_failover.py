@@ -173,8 +173,11 @@ def test_a_stream_with_every_backend_down_stops_instead_of_looping(
 
     response = ask(client, member_key, stream=True)
 
-    assert response.status_code == 200          # SSE carries the error in-band
-    assert "error" in response.text.lower()
+    # ยังไม่มีอะไรถึงผู้เรียก ความล้มเหลวจึงเป็นสถานะจริง ไม่ใช่ 200 ที่มี error ข้างใน —
+    # การเลือกเครื่องของ stream จบก่อน response เริ่ม (app/api/lifecycle.py · 2026-10-06)
+    # SDK ที่ retry 5xx เองจึงทำงานได้ และ header ไม่ต้องเดาว่าใครจะเป็นคนตอบ
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "UPSTREAM_UNAVAILABLE"
     assert first.call_count == 1 and second.call_count == 1
 
 

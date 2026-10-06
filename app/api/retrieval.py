@@ -40,6 +40,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api import lifecycle
 from app.api.openai import _read_json, _RequestContext, _resolve_model
 from app.core import jsonio
 from app.core.auth import Principal, assert_model_permitted, authenticate
@@ -241,7 +242,10 @@ async def _forward(
     while True:
         endpoint, served = ctx.endpoint, ctx.model.alias
         payload, headers = build(endpoint)
-        await state.router.acquire(served, endpoint, ctx.lease)
+        # ช่องเต็มที่ด่านจริง (worker อื่นถืออยู่) = ลองเครื่องถัดไปก่อนตอบ 429 และมีแถว
+        # usage เสมอ — เหมือนเส้นทาง chat (ดู lifecycle.take_slot)
+        if not await lifecycle.take_slot(ctx, served, endpoint):
+            continue
         try:
             response = await upstream.post_json(endpoint, upstream_path, payload, headers)
         except GatewayError as exc:

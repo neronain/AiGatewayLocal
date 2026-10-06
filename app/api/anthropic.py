@@ -11,7 +11,6 @@ Which path is taken is decided by *tested capability*, never by the model name.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 import uuid
@@ -20,16 +19,16 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api import lifecycle
 from app.api.openai import (
     _read_json,
     _RequestContext,
     _resolve_model,
     select_or_fall_back,
 )
-from app.core import jsonio
 from app.core.auth import Principal, assert_model_permitted, authenticate
 from app.core.capability import (
     upstream_model_for,
@@ -40,9 +39,8 @@ from app.core.capability import (
 from app.core.errors import ErrorCode, GatewayError
 from app.core.jsonio import FastJSONResponse
 from app.core.multimodal import profile_anthropic_request
-from app.core.routing import RETRYABLE_ERRORS, is_retryable_status
 from app.core.rules import resolve_route
-from app.core.tokens import resolve_usage
+from app.core.tokens import TokenUsage, resolve_usage
 from app.db.session import get_session, release_connection
 from app.registry.schema import Endpoint, ModelDefinition
 from app.state import AppState, get_state
@@ -53,7 +51,7 @@ from app.upstream.protocol.anthropic import (
     openai_to_anthropic_response,
     wants_thinking,
 )
-from app.upstream.sse import DONE, format_json_sse, iter_sse_payloads, parse_chunk
+from app.upstream.sse import format_json_sse
 
 
 def _rate(ctx) -> float | None:
@@ -198,7 +196,7 @@ async def messages(
         )
 
     if body.get("stream"):
-        return await _stream_messages(build, ctx)
+        return await _stream_messages(request, build, ctx)
     return await _complete_messages(build, ctx)
 
 
@@ -215,65 +213,35 @@ class _Attempt:
 BuildAttempt = Callable[[Endpoint], _Attempt]
 
 
-async def _complete_messages(build: BuildAttempt, ctx: _RequestContext) -> FastJSONResponse:
-    state, alias = ctx.state, ctx.requested_alias
-    while True:
-        endpoint, served = ctx.endpoint, ctx.model.alias
+def _plan(build: BuildAttempt) -> lifecycle.Plan:
+    def plan(endpoint: Endpoint) -> lifecycle.Call:
         attempt = build(endpoint)
-        translate = attempt.translate
-        await state.router.acquire(served, endpoint, ctx.lease)
-        try:
-            response = await upstream.post_json(
-                endpoint, attempt.path, attempt.payload, attempt.headers
-            )
-        except GatewayError as exc:
-            state.router.report_failure(served, endpoint, exc.message)
-            if exc.code in RETRYABLE_ERRORS and (nxt := ctx.another_endpoint()):
-                ctx.retarget(nxt)
-                continue
-            await ctx.finalize(
-                resolve_usage(ctx.profile, None, _rate(ctx)),
-                status="error",
-                http_status=exc.http_status,
-                error_code=exc.code,
-            )
-            raise
-        finally:
-            await state.router.release(served, endpoint, ctx.lease)
+        return lifecycle.Call(
+            attempt.path,
+            attempt.payload,
+            attempt.headers,
+            lifecycle.OPENAI if attempt.translate else lifecycle.ANTHROPIC,
+            extra=attempt,
+        )
 
-        if response.status_code >= 400:
-            state.router.report_http_error(served, endpoint, response.status_code)
-            if is_retryable_status(response.status_code) and (nxt := ctx.another_endpoint()):
-                ctx.retarget(nxt)
-                continue
-            error = upstream.upstream_error(
-                endpoint, response.status_code, response.text[:2000]
-            )
-            await ctx.finalize(
-                resolve_usage(ctx.profile, None, _rate(ctx)),
-                status="error",
-                http_status=error.http_status,
-                error_code=error.code,
-            )
-            raise error
+    return plan
 
-        state.router.report_success(served, endpoint)
-        break
 
-    try:
-        # ไม่ใช้ response.json() เพราะมันเรียก json ของ stdlib ตายตัว · เรามีไบต์อยู่แล้ว
-        data = jsonio.loads(response.content)
-    except json.JSONDecodeError as exc:
-        raise GatewayError(
-            ErrorCode.UPSTREAM_ERROR, "The model server returned a malformed response."
-        ) from exc
+async def _complete_messages(build: BuildAttempt, ctx: _RequestContext) -> FastJSONResponse:
+    alias = ctx.requested_alias
+    # จองช่อง · เรียก · สลับเครื่อง/โมเดลสำรอง — ดู lifecycle
+    call, endpoint, data = await lifecycle.complete(ctx, _plan(build))
+    attempt: _Attempt = call.extra
+    translate = attempt.translate
+
+    reported = data.get("usage")
 
     if translate:
         data = openai_to_anthropic_response(data, alias, include_thinking=attempt.thinking)
     else:
         data["model"] = alias
 
-    usage = resolve_usage(ctx.profile, data.get("usage"), _rate(ctx))
+    usage = resolve_usage(ctx.profile, reported, _rate(ctx))
     data["usage"] = {
         "input_tokens": usage.input_tokens,
         "output_tokens": usage.output_tokens,
@@ -302,127 +270,64 @@ async def _complete_messages(build: BuildAttempt, ctx: _RequestContext) -> FastJ
     )
 
 
-async def _stream_messages(build: BuildAttempt, ctx: _RequestContext) -> StreamingResponse:
-    async def generator() -> AsyncIterator[bytes]:
-        state, alias = ctx.state, ctx.requested_alias
-        upstream_usage: dict | None = None
-        ttft_ms: int | None = None
-        status, error_code, http_status = "success", None, 200
-        # After the first event reaches the caller a retry would replay the
-        # answer from the beginning, so the switch is only available before it.
-        emitted = False
+async def _stream_messages(
+    request: Request, build: BuildAttempt, ctx: _RequestContext
+) -> Response:
+    # เปิดสายและรอ payload แรก *ก่อน* เริ่มตอบ — ดู lifecycle.open_stream
+    stream = await lifecycle.open_stream_for(request, ctx, _plan(build))
+    if stream is None:
+        return Response(status_code=lifecycle.CLIENT_CLOSED_STATUS)
 
-        try:
-            while True:
-                endpoint, served = ctx.endpoint, ctx.model.alias
-                attempt = build(endpoint)
-                translate = attempt.translate
-                adapter = (
-                    AnthropicStreamAdapter(alias, include_thinking=attempt.thinking)
-                    if translate else None
-                )
+    alias = ctx.requested_alias
+    attempt: _Attempt = stream.call.extra
+    translate = attempt.translate
+    upstream_usage: dict | None = None
+    adapter = (
+        AnthropicStreamAdapter(alias, include_thinking=attempt.thinking)
+        if translate else None
+    )
 
-                retry: Endpoint | None = None
-                await state.router.acquire(served, endpoint, ctx.lease)
-                try:
-                    async with upstream.stream_json(
-                        endpoint, attempt.path, attempt.payload, attempt.headers
-                    ) as response:
-                        if response.status_code >= 400:
-                            body = await upstream.read_error_body(response)
-                            state.router.report_http_error(served, endpoint, response.status_code)
-                            if not emitted and is_retryable_status(response.status_code):
-                                retry = ctx.another_endpoint()
-                            if retry is None:
-                                error = upstream.upstream_error(
-                                    endpoint, response.status_code, body
-                                )
-                                status = "error"
-                                error_code, http_status = error.code, error.http_status
-                                yield format_json_sse(
-                                    error.to_anthropic(ctx.request_id), event="error"
-                                )
-                                return
-                        else:
-                            state.router.report_success(served, endpoint)
+    def usage() -> TokenUsage:
+        return resolve_usage(ctx.profile, upstream_usage, _rate(ctx))
 
-                            async for event, data in iter_sse_payloads(response.aiter_lines()):
-                                if data.strip() == DONE:
-                                    continue
-                                chunk = parse_chunk(data)
-                                if chunk is None:
-                                    continue
-                                if ttft_ms is None:
-                                    ttft_ms = ctx.elapsed_ms
+    async def produce() -> AsyncIterator[bytes]:
+        nonlocal upstream_usage
+        async for event, _data, chunk in stream.payloads():
+            if chunk is None:
+                continue
 
-                                if not translate:
-                                    # Native stream: relay, masking the model name.
-                                    if chunk.get("type") == "message_start":
-                                        message = chunk.get("message")
-                                        if isinstance(message, dict):
-                                            message["model"] = alias
-                                    usage_block = _extract_anthropic_usage(chunk)
-                                    if usage_block:
-                                        upstream_usage = {**(upstream_usage or {}), **usage_block}
-                                    emitted = True
-                                    yield format_json_sse(
-                                        chunk, event=event or chunk.get("type")
-                                    )
-                                    continue
+            if adapter is None:
+                # Native stream: relay, masking the model name.
+                if chunk.get("type") == "message_start":
+                    message = chunk.get("message")
+                    if isinstance(message, dict):
+                        message["model"] = alias
+                usage_block = _extract_anthropic_usage(chunk)
+                if usage_block:
+                    upstream_usage = {**(upstream_usage or {}), **usage_block}
+                yield format_json_sse(chunk, event=event or chunk.get("type"))
+                continue
 
-                                if isinstance(chunk.get("usage"), dict):
-                                    upstream_usage = chunk["usage"]
-                                for ev_name, ev_payload in adapter.handle_chunk(chunk):
-                                    emitted = True
-                                    yield format_json_sse(ev_payload, event=ev_name)
+            if isinstance(chunk.get("usage"), dict):
+                upstream_usage = chunk["usage"]
+            for ev_name, ev_payload in adapter.handle_chunk(chunk):
+                yield format_json_sse(ev_payload, event=ev_name)
 
-                            if translate and adapter is not None:
-                                for ev_name, ev_payload in adapter.finish_events():
-                                    yield format_json_sse(ev_payload, event=ev_name)
-                            return
+        if adapter is not None:
+            for ev_name, ev_payload in adapter.finish_events():
+                yield format_json_sse(ev_payload, event=ev_name)
 
-                except GatewayError as exc:
-                    state.router.report_failure(served, endpoint, exc.message)
-                    if not emitted and exc.code in RETRYABLE_ERRORS:
-                        retry = ctx.another_endpoint()
-                    if retry is None:
-                        status, error_code, http_status = "error", exc.code, exc.http_status
-                        yield format_json_sse(exc.to_anthropic(ctx.request_id), event="error")
-                        return
-                except Exception as exc:
-                    log.exception("anthropic stream failed for request %s", ctx.request_id)
-                    state.router.report_failure(served, endpoint, str(exc))
-                    status, error_code, http_status = "aborted", ErrorCode.UPSTREAM_ERROR, 502
-                    return
-                finally:
-                    await state.router.release(served, endpoint, ctx.lease)
-
-                ctx.retarget(retry)
-        finally:
-            usage = resolve_usage(ctx.profile, upstream_usage, _rate(ctx))
-            await ctx.finalize(
-                usage,
-                ttft_ms=ttft_ms,
-                status=status,
-                http_status=http_status,
-                error_code=error_code,
-            )
+    def render_error(exc: GatewayError) -> list[bytes]:
+        # event `error` คือวิธีที่ streaming ของ Anthropic บอกว่าคำตอบไม่จบ — SDK ยกเป็น
+        # exception แทนที่จะคืน message ครึ่งเดียวที่ดูเหมือนจบปกติ
+        return [format_json_sse(exc.to_anthropic(ctx.request_id), event="error")]
 
     return StreamingResponse(
-        generator(),
+        lifecycle.relay(ctx, stream, produce, render_error, usage),
         media_type="text/event-stream",
-        headers={
-            "cache-control": "no-cache",
-            "connection": "keep-alive",
-            "x-accel-buffering": "no",
-            "x-request-id": ctx.request_id,
-            "x-litegate-model": ctx.requested_alias,
-            # ตัวที่ *รันจริง* — ต่างจาก x-litegate-model เมื่อกฎ routing เปลี่ยนเส้นทาง
-            # (coding -> coding-long เพราะคำขอยาวเกิน) · สัญญากับสมาชิกยังเหมือนเดิม
-            # คือขอ alias ไหนได้ alias นั้น แต่เวลาไล่ปัญหาต้องรู้ว่าใครตอบ ไม่งั้นตัวเลข
-            # เร็ว/ช้าที่วัดได้จะถูกโยงไปผิดโมเดล
-            "x-litegate-served-by": ctx.model.alias,
-        },
+        headers=lifecycle.stream_headers(
+            ctx, stream, "anthropic-via-openai" if translate else "anthropic-native"
+        ),
     )
 
 

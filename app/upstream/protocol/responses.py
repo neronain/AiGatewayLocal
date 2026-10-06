@@ -613,3 +613,31 @@ class ResponsesStreamAdapter:
             )
         )
         return events
+
+    def resume(self, response_id: str | None, next_sequence: int) -> None:
+        """ต่อจาก stream ที่ backend พูด Responses เอง — ใช้ id และลำดับของมัน
+
+        ทางที่ไม่ได้แปลไม่มี adapter เดินตาม แต่ถ้าสายขาดกลางทางก็ยังต้องปิดด้วย
+        `response.failed` ที่มี id เดิมและ sequence_number ต่อจากตัวสุดท้ายที่ส่งไป
+        """
+        if response_id:
+            self.response_id = response_id
+        self._seq = max(self._seq, next_sequence)
+        self._started = True
+
+    def fail_events(self, code: str, message: str) -> list[tuple[str, dict]]:
+        """ปิด stream ด้วย `response.failed` — event ปิดท้ายของ Responses เมื่อคำตอบไม่จบ
+
+        เดิมสายไป backend ขาดกลางทางแล้ว stream หยุดหลัง `response.output_text.delta` เฉย ๆ:
+        ไม่มี `response.completed` ไม่มี `response.failed` · Codex อ่านสายที่ปิดโดยไม่มี event
+        ปิดท้ายว่า "stream closed before response.completed" ซึ่งไม่บอกอะไรเลยว่าเกิดอะไรขึ้น
+
+        item ที่ส่งไปแล้วครึ่งทางไม่ถูกปิดทีละตัว: ผู้อ่านทิ้งทั้ง response เมื่อเห็น failed
+        """
+        events = list(self.start_events())
+        final = self._skeleton("failed")
+        final["output"] = [self._closed[index] for index in sorted(self._closed)]
+        final["error"] = {"code": code, "message": message}
+        final["usage"] = _usage_block(self.usage)
+        events.append(self._next("response.failed", {"response": final}))
+        return events

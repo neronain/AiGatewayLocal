@@ -15,7 +15,6 @@ of rules.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 import uuid
@@ -24,16 +23,16 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api import lifecycle
 from app.api.openai import (
     _read_json,
     _RequestContext,
     _resolve_model,
     select_or_fall_back,
 )
-from app.core import jsonio
 from app.core.auth import Principal, assert_model_permitted, authenticate
 from app.core.capability import (
     upstream_model_for,
@@ -44,9 +43,8 @@ from app.core.capability import (
 from app.core.errors import ErrorCode, GatewayError
 from app.core.jsonio import FastJSONResponse
 from app.core.multimodal import profile_responses_request
-from app.core.routing import RETRYABLE_ERRORS, is_retryable_status
 from app.core.rules import resolve_route
-from app.core.tokens import resolve_usage
+from app.core.tokens import TokenUsage, resolve_usage
 from app.db.session import get_session, release_connection
 from app.registry.schema import Endpoint, ModelDefinition
 from app.state import AppState, get_state
@@ -56,7 +54,7 @@ from app.upstream.protocol.responses import (
     openai_to_responses_response,
     responses_to_openai_request,
 )
-from app.upstream.sse import DONE, format_json_sse, iter_sse_payloads, parse_chunk
+from app.upstream.sse import format_json_sse
 
 
 def _rate(ctx) -> float | None:
@@ -201,7 +199,7 @@ async def create_response(
         )
 
     if body.get("stream"):
-        return await _stream_response(build, ctx)
+        return await _stream_response(request, build, ctx)
     return await _complete_response(build, ctx)
 
 
@@ -216,65 +214,43 @@ class _Attempt:
 BuildAttempt = Callable[[Endpoint], _Attempt]
 
 
-async def _complete_response(build: BuildAttempt, ctx: _RequestContext) -> FastJSONResponse:
-    state, alias = ctx.state, ctx.requested_alias
-    while True:
-        endpoint, served = ctx.endpoint, ctx.model.alias
+def _plan(build: BuildAttempt) -> lifecycle.Plan:
+    def plan(endpoint: Endpoint) -> lifecycle.Call:
         attempt = build(endpoint)
-        translate = attempt.translate
-        await state.router.acquire(served, endpoint, ctx.lease)
-        try:
-            response = await upstream.post_json(
-                endpoint, attempt.path, attempt.payload, attempt.headers
-            )
-        except GatewayError as exc:
-            state.router.report_failure(served, endpoint, exc.message)
-            if exc.code in RETRYABLE_ERRORS and (nxt := ctx.another_endpoint()):
-                ctx.retarget(nxt)
-                continue
-            await ctx.finalize(
-                resolve_usage(ctx.profile, None, _rate(ctx)),
-                status="error",
-                http_status=exc.http_status,
-                error_code=exc.code,
-            )
-            raise
-        finally:
-            await state.router.release(served, endpoint, ctx.lease)
+        return lifecycle.Call(
+            attempt.path,
+            attempt.payload,
+            attempt.headers,
+            lifecycle.OPENAI if attempt.translate else lifecycle.RESPONSES,
+            extra=attempt,
+        )
 
-        if response.status_code >= 400:
-            state.router.report_http_error(served, endpoint, response.status_code)
-            if is_retryable_status(response.status_code) and (nxt := ctx.another_endpoint()):
-                ctx.retarget(nxt)
-                continue
-            error = upstream.upstream_error(
-                endpoint, response.status_code, response.text[:2000]
-            )
-            await ctx.finalize(
-                resolve_usage(ctx.profile, None, _rate(ctx)),
-                status="error",
-                http_status=error.http_status,
-                error_code=error.code,
-            )
-            raise error
+    return plan
 
-        state.router.report_success(served, endpoint)
-        break
 
-    try:
-        # ไม่ใช้ response.json() เพราะมันเรียก json ของ stdlib ตายตัว · เรามีไบต์อยู่แล้ว
-        data = jsonio.loads(response.content)
-    except json.JSONDecodeError as exc:
-        raise GatewayError(
-            ErrorCode.UPSTREAM_ERROR, "The model server returned a malformed response."
-        ) from exc
+# รหัสใน `response.failed` ที่ client ของ Responses (Codex) รู้จัก
+_FAILURE_CODES = {
+    ErrorCode.CONTEXT_LENGTH_EXCEEDED: "context_length_exceeded",
+    ErrorCode.CONCURRENCY_LIMIT_EXCEEDED: "rate_limit_exceeded",
+    ErrorCode.RATE_LIMIT_EXCEEDED: "rate_limit_exceeded",
+    ErrorCode.QUOTA_EXCEEDED: "insufficient_quota",
+}
+
+
+async def _complete_response(build: BuildAttempt, ctx: _RequestContext) -> FastJSONResponse:
+    alias = ctx.requested_alias
+    # จองช่อง · เรียก · สลับเครื่อง/โมเดลสำรอง — ดู lifecycle
+    call, endpoint, data = await lifecycle.complete(ctx, _plan(build))
+    translate = call.extra.translate
+
+    reported = _openai_shaped_usage(data.get("usage"))
 
     if translate:
         data = openai_to_responses_response(data, alias)
     else:
         data["model"] = alias
 
-    usage = resolve_usage(ctx.profile, _openai_shaped_usage(data.get("usage")), _rate(ctx))
+    usage = resolve_usage(ctx.profile, reported, _rate(ctx))
     data["usage"] = {
         "input_tokens": usage.input_tokens,
         "output_tokens": usage.output_tokens,
@@ -317,118 +293,67 @@ def _openai_shaped_usage(usage: Any) -> dict[str, Any] | None:
     }
 
 
-async def _stream_response(build: BuildAttempt, ctx: _RequestContext) -> StreamingResponse:
-    async def generator() -> AsyncIterator[bytes]:
-        state, alias = ctx.state, ctx.requested_alias
-        upstream_usage: dict | None = None
-        ttft_ms: int | None = None
-        status, error_code, http_status = "success", None, 200
-        emitted = False
+async def _stream_response(
+    request: Request, build: BuildAttempt, ctx: _RequestContext
+) -> Response:
+    # เปิดสายและรอ payload แรก *ก่อน* เริ่มตอบ — ดู lifecycle.open_stream
+    stream = await lifecycle.open_stream_for(request, ctx, _plan(build))
+    if stream is None:
+        return Response(status_code=lifecycle.CLIENT_CLOSED_STATUS)
 
-        try:
-            while True:
-                endpoint, served = ctx.endpoint, ctx.model.alias
-                attempt = build(endpoint)
-                translate = attempt.translate
-                adapter = ResponsesStreamAdapter(alias) if translate else None
+    alias = ctx.requested_alias
+    translate = stream.call.extra.translate
+    upstream_usage: dict | None = None
+    adapter = ResponsesStreamAdapter(alias)
+    # native: จำ id กับลำดับของ backend ไว้ เผื่อต้องปิดเองด้วย response.failed
+    native_id: str | None = None
+    native_seq = 0
 
-                retry: Endpoint | None = None
-                await state.router.acquire(served, endpoint, ctx.lease)
-                try:
-                    async with upstream.stream_json(
-                        endpoint, attempt.path, attempt.payload, attempt.headers
-                    ) as response:
-                        if response.status_code >= 400:
-                            body = await upstream.read_error_body(response)
-                            state.router.report_http_error(served, endpoint, response.status_code)
-                            if not emitted and is_retryable_status(response.status_code):
-                                retry = ctx.another_endpoint()
-                            if retry is None:
-                                error = upstream.upstream_error(
-                                    endpoint, response.status_code, body
-                                )
-                                status = "error"
-                                error_code, http_status = error.code, error.http_status
-                                yield format_json_sse(
-                                    error.to_openai(ctx.request_id), event="error"
-                                )
-                                return
-                        else:
-                            state.router.report_success(served, endpoint)
+    def usage() -> TokenUsage:
+        return resolve_usage(ctx.profile, upstream_usage, _rate(ctx))
 
-                            async for event, data in iter_sse_payloads(response.aiter_lines()):
-                                if data.strip() == DONE:
-                                    continue
-                                chunk = parse_chunk(data)
-                                if chunk is None:
-                                    continue
-                                if ttft_ms is None:
-                                    ttft_ms = ctx.elapsed_ms
+    async def produce() -> AsyncIterator[bytes]:
+        nonlocal upstream_usage, native_id, native_seq
+        async for event, _data, chunk in stream.payloads():
+            if chunk is None:
+                continue
 
-                                if not translate:
-                                    # Native stream: relay, masking the model name.
-                                    inner = chunk.get("response")
-                                    if isinstance(inner, dict):
-                                        inner["model"] = alias
-                                        if isinstance(inner.get("usage"), dict):
-                                            upstream_usage = _openai_shaped_usage(inner["usage"])
-                                    emitted = True
-                                    yield format_json_sse(
-                                        chunk, event=event or chunk.get("type")
-                                    )
-                                    continue
+            if not translate:
+                # Native stream: relay, masking the model name.
+                inner = chunk.get("response")
+                if isinstance(inner, dict):
+                    inner["model"] = alias
+                    native_id = inner.get("id") or native_id
+                    if isinstance(inner.get("usage"), dict):
+                        upstream_usage = _openai_shaped_usage(inner["usage"])
+                if isinstance(chunk.get("sequence_number"), int):
+                    native_seq = chunk["sequence_number"] + 1
+                yield format_json_sse(chunk, event=event or chunk.get("type"))
+                continue
 
-                                if isinstance(chunk.get("usage"), dict):
-                                    upstream_usage = chunk["usage"]
-                                for ev_name, ev_payload in adapter.handle_chunk(chunk):
-                                    emitted = True
-                                    yield format_json_sse(ev_payload, event=ev_name)
+            if isinstance(chunk.get("usage"), dict):
+                upstream_usage = chunk["usage"]
+            for ev_name, ev_payload in adapter.handle_chunk(chunk):
+                yield format_json_sse(ev_payload, event=ev_name)
 
-                            if translate and adapter is not None:
-                                for ev_name, ev_payload in adapter.finish_events():
-                                    yield format_json_sse(ev_payload, event=ev_name)
-                            return
+        if translate:
+            for ev_name, ev_payload in adapter.finish_events():
+                yield format_json_sse(ev_payload, event=ev_name)
 
-                except GatewayError as exc:
-                    state.router.report_failure(served, endpoint, exc.message)
-                    if not emitted and exc.code in RETRYABLE_ERRORS:
-                        retry = ctx.another_endpoint()
-                    if retry is None:
-                        status, error_code, http_status = "error", exc.code, exc.http_status
-                        yield format_json_sse(exc.to_openai(ctx.request_id), event="error")
-                        return
-                except Exception as exc:
-                    log.exception("responses stream failed for request %s", ctx.request_id)
-                    state.router.report_failure(served, endpoint, str(exc))
-                    status, error_code, http_status = "aborted", ErrorCode.UPSTREAM_ERROR, 502
-                    return
-                finally:
-                    await state.router.release(served, endpoint, ctx.lease)
-
-                ctx.retarget(retry)
-        finally:
-            usage = resolve_usage(ctx.profile, upstream_usage, _rate(ctx))
-            await ctx.finalize(
-                usage,
-                ttft_ms=ttft_ms,
-                status=status,
-                http_status=http_status,
-                error_code=error_code,
+    def render_error(exc: GatewayError) -> list[bytes]:
+        if not translate:
+            adapter.resume(native_id, native_seq)
+        return [
+            format_json_sse(ev_payload, event=ev_name)
+            for ev_name, ev_payload in adapter.fail_events(
+                _FAILURE_CODES.get(exc.code, "server_error"), exc.message
             )
+        ]
 
     return StreamingResponse(
-        generator(),
+        lifecycle.relay(ctx, stream, produce, render_error, usage),
         media_type="text/event-stream",
-        headers={
-            "cache-control": "no-cache",
-            "connection": "keep-alive",
-            "x-accel-buffering": "no",
-            "x-request-id": ctx.request_id,
-            "x-litegate-model": ctx.requested_alias,
-            # ตัวที่ *รันจริง* — ต่างจาก x-litegate-model เมื่อกฎ routing เปลี่ยนเส้นทาง
-            # (coding -> coding-long เพราะคำขอยาวเกิน) · สัญญากับสมาชิกยังเหมือนเดิม
-            # คือขอ alias ไหนได้ alias นั้น แต่เวลาไล่ปัญหาต้องรู้ว่าใครตอบ ไม่งั้นตัวเลข
-            # เร็ว/ช้าที่วัดได้จะถูกโยงไปผิดโมเดล
-            "x-litegate-served-by": ctx.model.alias,
-        },
+        headers=lifecycle.stream_headers(
+            ctx, stream, "responses-via-openai" if translate else "responses-native"
+        ),
     )

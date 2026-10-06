@@ -10,7 +10,6 @@ The pipeline, in the order the PRD specifies (§15):
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 import uuid
@@ -18,9 +17,10 @@ from collections.abc import AsyncIterator, Callable, Collection
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api import lifecycle
 from app.core import auto as auto_mod
 from app.core import jsonio, responsecache
 from app.core import usage as usage_mod
@@ -42,14 +42,13 @@ from app.core.errors import ErrorCode, GatewayError
 from app.core.jsonio import FastJSONResponse
 from app.core.multimodal import RequestProfile, profile_openai_request
 from app.core.quota import Consumption
-from app.core.routing import RETRYABLE_ERRORS, is_retryable_status
 from app.core.rules import fallback_models, resolve_route
 from app.core.tokens import TokenUsage, resolve_usage
 from app.db.session import get_session, release_connection
 from app.registry.schema import Endpoint, ModelDefinition
 from app.state import AppState, get_state
 from app.upstream import client as upstream
-from app.upstream.sse import DONE, format_sse, iter_sse_payloads, parse_chunk
+from app.upstream.sse import DONE, format_sse
 
 
 def _rate(ctx) -> float | None:
@@ -323,7 +322,7 @@ async def run_chat(
     )
 
     if body.get("stream"):
-        return await _stream_chat(build, context)
+        return await _stream_chat(request, build, context)
     return await _complete_chat(build, context)
 
 
@@ -541,8 +540,13 @@ class _RequestContext:
         status: str = "success",
         http_status: int = 200,
         error_code: str | None = None,
+        charge: bool = True,
     ) -> None:
         """Record usage + quota consumption exactly once per request.
+
+        `charge=False` = เขียนแถว usage แต่ไม่หักโควตาและไม่นับเข้าสถิติความเร็ว · ใช้กับคำขอ
+        ที่ไม่มี backend ไหนได้เห็น (ช่องเต็มทุกเครื่อง): ต้องมีแถวให้ตามหาได้ว่าใครโดน 429
+        แต่การถูกปฏิเสธไม่ใช่การใช้งาน
 
         ห่อด้วย shield เพราะจุดเรียกเกือบทุกจุดอยู่ในบล็อก `finally` ซึ่งรันใต้
         `CancelledError` เมื่อ client หลุด · ไม่ห่อ = `await` ตัวแรกข้างในโยนทิ้ง
@@ -565,6 +569,7 @@ class _RequestContext:
                 status=status,
                 http_status=http_status,
                 error_code=error_code,
+                charge=charge,
             )
         )
 
@@ -576,6 +581,7 @@ class _RequestContext:
         status: str = "success",
         http_status: int = 200,
         error_code: str | None = None,
+        charge: bool = True,
     ) -> None:
         """งานบันทึกจริง — เรียกผ่าน finalize() เท่านั้น"""
         record = usage_mod.build_record(
@@ -596,6 +602,8 @@ class _RequestContext:
             client_agent=self.client_agent,
         )
         await self.state.usage.submit(record)
+        if not charge:
+            return
         # ตัวเลขชุดเดียวกับที่บันทึกลง UsageLog — ใช้ต่อทันทีสำหรับจัดอันดับ auto
         # บันทึกด้วย alias ที่ *รันจริง* ไม่ใช่ที่สมาชิกขอ ไม่งั้นความเร็วของ coding-long
         # จะไปโผล่ในสถิติของ coding
@@ -675,52 +683,8 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> FastJSONR
                     },
                 )
 
-    while True:
-        endpoint, served = ctx.endpoint, ctx.model.alias
-        payload, headers = build(endpoint)
-        await state.router.acquire(served, endpoint, ctx.lease)
-        try:
-            response = await upstream.post_json(endpoint, CHAT_PATH, payload, headers)
-        except GatewayError as exc:
-            state.router.report_failure(served, endpoint, exc.message)
-            if exc.code in RETRYABLE_ERRORS and (nxt := ctx.another_endpoint()):
-                ctx.retarget(nxt)
-                continue
-            await ctx.finalize(
-                resolve_usage(ctx.profile, None, _rate(ctx)),
-                status="error",
-                http_status=exc.http_status,
-                error_code=exc.code,
-            )
-            raise
-        finally:
-            await state.router.release(served, endpoint, ctx.lease)
-
-        if response.status_code >= 400:
-            body = response.text[:2000]
-            state.router.report_http_error(served, endpoint, response.status_code)
-            if is_retryable_status(response.status_code) and (nxt := ctx.another_endpoint()):
-                ctx.retarget(nxt)
-                continue
-            error = upstream.upstream_error(endpoint, response.status_code, body)
-            await ctx.finalize(
-                resolve_usage(ctx.profile, None, _rate(ctx)),
-                status="error",
-                http_status=error.http_status,
-                error_code=error.code,
-            )
-            raise error
-
-        state.router.report_success(served, endpoint)
-        break
-
-    try:
-        # ไม่ใช้ response.json() เพราะมันเรียก json ของ stdlib ตายตัว · เรามีไบต์อยู่แล้ว
-        data = jsonio.loads(response.content)
-    except json.JSONDecodeError as exc:
-        raise GatewayError(
-            ErrorCode.UPSTREAM_ERROR, "The model server returned a malformed response."
-        ) from exc
+    # จองช่อง · เรียก · สลับเครื่อง/โมเดลสำรอง — ดู lifecycle
+    _call, endpoint, data = await lifecycle.complete(ctx, _chat_plan(build))
 
     # The member asked for the alias; never leak the upstream repository name.
     data["model"] = alias
@@ -771,121 +735,61 @@ def _augment_usage_payload(data: dict[str, Any], usage: TokenUsage) -> None:
 # ---------------------------------------------------------------------------
 # Streaming
 # ---------------------------------------------------------------------------
-async def _stream_chat(build: BuildRequest, ctx: _RequestContext) -> StreamingResponse:
-    async def generator() -> AsyncIterator[bytes]:
-        state, alias = ctx.state, ctx.requested_alias
-        upstream_usage: dict | None = None
-        ttft_ms: int | None = None
-        status, error_code, http_status = "success", None, 200
-        # Once a chunk has left for the caller, failing over would replay the
-        # answer from the top and they would read it twice. Before that, the
-        # switch is invisible - so this flag is the whole retry policy here.
-        emitted = False
+def _chat_plan(build: BuildRequest) -> lifecycle.Plan:
+    def plan(endpoint: Endpoint) -> lifecycle.Call:
+        payload, headers = build(endpoint)
+        return lifecycle.Call(CHAT_PATH, payload, headers, lifecycle.OPENAI)
 
-        try:
-            while True:
-                endpoint, served = ctx.endpoint, ctx.model.alias
-                payload, headers = build(endpoint)
-                # Ask for a final usage chunk so accounting stays authoritative.
-                # If the caller did not want it, it is stripped before
-                # forwarding so the shape matches what they asked for.
-                client_wants_usage = bool(
-                    (payload.get("stream_options") or {}).get("include_usage")
-                )
-                payload["stream_options"] = {
-                    **(payload.get("stream_options") or {}),
-                    "include_usage": True,
-                }
+    return plan
 
-                retry: Endpoint | None = None
-                await state.router.acquire(served, endpoint, ctx.lease)
-                try:
-                    async with upstream.stream_json(
-                        endpoint, CHAT_PATH, payload, headers
-                    ) as response:
-                        if response.status_code >= 400:
-                            body = await upstream.read_error_body(response)
-                            state.router.report_http_error(served, endpoint, response.status_code)
-                            if not emitted and is_retryable_status(response.status_code):
-                                retry = ctx.another_endpoint()
-                            if retry is None:
-                                error = upstream.upstream_error(
-                                    endpoint, response.status_code, body
-                                )
-                                status = "error"
-                                error_code, http_status = error.code, error.http_status
-                                yield format_sse(jsonio.dumpb(error.to_openai(ctx.request_id)))
-                                yield format_sse(DONE)
-                                return
-                        else:
-                            state.router.report_success(served, endpoint)
-                            async for _event, data in iter_sse_payloads(response.aiter_lines()):
-                                if data.strip() == DONE:
-                                    continue
-                                chunk = parse_chunk(data)
-                                if chunk is None:
-                                    emitted = True
-                                    yield format_sse(data)
-                                    continue
 
-                                if ttft_ms is None:
-                                    ttft_ms = ctx.elapsed_ms
+async def _stream_chat(
+    request: Request, build: BuildRequest, ctx: _RequestContext
+) -> Response:
+    # เปิดสายและรอ payload แรก *ก่อน* เริ่มตอบ: ช่องเต็ม · เครื่องล่ม · backend ที่ตอบ 200
+    # แล้วเงียบ ล้วนสลับเครื่องได้ตรงนี้ และถ้าหมดทางผู้เรียกได้สถานะจริง ไม่ใช่ 200 ที่สายขาด
+    def plan(endpoint: Endpoint) -> lifecycle.Call:
+        call = _chat_plan(build)(endpoint)
+        lifecycle.ask_for_usage(call)
+        return call
 
-                                if isinstance(chunk.get("usage"), dict):
-                                    upstream_usage = chunk["usage"]
-                                    if not client_wants_usage and not chunk.get("choices"):
-                                        continue  # usage-only chunk nobody asked for
+    stream = await lifecycle.open_stream_for(request, ctx, plan)
+    if stream is None:
+        return Response(status_code=lifecycle.CLIENT_CLOSED_STATUS)
 
-                                chunk["model"] = alias
-                                emitted = True
-                                yield format_sse(jsonio.dumpb(chunk))
+    alias = ctx.requested_alias
+    upstream_usage: dict | None = None
 
-                            yield format_sse(DONE)
-                            return
+    async def produce() -> AsyncIterator[bytes]:
+        nonlocal upstream_usage
+        async for _event, data, chunk in stream.payloads():
+            if chunk is None:
+                yield format_sse(data)
+                continue
 
-                except GatewayError as exc:
-                    state.router.report_failure(served, endpoint, exc.message)
-                    if not emitted and exc.code in RETRYABLE_ERRORS:
-                        retry = ctx.another_endpoint()
-                    if retry is None:
-                        status, error_code, http_status = "error", exc.code, exc.http_status
-                        yield format_sse(jsonio.dumpb(exc.to_openai(ctx.request_id)))
-                        yield format_sse(DONE)
-                        return
-                except Exception as exc:  # client disconnect, backend reset, ...
-                    log.exception("stream failed for request %s", ctx.request_id)
-                    state.router.report_failure(served, endpoint, str(exc))
-                    status, error_code, http_status = "aborted", ErrorCode.UPSTREAM_ERROR, 502
-                    return
-                finally:
-                    await state.router.release(served, endpoint, ctx.lease)
+            if isinstance(chunk.get("usage"), dict):
+                upstream_usage = chunk["usage"]
+                # ถ้าผู้เรียกไม่ได้ขอ usage chunk ก็ตัดออกก่อนส่งต่อ ให้รูปตรงกับที่เขาขอมา
+                if not stream.call.client_wants_usage and not chunk.get("choices"):
+                    continue
 
-                ctx.retarget(retry)
-        finally:
-            usage = resolve_usage(ctx.profile, upstream_usage, _rate(ctx))
-            await ctx.finalize(
-                usage,
-                ttft_ms=ttft_ms,
-                status=status,
-                http_status=http_status,
-                error_code=error_code,
-            )
+            chunk["model"] = alias
+            yield format_sse(jsonio.dumpb(chunk))
+
+        yield format_sse(DONE)
+
+    def render_error(exc: GatewayError) -> list[bytes]:
+        # chunk ที่มี `error` คือสิ่งที่ SDK ของ OpenAI ยกเป็น APIError ระหว่างอ่าน stream ·
+        # ปิดด้วย [DONE] ให้ client ที่รอ sentinel ไม่ค้าง
+        return [format_sse(jsonio.dumpb(exc.to_openai(ctx.request_id))), format_sse(DONE)]
+
+    def usage() -> TokenUsage:
+        return resolve_usage(ctx.profile, upstream_usage, _rate(ctx))
 
     return StreamingResponse(
-        generator(),
+        lifecycle.relay(ctx, stream, produce, render_error, usage),
         media_type="text/event-stream",
-        headers={
-            "cache-control": "no-cache",
-            "connection": "keep-alive",
-            "x-accel-buffering": "no",  # nginx must not buffer SSE
-            "x-request-id": ctx.request_id,
-            "x-litegate-model": ctx.requested_alias,
-            # ตัวที่ *รันจริง* — ต่างจาก x-litegate-model เมื่อกฎ routing เปลี่ยนเส้นทาง
-            # (coding -> coding-long เพราะคำขอยาวเกิน) · สัญญากับสมาชิกยังเหมือนเดิม
-            # คือขอ alias ไหนได้ alias นั้น แต่เวลาไล่ปัญหาต้องรู้ว่าใครตอบ ไม่งั้นตัวเลข
-            # เร็ว/ช้าที่วัดได้จะถูกโยงไปผิดโมเดล
-            "x-litegate-served-by": ctx.model.alias,
-        },
+        headers=lifecycle.stream_headers(ctx, stream),
     )
 
 
