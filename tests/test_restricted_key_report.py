@@ -355,6 +355,7 @@ def test_a_sqlite_file_that_is_not_a_gateways_is_exit_status_two(tmp_path):
     assert "api_keys" in reason
 
 
+@on_sqlite          # ทำสำเนาไฟล์ฐานของ client — ดูหมายเหตุของ on_sqlite ข้างบน
 @pytest.mark.skipif(os.geteuid() == 0, reason="root อ่านไฟล์ได้ทุกไฟล์ ไม่ว่าจะตั้งสิทธิ์ไว้อย่างไร")
 def test_a_database_it_is_not_allowed_to_read_is_exit_status_two(client, fleet):
     _keys, db_path = fleet
