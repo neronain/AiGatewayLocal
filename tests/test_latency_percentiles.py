@@ -20,9 +20,14 @@
 from __future__ import annotations
 
 import itertools
+import json
+import re
+import shutil
+import subprocess
 from datetime import datetime, timedelta, timezone
 from fractions import Fraction
 from math import ceil
+from pathlib import Path
 
 import httpx
 import pytest
@@ -482,3 +487,88 @@ def test_the_queries_are_valid_on_postgresql_too():
     assert "cache_hit IS NOT true" in pg and "stream IS true" in pg, pg
     assert "ORDER BY usage_logs.ts DESC" in pg
     assert "ORDER BY" not in str(statements[2].compile(dialect=postgresql.dialect()))
+
+
+# ---------------------------------------------------------------------------
+# คอนโซล — ลูกค้าใช้ผ่าน GUI: ตัวเลขที่ API ส่งมาแต่หน้าจอไม่แสดง ถือว่ายังไม่ได้บอก
+# ---------------------------------------------------------------------------
+_RENDER = r"""
+const fs = require('fs');
+const src = fs.readFileSync(process.argv[2], 'utf8');
+const from = src.indexOf('function latencyDuration(');
+const to = src.indexOf('async function loadLatency(');
+if (from < 0 || to < from) throw new Error('latency panel functions not found in app.js');
+const esc = (v) => String(v ?? '').replace(/[&<>"]/g,
+  (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+const num = (v) => Number(v || 0).toLocaleString('en-US');
+const stamp = (v) => new Date(v);
+eval(src.slice(from, to) + '\nglobalThis.latencyPanelHtml = latencyPanelHtml;');
+process.stdout.write(latencyPanelHtml(JSON.parse(fs.readFileSync(0, 'utf8'))));
+"""
+
+
+def render(tmp_path, body: dict) -> str:
+    """รันฟังก์ชันจริงของคอนโซลกับคำตอบจริงจาก API — ไม่ใช่หาข้อความในซอร์ส"""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("ไม่มี node บนเครื่องนี้ — CI มีให้")
+    script = tmp_path / "render.js"
+    script.write_text(_RENDER, encoding="utf-8")
+    app_js = Path(__file__).resolve().parents[1] / "app/static/app.js"
+    done = subprocess.run([node, str(script), str(app_js)], input=json.dumps(body),
+                          capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    return done.stdout
+
+
+def cells(html: str, first_cell: str) -> list[str]:
+    """ข้อความในแต่ละช่องของแถวที่ช่องแรกขึ้นต้นด้วย `first_cell`"""
+    for row in html.split("<tr")[1:]:
+        found = [" ".join(re.sub(r"<[^>]+>", " ", c).split())
+                 for c in re.findall(r"<td[^>]*>(.*?)</td>", row, re.S)]
+        if found and found[0].startswith(first_cell):
+            return found
+    raise AssertionError(f"ไม่มีแถว {first_cell!r} ใน:\n{html}")
+
+
+def test_the_console_shows_every_figure_with_its_sample_size(client, tmp_path, monkeypatch):
+    from app.core import latency
+
+    monkeypatch.setattr(latency, "SAMPLE_CAP", 100)
+    # coding: 100 ตัวใหม่สุด 10…1000 ms (ทุกตัว stream · TTFT = หนึ่งในสิบ) + 20 ตัวเก่าที่ถูกตัด
+    seed(client, [record(10 * (i + 1), ttft_ms=i + 1, age=60 + i) for i in range(100)])
+    seed(client, [record(50_000, ttft_ms=5000, age=1000 + i) for i in range(20)])
+    seed(client, [record(1, status="error", http_status=502, age=60 + i) for i in range(3)])
+    # muse-local: 4 คำขอ — น้อยเกินกว่าจะมีเปอร์เซ็นไทล์
+    seed(client, [record(1500 * (i + 1), model="muse-local", endpoint="dgx01", age=60 + i)
+                  for i in range(4)])
+
+    html = render(tmp_path, report(client))
+
+    coding = cells(html, "coding")
+    # ตัวอย่าง · p50 · p95 · p99 · ช้าสุด ของ latency แล้วของ TTFT · แล้วสิ่งที่ไม่ถูกนับ
+    # ถูกตัด: บอกว่านับกี่ตัวจากกี่ตัว และตัวเลขครอบคลุมย้อนไปถึงเมื่อไร (เวลาตามเครื่องผู้ดู)
+    assert coding[1].startswith("100 newest of 120 since ") and coding[1] == coding[6]
+    assert re.search(r"since .*\d", coding[1])
+    assert coding[2:6] == ["500 ms", "950 ms", "990 ms", "1.00 s"]
+    assert coding[7:11] == ["50 ms", "95 ms", "99 ms", "100 ms"]
+    assert coding[11] == "3 errors"
+
+    muse = cells(html, "muse-local")
+    assert muse[1:6] == ["4", "—", "—", "—", "6.00 s"], "น้อยเกินไป: บอกจำนวนกับตัวช้าสุด"
+    assert muse[6:11] == ["0", "—", "—", "—", "—"]
+    assert muse[11] == "—"
+
+    assert cells(html, "dgx03")[0] == "dgx03 · coding"
+    # ขั้นต่ำมาจาก API ไม่ได้พิมพ์ตายไว้ในหน้าเว็บ และวิธีคิดถูกบอกไว้
+    assert "อย่างน้อย 20 ตัวอย่าง" in html and "อย่างน้อย 100" in html
+    assert "nearest-rank" in html
+
+
+def test_the_console_says_so_when_there_is_nothing_to_show(client, tmp_path, classes):
+    empty = render(tmp_path, report(client, query="days=7&workspace_id=nobody-here"))
+    assert "ยังไม่มีคำขอในช่วง 7 วันนี้" in empty and "<table" not in empty
+
+    # manager: ไม่มีตารางต่อเครื่อง และไม่มีหัวข้อที่ชี้ไปตารางที่ไม่มี
+    manager = render(tmp_path, report(client, classes["key"]))
+    assert "By model" in manager and "By endpoint" not in manager

@@ -1033,6 +1033,109 @@ function renderSavings(d) {
 }
 
 
+// ── คำขอที่ช้า ช้าแค่ไหน — p50 / p95 / p99 ─────────────────────────────────────
+//
+// การ์ด "Avg latency" ข้างบนซ่อนสิ่งที่คนมาบ่นพอดี: 95 คำขอที่ 2 วินาทีกับ 5 คำขอที่ค้าง
+// 90 วินาที เฉลี่ยได้ 6.4 วินาที ซึ่งไม่มีใครเจอ · แถวไหนถูกนับ วิธีคิด และขั้นต่ำของตัวอย่าง
+// เซิร์ฟเวอร์เป็นคนตัดสิน (app/core/latency.py) หน้านี้แสดงตามที่ได้รับ ไม่พิมพ์กติกาซ้ำ
+//
+// สามฟังก์ชันแรกไม่แตะ DOM — รับคำตอบของ /admin/usage/latency แล้วคืน HTML · เทสรันมัน
+// ตรง ๆ กับคำตอบจริง (tests/test_latency_percentiles.py)
+function latencyDuration(ms) {
+  if (ms == null) return '—';
+  if (ms < 1000) return `${ms} ms`;
+  if (ms < 10000) return `${(ms / 1000).toFixed(2)} s`;
+  if (ms < 100000) return `${(ms / 1000).toFixed(1)} s`;
+  return `${num(Math.round(ms / 1000))} s`;
+}
+
+// ตัวอย่าง · p50 · p95 · p99 · ช้าสุด ของมาตรวัดหนึ่งตัว — จำนวนตัวอย่างอยู่ติดกับตัวเลขเสมอ
+// ตัวอย่างไม่ถึงขั้นต่ำเซิร์ฟเวอร์ส่ง null มา: แสดง "—" ไม่ใช่ 0 และไม่เดาเลขขึ้นมาเอง
+function latencyCells(m, min) {
+  // ถูกตัดที่เพดาน: บอกว่านับกี่ตัวจากกี่ตัว และย้อนไปถึงเมื่อไร — "10,000 ตัวใหม่สุด" ของโมเดลที่
+  // งานชุกคือไม่กี่ชั่วโมงล่าสุด ไม่ใช่ทั้งช่วงที่เลือกไว้ข้างบน
+  const samples = m.capped
+    ? `${num(m.samples)}<div class="hint">newest of ${num(m.population)}<br>since ${
+      esc(stamp(m.sampled_since).toLocaleString(undefined,
+        { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</div>`
+    : num(m.samples);
+  const figure = (name) => (m[`${name}_ms`] != null
+    ? latencyDuration(m[`${name}_ms`])
+    : `<span class="hint" title="${esc(`ต้องมีอย่างน้อย ${min[name]} ตัวอย่าง · มี ${m.samples}`)}">—</span>`);
+  return `<td class="num split">${samples}</td><td class="num">${figure('p50')}</td>
+    <td class="num">${figure('p95')}</td><td class="num">${figure('p99')}</td>
+    <td class="num">${latencyDuration(m.max_ms)}</td>`;
+}
+
+function latencyTable(groups, heading, name, min) {
+  const leftOut = (g) => [
+    g.errors ? `${num(g.errors)} ${g.errors === 1 ? 'error' : 'errors'}` : '',
+    g.aborted ? `${num(g.aborted)} aborted` : '',
+    g.cache_hits ? `${num(g.cache_hits)} cached` : '',
+    g.streams_without_first_token
+      ? `${num(g.streams_without_first_token)} with no first token` : '',
+  ].filter(Boolean).join(' · ') || '—';
+  const columns = `<th class="num split">Samples</th><th class="num">p50</th>
+    <th class="num">p95</th><th class="num">p99</th><th class="num">Slowest</th>`;
+  return `<div class="scroll"><table class="latency"><thead>
+      <tr><th rowspan="2">${heading}</th><th colspan="5" class="grp split">Total latency</th>
+        <th colspan="5" class="grp split">Time to first token</th>
+        <th rowspan="2" class="split">Not counted</th></tr>
+      <tr>${columns}${columns}</tr></thead>
+    <tbody>${groups.map((g) => `<tr><td>${name(g)}</td>${latencyCells(g.latency, min)}
+      ${latencyCells(g.ttft, min)}<td class="split">${leftOut(g)}</td></tr>`).join('')}</tbody>
+  </table></div>`;
+}
+
+function latencyPanelHtml(d) {
+  const min = d.min_samples || {};
+  const models = d.by_model || [];
+  if (!models.length) {
+    return `<div class="empty">ยังไม่มีคำขอในช่วง ${esc(d.window_days)} วันนี้</div>`;
+  }
+  const cut = (flag) => (flag
+    ? `<p class="hint">แสดง ${esc(d.group_cap)} กลุ่มที่มีคำขอมากที่สุด · ยังมีกลุ่มที่ไม่ได้แสดง</p>`
+    : '');
+  // ทุกกลุ่มยังไม่ถึงขั้นต่ำ = ตารางมีแต่ "—" · บอกเหตุผลไว้เหนือตาราง ไม่ให้อ่านว่ารายงานพัง
+  const tooFew = models.every((g) => g.latency.p50_ms == null)
+    ? `<p class="hint">ยังไม่มีโมเดลไหนมีคำขอสำเร็จถึง ${esc(min.p50)} ตัวในช่วงนี้ —
+        เปอร์เซ็นไทล์จากตัวอย่างไม่กี่ตัวคือคำขอที่ช้าที่สุดที่ถูกเรียกชื่อให้ดูเป็นสถิติ
+        จึงแสดงเฉพาะจำนวนกับคำขอที่ช้าที่สุด (Slowest)</p>`
+    : '';
+  // by_endpoint เป็น null สำหรับ manager (ผังเครื่องเป็นของ admin) — ไม่มีหัวข้อ ไม่มีตารางว่าง
+  const endpoints = d.by_endpoint
+    ? `<div class="latency-hd">By endpoint</div>${latencyTable(d.by_endpoint, 'Endpoint · model',
+        (g) => `${esc(g.endpoint || '—')} · ${esc(g.model)}`, min)}${cut(d.by_endpoint_truncated)}`
+    : '';
+  return `${tooFew}<div class="latency-hd">By model</div>
+    ${latencyTable(models, 'Model', (g) => esc(g.model), min)}${cut(d.by_model_truncated)}
+    ${endpoints}
+    <p class="hint" style="margin:10px 0 0">p50 แสดงเมื่อมีอย่างน้อย ${esc(min.p50)} ตัวอย่าง ·
+      p95 อย่างน้อย ${esc(min.p95)} · p99 อย่างน้อย ${esc(min.p99)} — น้อยกว่านั้นให้ดู Slowest
+      ซึ่งเป็นคำขอจริงที่ช้าที่สุดในกลุ่ม · วิธีคิด ${esc(d.method)}: ตัวเลขทุกตัวคือคำขอจริงตัวหนึ่ง
+      ไม่ใช่ค่าที่เฉลี่ยระหว่างสองตัว</p>
+    <p class="hint">Total latency นับเฉพาะคำขอที่สำเร็จและ backend เป็นคนตอบ · error ·
+      ผู้ใช้ตัดสาย · คำตอบจากแคช ไม่เข้าเปอร์เซ็นไทล์ (จำนวนอยู่ในช่อง Not counted) ·
+      Time to first token นับ stream ที่ token แรกมาถึง ไม่ว่าจะจบแบบไหน · กลุ่มที่มีเกิน
+      ${num(d.sample_cap)} ตัวอย่างคิดจากตัวใหม่สุด — ช่อง Samples บอกว่านับกี่ตัวและย้อนไปถึงเมื่อไร ·
+      โมเดลคือชื่อที่ผู้ใช้ขอ — คำขอที่ถูกส่งต่อไปโมเดลสำรองยังนับใต้ชื่อเดิม</p>`;
+}
+
+async function loadLatency() {
+  const body = $('latency-body');
+  const select = $('latency-days');
+  if (!body || !select) return;
+  select.onchange = loadLatency;
+  try {
+    body.innerHTML = latencyPanelHtml(
+      await api(`/admin/usage/latency?days=${encodeURIComponent(select.value)}`));
+  } catch (e) {
+    // รายงานเสริม: ล้มแล้วบอกในกล่องของตัวเอง ไม่ทำให้ทั้งแดชบอร์ดขึ้น error
+    body.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+
 
 // ── ตามหาคำขอเดียวด้วย request id ───────────────────────────────────────────
 //
@@ -1060,7 +1163,8 @@ async function findRequest(id) {
           ? `<br><span class="hint">client: ${esc(r.client_request_id)}</span>` : ''}</td>
         <td>${esc(r.model)}<br><span class="hint">${esc(r.endpoint || '—')} · ${esc(r.protocol)}</span></td>
         <td>${esc(r.status)} ${esc(r.http_status)}${r.error_code
-          ? `<br><span class="hint">${esc(r.error_code)}</span>` : ''}</td>
+          ? `<br><span class="hint">${esc(r.error_code)}</span>` : ''}${r.cache_hit
+          ? '<br><span class="hint">answered from cache</span>' : ''}</td>
         <td class="num">${num(r.text_input_tokens + r.visual_input_tokens)} / ${num(r.output_tokens)}</td>
         <td class="num">${num(r.latency_ms)} ms</td></tr>`).join('');
   body.innerHTML = rows
@@ -4128,6 +4232,7 @@ async function load() {
     ]);
     renderUsage(summary, daily);
     loadSavings().catch(() => { /* รายงานเสริม ล้มแล้วไม่ควรทำให้หน้าแดชบอร์ดพัง */ });
+    loadLatency();
     setupRequestFinder();
     const autoPanel = $('auto-panel');
     if (autoPanel) {

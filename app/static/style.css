@@ -1067,6 +1067,21 @@ table tr:not(.alias-row):not(.ep-row):hover > td {
 #reqfind-body td.id { font-family: var(--mono); font-size: 11px;
   word-break: break-all; }
 
+/* ── เปอร์เซ็นไทล์ของ latency ──
+   สิบสองคอลัมน์ในตารางเดียว: ช่องแคบกว่าตารางอื่น และตัวเลขไม่ตัดบรรทัด (ตัดแล้ว "5.53 s"
+   กลายเป็นสองบรรทัดที่อ่านเป็นสองค่า) · ช่องสุดท้ายเป็นข้อความ ปล่อยให้ตัดได้ */
+#latency-panel .panel-hd { gap: 12px; }
+#latency-panel select.mini { font-size: 12px; padding: 4px 8px; width: auto; flex: none; }
+.latency-hd { color: var(--fg2); font-size: 0.75rem; font-weight: 600; margin: 12px 0 4px; }
+table.latency th, table.latency td { padding: .6em .5em; white-space: nowrap; }
+table.latency th { letter-spacing: .03em; }
+table.latency td:last-child { white-space: normal; min-width: 8em; }
+table.latency th.grp { text-align: center; }
+table.latency .split { border-left: 1px solid var(--line); }
+table.latency td .hint { margin: 0; }
+/* บรรทัด "newest of … / since …" ใต้จำนวนตัวอย่างที่ถูกตัด: ตัดบรรทัดได้ ไม่งั้นวันที่ดันตารางล้นกรอบ */
+table.latency td div.hint { white-space: normal; max-width: 9.5em; margin-left: auto; }
+
 /* ── อันดับของ model="auto" ── */
 #auto-panel .auto-win { font-weight: 600; }
 #auto-panel code { font-size: .9em; }

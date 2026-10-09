@@ -170,6 +170,20 @@
           <div class="sub">share of requests</div></div></div>
         <div class="panel-bd"><div id="usage-bars"></div></div>
       </div>
+      <div class="panel" id="latency-panel">
+        <div class="panel-hd">
+          <div><h3>Latency percentiles</h3>
+            <div class="sub">คำขอที่ช้า ช้าแค่ไหน — p50 / p95 / p99 ของเวลารวมและเวลาถึง token แรก ·
+              ค่าเฉลี่ยซ่อนคำขอที่คนมาบ่นพอดี</div></div>
+          <select id="latency-days" class="mini" aria-label="Window">
+            <option value="1">Last 24 hours</option>
+            <option value="7" selected>Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+          </select>
+        </div>
+        <div class="panel-bd"><div id="latency-body"></div></div>
+      </div>
       <div class="panel" id="savings-panel">
         <div class="panel-hd">
           <div><h3>If you did not start it yourself</h3>
