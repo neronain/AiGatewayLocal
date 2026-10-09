@@ -14,7 +14,7 @@ from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import config
-from app.core import assistant_fit, keyvault, lmds, release
+from app.core import assistant_fit, keyrotation, keyvault, lmds, release
 from app.core.audit import audit
 from app.core.auth import (
     Principal,
@@ -1749,6 +1749,45 @@ async def list_api_keys(
             "seal_state": seal_state,
         })
     return {"data": data}
+
+
+@router.get("/key-vault")
+async def key_vault_status(
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """สำเนาที่ผนึกไว้อยู่ใต้ secret ตัวไหน ใบไหนเปิดไม่ได้ และการตั้งค่ามีอะไรควรแก้
+
+    ผู้ดูแลต้องรู้จากตรงนี้ ไม่ใช่จากคนที่มาบอกว่ากด Reveal แล้วไม่ได้ · ไม่มี secret ไม่มี
+    ตัว key และไม่มีค่าที่ผนึกอยู่ในคำตอบ — มีแต่ป้ายสั้น ๆ ของ secret ซึ่งย้อนกลับไม่ได้
+    """
+    found = await keyrotation.survey(session)
+    return {**found.as_dict(), "last_reseal": await keyrotation.last_reseal(session)}
+
+
+@router.post("/key-vault/reseal")
+async def key_vault_reseal(
+    request: Request,
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """ย้ายสำเนาที่ยังอยู่ใต้ secret เก่ามาผนึกใต้ตัวปัจจุบัน — ผู้ดูแลสั่งเอง และถูกบันทึก
+
+    ไม่รันเองตอนเริ่ม process โดยตั้งใจ · เหตุผลอยู่ที่หัวไฟล์ app/core/keyrotation.py
+    กดซ้ำได้: รอบที่ไม่มีอะไรเหลือให้ย้ายไม่เขียนอะไร
+    """
+    try:
+        done = await keyrotation.reseal(session)
+    except keyrotation.ResealRefused as exc:
+        raise GatewayError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
+    await audit(session, request, actor, keyrotation.RESEAL_ACTION, "keyvault", "",
+                done.as_dict())
+    await session.commit()
+    found = await keyrotation.survey(session)
+    return {
+        **done.as_dict(),
+        "vault": {**found.as_dict(), "last_reseal": await keyrotation.last_reseal(session)},
+    }
 
 
 @router.patch("/api-keys/{key_id}")

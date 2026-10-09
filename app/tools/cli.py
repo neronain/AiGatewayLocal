@@ -7,6 +7,17 @@
     python -m app.tools show <slug> <version>     # print a candidate's manifest
 
 Sync stages candidates only; nothing is offered to a customer until `promote`.
+
+Also here, because it is the one operator command line the gateway has: the
+sealed copies of API keys (GW_KEY_REVEAL_SECRET). Run these from the install
+directory as the service user, so `.env` and the database are the gateway's own.
+
+    python -m app.tools keyvault status    # which secret each sealed copy opens under
+    python -m app.tools keyvault reseal    # move copies from the previous secret to the current
+    python -m app.tools keyvault key-id    # key id of a secret read from stdin (never echoed)
+
+`status` and `reseal` exit 0 when nothing is left to do, 1 when copies are still
+waiting for a re-seal or cannot be opened, 2 when the command was refused.
 """
 
 from __future__ import annotations
@@ -114,6 +125,71 @@ def _show(settings, slug, version):
     return 0
 
 
+# ── สำเนา API key ที่ผนึกไว้ ─────────────────────────────────────────────────
+#
+# ทางเดียวกับปุ่มในคอนโซล (เรียก app.core.keyrotation ตัวเดียวกัน) · มีไว้สำหรับตอนที่
+# เกตเวย์ปิดอยู่ หรือเมื่อคนที่ถือ secret คือคนที่เข้าเครื่องได้ ไม่ใช่คนที่เข้าคอนโซลได้
+
+def _print_survey(found) -> None:  # noqa: ANN001
+    from app.core import keyvault
+
+    ids = ""
+    if found.current_key_id:
+        ids = f" · current key id {found.current_key_id}"
+        if found.previous_key_id:
+            ids += f" · previous key id {found.previous_key_id}"
+    print(f"key reveal: {'on' if found.enabled else 'off'}{ids}")
+    print(f"sealed copies: {found.sealed} - current={found.counts[keyvault.CURRENT]} "
+          f"previous={found.counts[keyvault.PREVIOUS]} lost={found.counts[keyvault.LOST]} "
+          f"off={found.counts[keyvault.OFF]}")
+    if found.lost:
+        print("cannot be opened:")
+        for row in found.lost:
+            why = ("damaged - no secret opens it" if row["reason"] == keyvault.DAMAGED
+                   else f"sealed under key id {row['sealed_key_id']}" if row["sealed_key_id"]
+                   else "sealed by 1.12.1 or earlier - the secret that sealed it is not recorded")
+            print(f"  {row['key_prefix']}…  {row['name'] or '(unnamed)'}"
+                  f"{'  [revoked]' if row['revoked'] else ''}  {why}")
+    for warning in found.warnings:
+        print(f"{'!' if warning['level'] != 'info' else '·'} {warning['message']}")
+
+
+async def _keyvault(action: str) -> int:
+    from app.core import keyrotation
+    from app.db.session import dispose_db, session_scope
+
+    try:
+        async with session_scope() as session:
+            if action == "reseal":
+                try:
+                    done = await keyrotation.reseal(session)
+                except keyrotation.ResealRefused as exc:
+                    print(f"refused: {exc}", file=sys.stderr)
+                    return 2
+                await keyrotation.record_reseal_from_cli(session, done)
+                print(f"resealed {done.resealed} · already current {done.already_current} · "
+                      f"cannot be opened {done.lost} · changed meanwhile {done.changed_meanwhile}")
+            found = await keyrotation.survey(session)
+    finally:
+        await dispose_db()
+    _print_survey(found)
+    return 1 if found.needs_attention else 0
+
+
+def _key_id() -> int:
+    """ป้ายของ secret ที่อ่านจาก stdin — ไม่รับเป็นอาร์กิวเมนต์ เพราะจะค้างใน history ของ shell"""
+    import getpass
+
+    from app.core import keyvault
+
+    secret = (getpass.getpass("secret: ") if sys.stdin.isatty() else sys.stdin.readline()).strip()
+    if not secret:
+        print("no secret given on stdin", file=sys.stderr)
+        return 2
+    print(keyvault.key_id_of(secret))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.tools", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -133,8 +209,16 @@ def main(argv: list[str] | None = None) -> int:
     p_show.add_argument("slug")
     p_show.add_argument("version")
 
+    p_vault = sub.add_parser("keyvault", help="sealed copies of API keys: status / re-seal")
+    p_vault.add_argument("action", choices=["status", "reseal", "key-id"])
+
     args = parser.parse_args(argv)
     settings = get_settings()
+
+    if args.cmd == "keyvault":
+        if args.action == "key-id":
+            return _key_id()
+        return asyncio.run(_keyvault(args.action))
 
     if args.cmd == "sync":
         platforms = {p.strip() for p in args.platform.split(",")} if args.platform else None
