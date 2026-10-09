@@ -376,6 +376,16 @@ is held to the same rule as narrowing because it is the same act done
 irreversibly, and so is extending an expiry, because reviving an expired key
 hands the same rights out again.
 
+One step earlier in the same chain is closed by `_assert_may_enrol`: a manager
+cannot add an administrator to a workspace. Membership gives an administrator
+nothing, since they are not scoped by it, but it is what makes their user row
+and their keys appear in that manager's lists. The check is applied to the
+people a request would actually add, so it needs no migration — memberships
+that exist are untouched, and removing stays open to managers. A manager
+enrolling another manager is left alone deliberately: it is how a co-teacher is
+added, and it gives nothing of the other manager's rights, which only a key
+could carry.
+
 *Cost:* a per-key quota lives in another table, so knowing about it costs a
 query. `authenticate` asks only when the answer can change the *decision* — the
 owner is a manager or an admin and the key has no other limit — so member
