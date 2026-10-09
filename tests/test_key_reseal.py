@@ -403,6 +403,35 @@ def test_the_command_line_exits_zero_when_there_is_nothing_left_to_do(secrets, c
     assert all(opens(client, k) for k in keys)
 
 
+def test_four_processes_resealing_at_once_move_every_row_exactly_once(secrets, client):
+    """สี่ process จริงเริ่มพร้อมกันบนฐานเดียว — แบบเดียวกับ 4 worker ของเกตเวย์
+
+    ไม่ใช่ทางที่ระบบรันเอง (การผนึกใหม่ไม่ทำตอนเริ่ม) แต่เป็นสิ่งที่เกิดได้: สองคนสั่งพร้อมกัน
+    หรือสคริปต์ถูกเรียกซ้อน · ผลรวมต้องเท่าจำนวนแถวพอดี ไม่มีแถวไหนถูกย้ายสองครั้ง
+    """
+    import re
+
+    keys = [*old_rows(client, secrets),
+            *issued_under(client, secrets, A, 7, prefix="more-", fmt="v1")]
+    secrets(B, previous=A)
+
+    env = {**os.environ, "GW_KEY_REVEAL_SECRET": B, "GW_KEY_REVEAL_SECRET_PREVIOUS": A}
+    running = [
+        subprocess.Popen([sys.executable, "-m", "app.tools", "keyvault", "reseal"],
+                         cwd=REPO_ROOT, env=env, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True)
+        for _ in range(4)
+    ]
+    outputs = [proc.communicate(timeout=180) for proc in running]
+    assert [proc.returncode for proc in running] == [0, 0, 0, 0], [err for _, err in outputs]
+
+    moved = [int(re.search(r"resealed (\d+)", out).group(1)) for out, _ in outputs]
+    assert sum(moved) == len(keys) == 12, moved
+    secrets(B)
+    assert all(opens(client, k) for k in keys)
+    assert vault(client).json()["counts"] == {"current": 12, "previous": 0, "lost": 0, "off": 0}
+
+
 def test_the_command_line_refuses_to_reseal_with_the_feature_off(secrets, client):
     old_rows(client, secrets)
     before = sealed_column(client)
