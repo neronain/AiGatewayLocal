@@ -260,7 +260,7 @@ async def record_reseal_from_cli(session: AsyncSession, done: ResealResult) -> N
     await session.commit()
 
 
-async def reseal(session: AsyncSession) -> ResealResult:
+async def reseal(session: AsyncSession, result: ResealResult | None = None) -> ResealResult:
     """ย้ายทุกใบที่ยังเปิดได้ด้วย secret เก่าเท่านั้น มาผนึกใต้ตัวปัจจุบัน
 
     ต้องรันซ้ำได้ ถูกตัดกลางทางได้ และมีสองตัวรันพร้อมกันได้ โดยไม่มีแถวไหนหาย:
@@ -280,7 +280,8 @@ async def reseal(session: AsyncSession) -> ResealResult:
     ใบที่เพิกถอนแล้วก็ย้ายด้วย: สำเนายังอยู่ในฐาน ถ้าข้ามไป ตัวนับ "รอผนึกใหม่" จะไม่มีวัน
     เป็นศูนย์ และผู้ดูแลจะไม่รู้ว่าเอา secret เก่าออกได้เมื่อไร
 
-    ผู้เรียกเป็นคนเปิด session · ฟังก์ชันนี้ commit เองหลังทุกแถว
+    ผู้เรียกเป็นคนเปิด session · ฟังก์ชันนี้ commit เองหลังทุกแถว · ส่ง `result` เข้ามาเองได้
+    เมื่อต้องการรู้ว่าย้ายไปแล้วกี่แถวแม้งานจะล้มกลางทาง (ตัวนับถูกบวกหลัง commit ของแถวนั้น)
     """
     if not keyvault.reveal_enabled():
         raise ResealRefused(
@@ -296,7 +297,7 @@ async def reseal(session: AsyncSession) -> ResealResult:
     # ปิด transaction ที่ใช้อ่าน ก่อนเริ่มเขียนทีละแถว — ไม่ถือ snapshot ค้างข้ามทั้งงาน
     await session.commit()
 
-    result = ResealResult()
+    result = result if result is not None else ResealResult()
     for key_id, observed in rows:
         opened = keyvault.inspect(observed)
         if opened.state == keyvault.CURRENT:

@@ -188,6 +188,7 @@ async def _keyvault(action: str, assume_yes: bool) -> int:
         async with session_scope() as session:
             if action == "reseal":
                 before = await keyrotation.survey(session)
+                await session.commit()      # ไม่ถือ transaction ค้างระหว่างรอคนตอบ
                 if before.enabled and not assume_yes and not _confirm_reseal(before):
                     print("Nothing was changed.", file=sys.stderr)
                     return 2

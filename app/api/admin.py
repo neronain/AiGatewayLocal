@@ -1776,10 +1776,19 @@ async def key_vault_reseal(
     ไม่รันเองตอนเริ่ม process โดยตั้งใจ · เหตุผลอยู่ที่หัวไฟล์ app/core/keyrotation.py
     กดซ้ำได้: รอบที่ไม่มีอะไรเหลือให้ย้ายไม่เขียนอะไร
     """
+    done = keyrotation.ResealResult()
     try:
-        done = await keyrotation.reseal(session)
+        await keyrotation.reseal(session, done)
     except keyrotation.ResealRefused as exc:
         raise GatewayError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
+    except Exception:
+        # ล้มกลางทาง: แถวที่ย้ายไปแล้วอยู่ถาวร (commit ทีละแถว) จึงต้องมีบันทึกว่าใครย้าย
+        # เหมือนรอบที่จบปกติ — งานที่ทำไปครึ่งหนึ่งโดยไม่มีชื่อคนทำคือสิ่งที่ขั้นนี้มีไว้กัน
+        await session.rollback()
+        await audit(session, request, actor, keyrotation.RESEAL_ACTION, "keyvault", "",
+                    {**done.as_dict(), "interrupted": True})
+        await session.commit()
+        raise
     await audit(session, request, actor, keyrotation.RESEAL_ACTION, "keyvault", "",
                 done.as_dict())
     await session.commit()

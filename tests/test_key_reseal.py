@@ -124,6 +124,9 @@ def test_a_run_cut_short_loses_nothing_and_the_next_run_finishes(secrets, client
     assert len(moved) == 2, "สองแถวแรกต้องอยู่ถาวรแล้ว ไม่ถูกม้วนกลับไปพร้อมแถวที่ล้ม"
     assert all(opens(client, k) for k in keys), "ครึ่งทาง: ทุกใบต้องยังเปิดได้"
     assert vault(client).json()["counts"] == {"current": 2, "previous": 3, "lost": 0, "off": 0}
+    # สองแถวที่ย้ายไปแล้วต้องมีชื่อคนย้าย แม้รอบนั้นจะไม่จบ
+    (actor, payload), = _audit_rows(client, "keyvault.reseal")
+    assert actor and payload["resealed"] == 2 and payload["interrupted"] is True
 
     assert reseal(client).json()["resealed"] == 3, "รอบถัดไปทำแค่ส่วนที่เหลือ"
     secrets(B)
