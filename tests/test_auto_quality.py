@@ -505,3 +505,91 @@ def test_preview_can_try_a_strategy_without_saving_it(scored, client):
     assert set(again["strategies"]) == {"fastest", "roomiest", "quality", "balanced"}
 
     assert client.get("/admin/auto/preview?strategy=smartest", headers=headers).status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# 6. คอนโซล: วาดจากคำตอบจริงของ API ด้วยฟังก์ชันจริงของหน้าเว็บ (รันใน node)
+# ---------------------------------------------------------------------------
+def _render(preview: dict, *, admin: bool) -> str:
+    import json
+    import re
+    import shutil
+    import subprocess
+
+    from tests.test_context_per_request import APP_JS, _js_function
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("ไม่มี node บนเครื่องนี้ — CI มีให้")
+    source = APP_JS.read_text(encoding="utf-8")
+    start = source.index("const AUTO_STRATEGY_HELP = {")
+    help_text = source[start:re.compile(r"^};\n", re.M).search(source, start).end()]
+    script = f"""
+{_js_function("esc")}
+{help_text}
+{_js_function("autoPreviewHtml")}
+console.log(autoPreviewHtml({json.dumps(preview)}, {json.dumps(admin)}));
+"""
+    done = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert done.returncode == 0, done.stderr
+    return done.stdout
+
+
+def _cells(html: str, alias: str) -> list[str]:
+    """ข้อความในแต่ละช่องของแถวโมเดลนั้น — อ่านจาก HTML ที่วาดออกมา ไม่ใช่จาก JSON ที่ส่งเข้าไป"""
+    import re
+
+    row = next(r for r in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S) if f">{alias}<" in r)
+    return [" ".join(c.split()) for c in re.findall(r"<td[^>]*>(.*?)</td>", row, re.S)]
+
+
+def test_console_shows_the_breakdown_the_ranker_used(scored, client):
+    _traffic(client, muse_local=200.0, coding=40.0)
+    assert _set_strategy(client, "balanced").status_code == 200
+    preview = client.get("/admin/auto/preview?prompt_tokens=1000",
+                         headers=auth(client.admin_key)).json()
+
+    html = _render(preview, admin=True)
+
+    # อันดับ · ชื่อ · คุณภาพ · tok/s · TTFT · ความเร็วเทียบตัวเร็วสุด · คะแนนรวม · context · จำนวนคำขอ
+    assert _cells(html, "coding") == [
+        "1", "coding", "90", "40.0", "200 ms", "20%", "66.7", "262,144", str(MIN_SAMPLES)]
+    assert _cells(html, "muse-local")[2:7] == ["40", "200.0", "200 ms", "100%", "60.0"]
+    # ยังไม่มีคะแนนและยังไม่มีสถิติ: ทุกช่องเป็นขีด ไม่ใช่ 0 — 0 คือคะแนนที่มีคนตั้ง
+    assert _cells(html, "gemma-vision")[2:7] == ["—", "—", "—", "—", "—"]
+    assert "<strong>coding</strong>" in html
+    for name in ("fastest", "roomiest", "quality", "balanced"):
+        assert f'<option value="{name}"' in html
+    assert '<option value="balanced" selected>balanced (in use)</option>' in html
+
+
+def test_console_marks_a_speed_that_was_assumed(scored, client):
+    """ตัวที่ยังไม่มีสถิติถูกคิดเสมือนเร็วเท่าตัวเร็วสุด — หน้าจอต้องบอก ไม่ใช่โชว์ 100% เฉย ๆ"""
+    _traffic(client, muse_local=200.0)                # coding มีคะแนนแต่ยังไม่มีสถิติ
+    preview = client.get("/admin/auto/preview?strategy=balanced",
+                         headers=auth(client.admin_key)).json()
+    cells = _cells(_render(preview, admin=True), "coding")
+    assert cells[3] == "—" and cells[5] == "100% *", cells
+
+
+def test_console_offers_the_save_button_only_for_a_change_and_only_to_an_admin(scored, client):
+    headers = auth(client.admin_key)
+    current = client.get("/admin/auto/preview", headers=headers).json()
+    trial = client.get("/admin/auto/preview?strategy=quality", headers=headers).json()
+
+    assert 'id="auto-strategy-save" class="primary small" disabled' in _render(current, admin=True)
+    as_admin = _render(trial, admin=True)
+    assert 'id="auto-strategy-save" class="primary small">' in as_admin
+    assert "ตัวอย่างเท่านั้น" in as_admin and "<strong>fastest</strong>" in as_admin
+    # ผู้จัดการดูและลองได้ แต่ไม่มีปุ่ม — API ก็ปฏิเสธอยู่แล้ว (403) ปุ่มที่กดแล้วพังไม่ควรมี
+    as_manager = _render(trial, admin=False)
+    assert "auto-strategy-save" not in as_manager and 'id="auto-strategy"' in as_manager
+
+
+def test_console_keeps_the_strategy_picker_when_nothing_can_serve(client):
+    """ไม่มีผู้สมัครสักตัว (prompt ใหญ่เกินทุกโมเดล) ก็ยังต้องเปลี่ยนกลยุทธ์ได้"""
+    preview = client.get("/admin/auto/preview?prompt_tokens=2000000",
+                         headers=auth(client.admin_key)).json()
+    assert preview["ranked"] == []
+    html = _render(preview, admin=True)
+    assert 'id="auto-strategy"' in html and 'class="empty"' in html

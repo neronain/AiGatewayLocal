@@ -1076,28 +1076,91 @@ async function findRequest(id) {
 //
 // ฟีเจอร์ที่ไม่โผล่ในหน้าเว็บเท่ากับไม่มีอยู่จริงสำหรับคนที่ใช้ผ่านคอนโซลล้วน ๆ ·
 // และ "เกตเวย์เลือกให้" จะเชื่อถือได้ก็ต่อเมื่ออธิบายได้ว่าเลือกจากอะไร
-async function loadAutoPreview() {
-  const body = $('auto-body');
-  if (!body) return;
-  const d = await api('/admin/auto/preview?prompt_tokens=1000');
+//
+// คำอธิบายของแต่ละกลยุทธ์ — ตัวเลือกที่ย้ายงานของทั้งเกตเวย์ไปอีกโมเดลได้ ต้องบอกว่ามันทำอะไรก่อนกด
+const AUTO_STRATEGY_HELP = {
+  fastest: 'เร็วที่สุดที่วัดได้จากทราฟฟิกจริง · ค่าตั้งต้น — ไม่ดูคะแนนคุณภาพเลย',
+  roomiest: 'ตัวที่ context ใหญ่ที่สุดก่อน — ไม่ดูทั้งความเร็วและคะแนนคุณภาพ',
+  quality: 'คะแนนคุณภาพที่คุณตั้งไว้สูงสุดก่อน (ตั้งที่ปุ่ม Edit ของแต่ละโมเดล) · คะแนนเท่ากันให้ตัว'
+    + 'ที่เร็วกว่า · ตัวที่ยังไม่มีคะแนนอยู่ท้ายแถว · มั่นคงที่สุดเมื่อรันหลาย worker เพราะไม่ขึ้นกับ'
+    + 'สถิติความเร็วที่แต่ละ worker วัดเอง',
+  balanced: 'ชั่งคุณภาพกับความเร็ว 2:1 — คะแนนรวม = (2 × คุณภาพ + 100 × ความเร็วเทียบตัวเร็วสุด) ÷ 3 · '
+    + 'คุณภาพที่มากกว่า 1 คะแนนคุ้มกับความเร็วที่เสียไป 2% · ตัวที่ยังไม่มีคะแนนอยู่ท้ายแถว · '
+    + 'ตัวที่ยังไม่มีสถิติความเร็วถูกคิดเสมือนเร็วเท่าตัวเร็วสุดไปก่อน (มี * กำกับ)',
+};
+
+// วาดจากคำตอบของ /admin/auto/preview ล้วน ๆ ไม่คิดเลขเอง — ตัวเลขทุกช่องคือชุดที่ตัวจัดอันดับใช้
+// ตัดสิน · แยกเป็นฟังก์ชันที่ไม่แตะ DOM เพื่อให้เทสรันกับคำตอบจริงของ API ได้
+function autoPreviewHtml(d, canChange) {
+  const balanced = d.strategy === 'balanced';
+  const trying = d.strategy !== d.configured_strategy;
+  const options = (d.strategies || [d.strategy]).map((s) =>
+    `<option value="${esc(s)}"${s === d.strategy ? ' selected' : ''}>${esc(s)}${
+      s === d.configured_strategy ? ' (in use)' : ''}</option>`).join('');
+  const picker = `
+    <div class="bar" style="margin-bottom:6px">
+      <label for="auto-strategy">Strategy</label>
+      <select id="auto-strategy" class="mini">${options}</select>
+      ${canChange ? `<button id="auto-strategy-save" class="primary small"${
+        trying ? '' : ' disabled'}>Use this strategy</button>` : ''}
+    </div>
+    <p class="hint" style="margin:0 0 8px">${esc(AUTO_STRATEGY_HELP[d.strategy] || '')}</p>
+    ${trying ? `<div class="hint" style="margin-bottom:8px">ตัวอย่างเท่านั้น — เกตเวย์ยังใช้
+      <strong>${esc(d.configured_strategy)}</strong> อยู่${canChange
+        ? ' จนกว่าจะกด Use this strategy' : ' · แอดมินเท่านั้นที่เปลี่ยนได้'}</div>` : ''}`;
+  const dash = (v, show) => (v === null || v === undefined ? '—' : show(v));
   const rows = (d.ranked || []).map((r) => `
     <tr${r.rank === 1 ? ' class="auto-win"' : ''}>
       <td>${r.rank}</td><td>${esc(r.alias)}</td>
-      <td class="num">${r.output_tps != null ? r.output_tps.toFixed(1) : '—'}</td>
-      <td class="num">${r.ttft_ms != null ? r.ttft_ms + ' ms' : '—'}</td>
+      <td class="num">${dash(r.quality_score, (v) => v)}</td>
+      <td class="num">${dash(r.output_tps, (v) => v.toFixed(1))}</td>
+      <td class="num">${dash(r.ttft_ms, (v) => `${v} ms`)}</td>
+      ${balanced ? `<td class="num">${dash(r.speed, (v) =>
+        `${Math.round(v * 100)}%${r.speed_assumed ? ' *' : ''}`)}</td>
+      <td class="num">${dash(r.combined, (v) => v.toFixed(1))}</td>` : ''}
       <td class="num">${(r.context_tokens || 0).toLocaleString()}</td>
       <td class="num">${r.samples || 0}</td></tr>`).join('');
-  body.innerHTML = rows ? `
-    <div class="hint" style="margin-bottom:8px">ตอนนี้จะเลือก
+  if (!rows) {
+    return `${picker}<div class="empty">${
+      esc(d.reason || 'ยังไม่มีโมเดลที่รับคำขอตัวอย่างนี้ได้')}</div>`;
+  }
+  return `${picker}
+    <div class="hint" style="margin-bottom:8px">${trying ? 'กลยุทธ์นี้จะเลือก' : 'ตอนนี้จะเลือก'}
       <strong>${esc(d.chosen || '—')}</strong> — ${esc(d.reason || '')}</div>
     <table class="tbl"><thead><tr><th>#</th><th>Model</th>
-      <th class="num">tok/s</th><th class="num">TTFT</th>
+      <th class="num">Quality</th><th class="num">tok/s</th><th class="num">TTFT</th>
+      ${balanced ? '<th class="num">Speed</th><th class="num">Combined</th>' : ''}
       <th class="num">Context</th><th class="num">Sample</th></tr></thead>
       <tbody>${rows}</tbody></table>
-    <p class="hint" style="margin:8px 0 0">ตัวเลขมาจากทราฟฟิกจริงที่ผ่านเกตเวย์ ·
-      ต้องเห็นอย่างน้อย ${d.min_samples} คำขอก่อนถึงจะนับ ตัวที่ยังไม่ถึงจะอยู่ท้ายแถว
-      แต่ยังถูกเลือกได้ถ้าไม่มีตัวอื่น</p>`
-    : `<div class="empty">${esc(d.reason || 'ยังไม่มีโมเดลที่รับคำขอตัวอย่างนี้ได้')}</div>`;
+    <p class="hint" style="margin:8px 0 0">ความเร็วมาจากทราฟฟิกจริงที่ผ่านเกตเวย์ ·
+      ต้องเห็นอย่างน้อย ${d.min_samples} คำขอก่อนถึงจะนับ · คะแนนคุณภาพคือค่าที่ผู้ดูแลตั้งเองต่อโมเดล ·
+      ตัวที่ยังไม่มีข้อมูลที่กลยุทธ์นี้ใช้จะอยู่ท้ายแถว แต่ยังถูกเลือกได้ถ้าไม่มีตัวอื่นรับคำขอนั้นได้</p>`;
+}
+
+// `strategy` = ดูว่ากลยุทธ์อื่นจะเลือกอะไรโดยยังไม่บันทึก · ไม่ส่ง = ตัวที่เกตเวย์ใช้อยู่
+async function loadAutoPreview(strategy) {
+  const body = $('auto-body');
+  if (!body) return;
+  const trial = strategy ? `&strategy=${encodeURIComponent(strategy)}` : '';
+  const d = await api(`/admin/auto/preview?prompt_tokens=1000${trial}`);
+  body.innerHTML = autoPreviewHtml(d, state.me?.role === 'admin');
+
+  const pick = $('auto-strategy');
+  if (pick) pick.onchange = () => loadAutoPreview(pick.value).catch((e) => showError(e.message));
+  const save = $('auto-strategy-save');
+  if (save) {
+    save.onclick = async () => {
+      save.disabled = true;
+      try {
+        await api('/admin/auto/strategy',
+          { method: 'PUT', body: JSON.stringify({ strategy: pick.value }) });
+        await loadAutoPreview();
+      } catch (e) {
+        save.disabled = false;
+        showError(e.message);
+      }
+    };
+  }
 }
 
 
@@ -4069,7 +4132,9 @@ async function load() {
     const autoPanel = $('auto-panel');
     if (autoPanel) {
       autoPanel.hidden = false;
-      $('auto-refresh').onclick = () => loadAutoPreview().catch((e) => showError(e.message));
+      // คงกลยุทธ์ที่กำลังลองดูไว้ — กด Rank now แล้วเด้งกลับไปตัวที่ใช้อยู่ คือคำตอบของคำถามที่ไม่ได้ถาม
+      $('auto-refresh').onclick = () => loadAutoPreview($('auto-strategy')?.value)
+        .catch((e) => showError(e.message));
       loadAutoPreview().catch(() => { /* เสริมเหมือนกัน */ });
     }
   }
