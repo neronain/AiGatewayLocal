@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import Principal, authenticate, permitted_aliases
+from app.core.auth import Principal, authenticate, key_limits_in_full, permitted_aliases
 from app.core.capability import compatibility_badges
 from app.db.models import Workspace
 from app.db.session import get_session
@@ -135,8 +135,9 @@ async def me_key(
             "limited_to_groups": list(principal.key_access_groups),
             # ทุกอย่างที่ทำให้ใบนี้แคบลง รวม workspace กับเพดานของใบเอง · ใบที่มีแม้
             # ข้อเดียวไม่พกสิทธิ์ admin/manager ของเจ้าของ (ดู core/auth.limits_on_key)
-            # — สคริปต์ที่ได้ 403 จาก /admin มาถามที่นี่แล้วต้องได้คำตอบ
-            "limited_by": list(principal.key_limits),
+            # — สคริปต์ที่ได้ 403 จาก /admin มาถามที่นี่แล้วต้องได้คำตอบ · ถามแบบครบ
+            # (`key_limits_in_full`) ให้ตรงกับ `limited_by` ของ GET /admin/api-keys
+            "limited_by": list(await key_limits_in_full(session, principal)),
             "admin_access": principal.is_manager,
         },
     }

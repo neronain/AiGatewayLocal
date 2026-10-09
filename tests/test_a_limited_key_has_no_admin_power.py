@@ -685,3 +685,64 @@ def test_the_console_draws_what_the_list_says():
     assert "k.owner_role" in rule and "k.limited_by" in rule
     assert source.count("noAdminAccess(") >= 3, "ต้องใช้ทั้งในรายการ key และตอนออก key"
     assert ">no admin access</span>" in source
+
+
+# ── `limited_by` หมายความอย่างเดียวกันทุกที่ที่มันปรากฏ ─────────────────────────
+#
+# ทีมเอกสารเทียบกับโค้ด 2026-10-09: `authenticate` ถามเพดานเฉพาะใบเฉพาะเมื่อคำตอบเปลี่ยน
+# สิทธิ์ได้ (เจ้าของเป็น admin/manager และใบยังไม่มีข้อจำกัดอื่น) — พอสำหรับตัดสินสิทธิ์ แต่
+# `GET /v1/me/key` กับ `details` ของ 403 เอาค่านั้นไปแสดงตรง ๆ จึงไม่เคยมี `cap` คู่กับ
+# ข้อจำกัดอื่น และไม่มีเลยบน key ของสมาชิก ขณะที่ `GET /admin/api-keys` บอกครบเสมอ ·
+# ฟิลด์ชื่อเดียวกันตอบไม่เหมือนกันคือสิ่งที่ทำให้คนเลิกเชื่อทั้งสองที่
+
+def _listed(client, key_id: str) -> list[str]:
+    rows = admin(client, "GET", "/admin/api-keys").json()["data"]
+    return next(row["limited_by"] for row in rows if row["id"] == key_id)
+
+
+def test_a_cap_is_listed_next_to_the_other_limits_wherever_limits_are_listed(client):
+    key = key_for(client, owner_of(client, client.admin_key), models=["coding"])
+    made = admin(client, "POST", "/admin/quota-policies",
+                 json={"scope": "key", "api_key_id": key["id"], "name": "cap",
+                       "window": "day", "max_requests": 100})
+    assert made.status_code == 201, made.text
+
+    mine = call(client, key["api_key"], "GET", "/v1/me/key").json()["key"]["limited_by"]
+    refused = call(client, key["api_key"], "GET", "/admin/users").json()["error"]
+
+    assert mine == refused["details"]["limited_by"] == _listed(client, key["id"]) == [
+        "models", "cap"]
+    assert "a model list and a quota of its own" in refused["message"]
+
+
+def test_a_members_capped_key_reads_the_cap_about_itself(client):
+    """สมาชิกไม่มีสิทธิ์ให้เสีย `authenticate` จึงไม่ถาม — แต่ "ใบนี้มีข้อจำกัดอะไร" ยังมีคำตอบ"""
+    key = _capped(client, person(client, "s1", "member")["id"])
+
+    mine = call(client, key["api_key"], "GET", "/v1/me/key").json()["key"]
+
+    assert mine["limited_by"] == _listed(client, key["id"]) == ["cap"]
+    assert mine["admin_access"] is False
+
+
+def test_asking_in_full_costs_a_member_nothing_on_the_request_path(client, monkeypatch):
+    """ครบทุกที่ต้องไม่ได้มาด้วย query เพิ่มในทุกคำขอ — ถามเฉพาะที่ปลายทางสองแห่งที่แสดงมัน"""
+    from app.core import auth as auth_mod
+
+    asked: list[str] = []
+    real = auth_mod.keys_with_a_cap
+
+    async def counting(session, api_key_ids):
+        asked.extend(api_key_ids)
+        return await real(session, api_key_ids)
+
+    monkeypatch.setattr(auth_mod, "keys_with_a_cap", counting)
+    member = key_for(client, person(client, "s1", "member"))
+    asked.clear()        # การเตรียมข้างบนใช้ key ของผู้ดูแล ซึ่งถูกถามตามปกติ
+
+    for path in ("/v1/models", "/v1/me", "/v1/catalog", "/v1/me/usage"):
+        assert call(client, member["api_key"], "GET", path).status_code == 200
+    assert asked == []
+
+    assert call(client, member["api_key"], "GET", "/v1/me/key").status_code == 200
+    assert asked == [member["id"]]

@@ -1570,6 +1570,9 @@ async def create_api_key(
         "access_groups": payload.access_groups,
         # ใบของ admin/manager ที่มีข้อจำกัดเรียก /admin ไม่ได้ · ต้องรู้ตอนออก ไม่ใช่ตอน
         # สคริปต์ได้ 403 — โดยเฉพาะเมื่อข้อจำกัดมาจากค่าเริ่มต้นของ workspace ที่ไม่มีใครพิมพ์
+        # `cap` ไม่มีทางอยู่ในรายการนี้ และนั่นคือคำตอบที่ถูก ณ วินาทีนี้: เพดานเฉพาะใบถูก
+        # ตั้งด้วย POST /admin/quota-policies *หลัง* ออกใบ (ต้องรู้ id ก่อน) — หลังจากนั้น
+        # GET /admin/api-keys และ GET /v1/me/key บอกครบ
         "owner_role": normalise_role(user.role),
         "limited_by": list(limits_on_key(
             models=payload.models, access_groups=payload.access_groups,

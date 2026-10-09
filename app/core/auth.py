@@ -154,7 +154,13 @@ class Principal:
 
     @property
     def key_limits(self) -> tuple[str, ...]:
-        """What was written on this key to narrow it. Never anything for a session."""
+        """What was written on this key to narrow it. Never anything for a session.
+
+        Enough to decide the privilege, not the full list: `cap` is here only
+        when it is the one thing that makes the difference (see `key_capped`),
+        because finding it out costs a query on every request. Anything that
+        *shows* the limits to somebody asks `key_limits_in_full` instead.
+        """
         if self.via != "key":
             return ()
         return limits_on_key(
@@ -306,6 +312,27 @@ async def keys_with_a_cap(session: AsyncSession, api_key_ids) -> set[str]:
     return {key_id for key_id, expires in rows if cap_still_runs(expires, now)}
 
 
+async def key_limits_in_full(session: AsyncSession, principal: Principal) -> tuple[str, ...]:
+    """ข้อจำกัดบน key ของผู้เรียก **ครบทุกข้อ** — สำหรับที่ที่แสดงมันให้คนอ่าน
+
+    `Principal.key_limits` รู้เรื่องเพดานเฉพาะใบเฉพาะเมื่อมันเป็นข้อเดียวที่ตัดสินสิทธิ์
+    (`authenticate` ไม่ถามในกรณีอื่น เพื่อไม่ให้ทุกคำขอเสีย query) · เอาค่านั้นไปแสดงตรง ๆ
+    ทำให้ `GET /v1/me/key` กับ `details.limited_by` ของ 403 ไม่เคยมี `cap` คู่กับข้อจำกัดอื่น
+    และไม่มีเลยบน key ของสมาชิก ขณะที่ `GET /admin/api-keys` บอกครบ (ทีมเอกสาร 2026-10-09)
+    — ฟิลด์ชื่อเดียวกันต้องตอบเหมือนกัน
+
+    ถามเพิ่มหนึ่ง query เฉพาะที่ปลายทางที่เรียกฟังก์ชันนี้ ไม่ใช่ทุกคำขอ และไม่ถามซ้ำถ้า
+    `authenticate` ถามไปแล้ว
+    """
+    if principal.via != "key":
+        return ()
+    capped = principal.key_capped or await has_cap_in_force(session, principal.api_key_id)
+    return limits_on_key(
+        models=principal.key_models, access_groups=principal.key_access_groups,
+        workspace_id=principal.workspace_id, capped=capped,
+    )
+
+
 def cap_still_runs(expires_at: datetime | None, now: datetime) -> bool:
     """แยกออกมาให้ `scripts/restricted_key_report.py` ใช้ตัวเดียวกัน"""
     return expires_at is None or _aware(expires_at) > now
@@ -345,21 +372,30 @@ async def _principal_from_session(
     )
 
 
-async def require_admin(principal: Principal = Depends(authenticate)) -> Principal:
+async def require_admin(
+    principal: Principal = Depends(authenticate),
+    session: AsyncSession = Depends(get_session),
+) -> Principal:
     if not principal.is_admin:
         if principal.role == "admin":
-            raise _limited_key(principal, "administrator")
+            raise _limited_key(
+                principal, "administrator", await key_limits_in_full(session, principal)
+            )
         raise GatewayError(
             ErrorCode.INSUFFICIENT_SCOPE, "Administrator privileges are required."
         )
     return principal
 
 
-async def require_manager(principal: Principal = Depends(authenticate)) -> Principal:
+async def require_manager(
+    principal: Principal = Depends(authenticate),
+    session: AsyncSession = Depends(get_session),
+) -> Principal:
     if not principal.is_manager:
         if principal.role in PRIVILEGED_ROLES:
             raise _limited_key(
-                principal, "administrator" if principal.role == "admin" else "manager"
+                principal, "administrator" if principal.role == "admin" else "manager",
+                await key_limits_in_full(session, principal),
             )
         raise GatewayError(
             ErrorCode.INSUFFICIENT_SCOPE, "Manager privileges are required."
@@ -367,14 +403,13 @@ async def require_manager(principal: Principal = Depends(authenticate)) -> Princ
     return principal
 
 
-def _limited_key(principal: Principal, rights: str) -> GatewayError:
+def _limited_key(principal: Principal, rights: str, limits: tuple[str, ...]) -> GatewayError:
     """คำปฏิเสธของใบที่ *เจ้าของ* มีสิทธิ์ แต่ตัวใบถูกจำกัดไว้
 
     ข้อความเดิม ("Administrator privileges are required.") จะพาคนไปผิดทาง: เขาเป็น
     ผู้ดูแลจริง แล้วจะไปขอสิทธิ์จากใคร · ต้องบอกว่าอะไรบนใบที่ทำให้เป็นแบบนี้ และทางออก
     สองทางที่เดินได้จริง — สมาชิกธรรมดายังได้ข้อความเดิม เพราะสำหรับเขาข้อความเดิมถูก
     """
-    limits = principal.key_limits
     return GatewayError(
         ErrorCode.INSUFFICIENT_SCOPE,
         f"This API key is limited to {_spoken(limits)}, so it does not carry its "
