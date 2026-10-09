@@ -23,10 +23,13 @@ C = "rotation-test-secret-C-not-real"
 # ด้วย secret A · เก็บเป็นค่าตายตัวเพราะคำถามคือ "ของที่เขียนลงฐานไปแล้วยังเปิดได้ไหม"
 # ซึ่งตอบไม่ได้ด้วยการให้โค้ดรุ่นใหม่ผนึกเองแล้วเปิดเอง
 GOLDEN_V1 = (
-    "v1:knxNWkX1_Evlr-IBglvlvgotniNkS4q_mOHFAjDG6iNDxu"
-    "immZb3Bv1wzzdCioToEyNazGa8n9QgiUO0rK2j"
+    "v1:PO7LmsCp7_6w33-GUh58N-9fuPq3J6"
+    "sjt6Zw_6UTxRsdCQwsrCKCqmKby3KroXSh"
 )
-GOLDEN_PLAINTEXT = "lg_sk_golden_fixture_not_a_real_key"
+# สั้นกว่ารูปของ key จริงโดยตั้งใจ: ตัวสแกนความลับของ CI (.github/workflows/ci.yml) จับ `lg_sk_` ที่ตามด้วย
+# 20 ตัวขึ้นไปทั้ง tree รวม tests/ — ค่าเดิมยาว 29 ตัว จะทำให้ main แดงทันทีที่ push (ทีม git จับได้ 2026-10-09)
+# ผนึกใหม่ด้วยโค้ดของ c1876db จริง ไม่ได้หั่นสตริงหลบตัวสแกน
+GOLDEN_PLAINTEXT = "lg_sk_golden_fixture"
 
 
 def auth(key: str) -> dict[str, str]:
