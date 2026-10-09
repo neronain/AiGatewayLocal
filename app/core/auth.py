@@ -688,31 +688,9 @@ async def assert_model_permitted(
     if permission.allows(alias):
         return
 
-    if permission.reason_code == "workspace_left":
-        # Not "ask for the model": the model list is fine, the membership is
-        # what went. Saying so is the difference between a ticket that reads
-        # "the gateway is broken" and one that reads "add me back to CS101".
-        raise GatewayError(
-            ErrorCode.MODEL_NOT_PERMITTED,
-            f"'{alias}' is not available to you: this key was issued for a workspace "
-            "its owner is no longer a member of. Ask that workspace's manager to add "
-            "you back, or use a key that is not tied to it.",
-            details={"model": alias, "allowed": [], "reason": permission.reason,
-                     "reason_code": permission.reason_code},
-        )
-
-    if permission.reason_code == "key_bundle_off":
-        # Not "ask for the model" either: nothing is wrong with the key or the
-        # person, the bundle it points at was turned off.
-        raise GatewayError(
-            ErrorCode.MODEL_NOT_PERMITTED,
-            f"'{alias}' is not available to you: this key is limited to an access "
-            "group that is switched off or no longer exists, so it can call nothing "
-            "right now. Ask an administrator to switch the group back on, or to "
-            "give this key a model list.",
-            details={"model": alias, "allowed": [], "reason": permission.reason,
-                     "reason_code": permission.reason_code},
-        )
+    known = nothing_callable(permission, alias)
+    if known is not None:
+        raise known
 
     allowed = sorted(permission.aliases or [])
     raise GatewayError(
@@ -721,6 +699,43 @@ async def assert_model_permitted(
         + (", ".join(allowed) if allowed else "nothing yet — ask your manager."),
         details={"model": alias, "allowed": allowed, "reason": permission.reason},
     )
+
+
+def nothing_callable(permission: Permission, alias: str) -> GatewayError | None:
+    """The refusal for a key that can call nothing *for a reason the gateway
+    knows*, or None when there is no such reason.
+
+    Separate from `assert_model_permitted` so that `model="auto"` says the same
+    thing a named model does. It used to answer 404 "no model is available to
+    this key" where naming any model answered 403 with the cause (2026-10-09) -
+    and a tool configured with `auto` is exactly the caller that never names
+    one.
+    """
+    if permission.reason_code == "workspace_left":
+        # Not "ask for the model": the model list is fine, the membership is
+        # what went. Saying so is the difference between a ticket that reads
+        # "the gateway is broken" and one that reads "add me back to CS101".
+        return GatewayError(
+            ErrorCode.MODEL_NOT_PERMITTED,
+            f"'{alias}' is not available to you: this key was issued for a workspace "
+            "its owner is no longer a member of. Ask that workspace's manager to add "
+            "you back, or use a key that is not tied to it.",
+            details={"model": alias, "allowed": [], "reason": permission.reason,
+                     "reason_code": permission.reason_code},
+        )
+    if permission.reason_code == "key_bundle_off":
+        # Not "ask for the model" either: nothing is wrong with the key or the
+        # person, the bundle it points at was turned off.
+        return GatewayError(
+            ErrorCode.MODEL_NOT_PERMITTED,
+            f"'{alias}' is not available to you: this key is limited to an access "
+            "group that is switched off or no longer exists, so it can call nothing "
+            "right now. Ask an administrator to switch the group back on, or to "
+            "give this key a model list.",
+            details={"model": alias, "allowed": [], "reason": permission.reason,
+                     "reason_code": permission.reason_code},
+        )
+    return None
 
 
 def _aware(value: datetime) -> datetime:

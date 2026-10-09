@@ -29,6 +29,7 @@ from app.core.auth import (
     Principal,
     assert_model_permitted,
     authenticate,
+    nothing_callable,
     permitted_aliases,
 )
 from app.core.capability import (
@@ -219,6 +220,10 @@ async def run_chat(
     if alias == auto_mod.ALIAS:
         snapshot = state.registry.snapshot
         permission = await permitted_aliases(session, principal, snapshot.gateway)
+        # ใบที่เรียกอะไรไม่ได้ด้วยเหตุที่รู้แน่ (มัดถูกปิด · เจ้าของออกจาก workspace) ต้องได้
+        # คำตอบเดียวกับตอนเรียกชื่อโมเดล ไม่ใช่ 404 "ไม่มีโมเดล" ของ _nothing_for_auto
+        if (known := nothing_callable(permission, alias)) is not None:
+            raise known
         allowed = [
             m for m in snapshot.visible_to(principal.role)
             if m.spec.enabled and permission.allows(m.alias)

@@ -251,3 +251,54 @@ def test_an_expired_key_still_holds_the_bundle_and_the_refusal_says_so(client):
     assert admin(client, "PATCH", f"/admin/api-keys/{key['id']}",
                  json={"days": 30}).status_code == 200
     assert catalogue(client, key["api_key"]) == {"coding"}
+
+
+# ── model="auto" ต้องให้เหตุผลเดียวกับการเรียกชื่อโมเดล ────────────────────────
+
+def _why(response) -> tuple[int, str, str]:
+    error = response.json()["error"]
+    return (response.status_code, error["code"],
+            (error.get("details") or {}).get("reason_code", ""))
+
+
+def test_auto_gives_the_same_reason_as_a_named_model(client):
+    """เรียก `coding` ได้ 403 ที่บอกว่ามัดถูกปิด · เรียก `auto` ได้ 404 "no model is
+    available to this key" (ผู้ตรวจอิสระ 2026-10-09) — เครื่องมือที่ตั้ง model=auto ไว้
+    จึงได้คำตอบที่อ่านเหมือนเกตเวย์ไม่มีโมเดล แทนที่จะเป็น "ขอให้ผู้ดูแลเปิดมัดกลับ\""""
+    group = bundle(client)
+    key = key_for(client, person(client), access_groups=[group["id"]])["api_key"]
+    switch(client, group, on=False)
+
+    named, auto = ask(client, key, "coding"), ask(client, key, "auto")
+
+    assert _why(auto) == _why(named) == (403, "MODEL_NOT_PERMITTED", "key_bundle_off")
+    assert "switched off" in auto.json()["error"]["message"]
+    assert auto.json()["error"]["details"]["allowed"] == []
+
+
+def test_auto_says_so_too_when_the_owner_left_the_workspace(client):
+    """เหตุผลอีกข้อที่เกตเวย์รู้แน่ว่าทำไมใบเรียกอะไรไม่ได้ — ทางเดียวกัน ข้อความเดียวกัน"""
+    student = person(client)
+    ws = admin(client, "POST", "/admin/workspaces", json={"code": "CS101", "name": "CS101"}).json()
+    admin(client, "POST", f"/admin/workspaces/{ws['id']}/models", json={"models": ["coding"]})
+    admin(client, "POST", f"/admin/workspaces/{ws['id']}/join", json={"user_id": student["id"]})
+    key = key_for(client, student, workspace_id=ws["id"])["api_key"]
+    assert admin(client, "DELETE",
+                 f"/admin/workspaces/{ws['id']}/members/{student['id']}").status_code == 200
+
+    named, auto = ask(client, key, "coding"), ask(client, key, "auto")
+
+    assert _why(auto) == _why(named) == (403, "MODEL_NOT_PERMITTED", "workspace_left")
+
+
+def test_auto_with_an_ordinary_empty_list_is_told_what_it_was_always_told(client):
+    """ไม่มีเหตุผลพิเศษ = ข้อความเดิมของ auto · วิชาที่ยังไม่เปิดโมเดลไม่ใช่ "มัดถูกปิด\""""
+    student = person(client)
+    ws = admin(client, "POST", "/admin/workspaces", json={"code": "EMPTY", "name": "EMPTY"}).json()
+    admin(client, "POST", f"/admin/workspaces/{ws['id']}/join", json={"user_id": student["id"]})
+    key = key_for(client, student)["api_key"]
+
+    response = ask(client, key, "auto")
+
+    assert response.status_code == 404
+    assert "nothing to choose from" in response.json()["error"]["message"]
