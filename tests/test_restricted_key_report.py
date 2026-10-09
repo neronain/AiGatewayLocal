@@ -127,6 +127,14 @@ def fleet(client, temp_db):
     return keys, temp_db
 
 
+# สคริปต์รายงานอ่านฐานแบบ sync · เทสพวกนี้ป้อนฐานของ client ให้มันตรง ๆ — บน PostgreSQL venv ของเรา
+# ไม่มีไดรเวอร์ sync (เกตเวย์ใช้ asyncpg) สคริปต์จึงปฏิเสธด้วยข้อความบอกวิธีแก้ ซึ่งเป็นพฤติกรรมที่ตั้งใจ
+# ระบบจริงเป็น SQLite · เจอตอนรันชุดเต็มบน PostgreSQL หลังรวมสาย 2026-10-09 (9 ข้อล้ม) —
+# รายงานบน PostgreSQL ยังไม่มีเทสครอบ
+on_sqlite = pytest.mark.sqlite_only
+
+
+@on_sqlite
 def test_the_report_and_the_gate_agree_about_every_key(client, fleet):
     """ใบไหนที่รายงานบอกว่าเสียสิทธิ์ ต้องได้ 403 จริง · ใบที่ไม่บอก ต้องไม่ได้ — ทุกใบ"""
     keys, db_path = fleet
@@ -144,6 +152,7 @@ def test_the_report_and_the_gate_agree_about_every_key(client, fleet):
     )}
 
 
+@on_sqlite
 def test_a_revoked_key_is_not_in_the_report(client, fleet):
     """เพิกถอนไปแล้วไม่ใช่ใบที่จะพัง — นับรวมทำให้ผู้ดูแลไล่หาสคริปต์ที่ไม่มีอยู่"""
     keys, db_path = fleet
@@ -154,6 +163,7 @@ def test_a_revoked_key_is_not_in_the_report(client, fleet):
     assert out["live_keys"] == len(everything)
 
 
+@on_sqlite
 def test_each_row_says_which_key_whose_role_and_why(client, fleet):
     keys, db_path = fleet
 
@@ -169,6 +179,7 @@ def test_each_row_says_which_key_whose_role_and_why(client, fleet):
     assert rows["admin models"]["owner_role"] == "admin"
 
 
+@on_sqlite
 def test_the_key_and_its_hash_never_leave_the_database(client, fleet):
     """รายงานนี้จะถูกแปะลงแชตและ ticket — ต้องไม่มีอะไรที่ใช้เป็น credential ได้"""
     keys, db_path = fleet
@@ -188,6 +199,7 @@ def test_the_key_and_its_hash_never_leave_the_database(client, fleet):
             assert digest not in printed
 
 
+@on_sqlite
 def test_the_text_a_person_reads_names_the_keys_and_what_to_do(client, fleet):
     keys, db_path = fleet
 
@@ -205,6 +217,7 @@ def test_the_text_a_person_reads_names_the_keys_and_what_to_do(client, fleet):
     assert keys["admin plain"]["key_prefix"] in text.split("── ไม่เปลี่ยน")[1]
 
 
+@on_sqlite
 def test_nothing_to_report_is_exit_status_zero(client, temp_db):
     who = person(client, "s1", "member")
     key_for(client, who, "narrow", models=["coding"])
@@ -215,6 +228,7 @@ def test_nothing_to_report_is_exit_status_zero(client, temp_db):
     assert "ไม่มีใบไหนเสียสิทธิ์ผู้ดูแล" in done.stdout
 
 
+@on_sqlite
 def test_a_key_limited_to_a_dead_bundle_is_listed_and_really_calls_nothing(client, temp_db):
     """การเปลี่ยนอีกข้อของรุ่นเดียวกัน: ใบแบบนี้เคยเรียกได้ทุกโมเดล"""
     bundle = admin(client, "POST", "/admin/access-groups",
@@ -240,6 +254,7 @@ def _digest(path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+@on_sqlite
 def test_running_it_does_not_change_the_database_file(client, fleet):
     _keys, db_path = fleet
     before = _digest(db_path)
@@ -250,6 +265,7 @@ def test_running_it_does_not_change_the_database_file(client, fleet):
     assert _digest(db_path) == before
 
 
+@on_sqlite
 def test_the_connection_it_opens_cannot_write(client, fleet):
     """ไม่ใช่ "สคริปต์ไม่ได้สั่งเขียน" แต่ "สั่งแล้วไดรเวอร์ปฏิเสธ" — ของที่ตรวจได้"""
     from sqlalchemy import create_engine, text
