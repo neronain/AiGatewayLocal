@@ -67,28 +67,17 @@ echo "Restoring from $ARCHIVE"
 [[ -f "$unpacked/MANIFEST" ]] && sed 's/^/  /' "$unpacked/MANIFEST"
 echo
 
-# --- the pepper check, before anything is written -------------------------
-# Doing this first is the point. Restoring the data and then finding out the
-# keys are dead is the failure this whole script exists to prevent.
-backup_pepper=""
-[[ -f "$unpacked/env" ]] && backup_pepper="$(grep -E '^GW_API_KEY_PEPPER=' "$unpacked/env" | tail -1 | cut -d= -f2- || true)"
-
-# --- the secret that sealed the key copies ---------------------------------
-# Unlike the pepper this is a warning and not a refusal: every key in the backup
-# still authenticates. What stops working is *showing* a key again, for copies
-# the backup's GW_KEY_REVEAL_SECRET sealed - and until 2026-10-09 nothing said
-# so. An in-place restore leaves the live .env alone, so a backup made before
-# the secret was changed comes back sealed under a secret this deployment no
-# longer has, and the first anyone hears of it is a Reveal that fails.
-#
-# Compares values, never prints them.
-#
-# Compares what the gateway would *read*, not the raw text of the line. systemd
+# --- reading a value out of a .env the way the gateway reads it -------------
+# Both checks below compare what the gateway would *read*, not the raw text of
+# the line - and they compare values, never print them. systemd
 # (EnvironmentFile) and pydantic-settings both drop one pair of surrounding
 # quotes and trailing whitespace, so `X="abc"`, `X='abc'`, `X=abc ` and a line
 # ending in CR all give the gateway the same secret. Comparing raw text called
-# those different and warned for no reason (found by review, 2026-10-09) - and a
-# warning that is wrong teaches people to stop reading warnings.
+# those different (found by review, 2026-10-09): the reveal-secret check warned
+# for no reason, and the pepper check - which refuses - blocked a restore that
+# was perfectly safe, at the moment an operator least needs that, with advice
+# ("set the pepper from the backup first") that changes nothing. Refusing by
+# default is right; refusing over a pair of quotes is not.
 env_value() {  # env_value NAME FILE -> last value of NAME in FILE as the gateway reads it
     local v
     [[ -f "$2" ]] || return 0
@@ -101,6 +90,19 @@ env_value() {  # env_value NAME FILE -> last value of NAME in FILE as the gatewa
     fi
     printf '%s' "$v"
 }
+
+# --- the pepper check, before anything is written -------------------------
+# Doing this first is the point. Restoring the data and then finding out the
+# keys are dead is the failure this whole script exists to prevent.
+backup_pepper="$(env_value GW_API_KEY_PEPPER "$unpacked/env")"
+
+# --- the secret that sealed the key copies ---------------------------------
+# Unlike the pepper this is a warning and not a refusal: every key in the backup
+# still authenticates. What stops working is *showing* a key again, for copies
+# the backup's GW_KEY_REVEAL_SECRET sealed - and until 2026-10-09 nothing said
+# so. An in-place restore leaves the live .env alone, so a backup made before
+# the secret was changed comes back sealed under a secret this deployment no
+# longer has, and the first anyone hears of it is a Reveal that fails.
 reveal_note() {
     local backup_reveal live_reveal live_previous
     backup_reveal="$(env_value GW_KEY_REVEAL_SECRET "$unpacked/env")"
@@ -139,10 +141,7 @@ WARN
 }
 
 if [[ "$IN_PLACE" -eq 1 ]]; then
-    live_pepper="${GW_API_KEY_PEPPER:-}"
-    if [[ -z "$live_pepper" && -f "$ROOT/.env" ]]; then
-        live_pepper="$(grep -E '^GW_API_KEY_PEPPER=' "$ROOT/.env" | tail -1 | cut -d= -f2- || true)"
-    fi
+    live_pepper="${GW_API_KEY_PEPPER:-$(env_value GW_API_KEY_PEPPER "$ROOT/.env")}"
     if [[ -n "$live_pepper" && -n "$backup_pepper" && "$live_pepper" != "$backup_pepper" ]]; then
         cat >&2 <<'STOP'
 REFUSING: this deployment's GW_API_KEY_PEPPER is not the one in the backup.

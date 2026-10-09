@@ -324,3 +324,62 @@ def test_the_printed_command_survives_a_path_with_spaces(tmp_path):
     shown = run_printed(printed_tar_command(done.stdout + done.stderr), install)
     assert shown.returncode == 0, shown.stderr
     assert shown.stdout.strip() == "GW_KEY_REVEAL_SECRET=old-reveal-secret-not-real"
+
+
+# ── pepper: ด่านที่ปฏิเสธต้องเทียบค่าที่เกตเวย์อ่านจริง ──────────────────────────
+
+PEPPER = "GW_API_KEY_PEPPER"
+SAME_PEPPER = "pepper-of-this-install"
+
+
+@pytest.mark.parametrize("in_backup, live_file, live_shell", [
+    (f'{PEPPER}="{SAME_PEPPER}"', None, SAME_PEPPER),
+    (f"{PEPPER}={SAME_PEPPER}", f"{PEPPER}='{SAME_PEPPER}'", None),
+    (f"{PEPPER}={SAME_PEPPER}\r", f"{PEPPER}={SAME_PEPPER}", None),
+    (f"{PEPPER}={SAME_PEPPER}  ", f"{PEPPER}={SAME_PEPPER}", None),
+], ids=["quoted-file-vs-exported", "quoted-vs-bare", "crlf", "trailing-space"])
+def test_the_same_pepper_written_differently_does_not_block_a_restore(
+        tmp_path, in_backup, live_file, live_shell):
+    """ตรวจ 2026-10-09: ด่าน pepper เทียบ *ข้อความดิบ* ของบรรทัดใน .env เหมือนที่ด่าน reveal เคยทำ
+
+    pepper ใน .env ของ backup มีเครื่องหมายคำพูด · ค่าเดียวกันถูก export แบบไม่มี → REFUSING exit 1
+    ทั้งที่เกตเวย์อ่านได้ค่าเดียวกันทุกตัวอักษร · ปฏิเสธไว้ก่อนเป็นค่าตั้งต้นที่ถูก แต่ปฏิเสธ restore
+    ที่ถูกต้องคือขวางผู้ดูแลในจังหวะที่ระบบล่มอยู่ และคำแนะนำที่พิมพ์ ("ตั้ง pepper จาก backup ก่อน")
+    ก็ไม่ช่วย เพราะตั้งแล้วก็ยังเป็นค่าเดิม
+    """
+    install = make_install(tmp_path / "live")
+    (install / ".env").write_text(in_backup + "\n", encoding="utf-8")
+    archive = backup(install)
+    (install / ".env").write_text(live_file + "\n" if live_file else "", encoding="utf-8")
+
+    exported = {PEPPER: live_shell} if live_shell else {}
+    done = restore_in_place(install, archive, **exported)
+    assert "REFUSING" not in done.stderr, done.stderr
+    assert done.returncode == 0, done.stderr
+    assert "database   sqlite" in done.stdout, "ต้อง restore จริง ไม่ใช่แค่ไม่ปฏิเสธ"
+
+
+@pytest.mark.parametrize("in_backup, live_file", [
+    (f'{PEPPER}="{SAME_PEPPER}"', f'{PEPPER}="a-different-pepper"'),
+    (f"{PEPPER}='{SAME_PEPPER}'", f"{PEPPER}={SAME_PEPPER}x"),
+    # เครื่องหมายคำพูดที่เป็นส่วนหนึ่งของค่า (ไม่ครบคู่) ต้องไม่ถูกถอดจนสองค่ากลายเป็นค่าเดียวกัน
+    (f'{PEPPER}={SAME_PEPPER}', f'{PEPPER}="{SAME_PEPPER}'),
+], ids=["both-quoted", "one-longer", "unbalanced-quote"])
+def test_a_pepper_that_really_differs_is_still_refused_and_nothing_is_touched(
+        tmp_path, in_backup, live_file):
+    """ยามที่สำคัญที่สุดของสคริปต์: pepper ต่างกันจริง = key ทุกใบตาย — ต้องยังปฏิเสธก่อนเขียนอะไร"""
+    install = make_install(tmp_path / "live")
+    (install / ".env").write_text(in_backup + "\n", encoding="utf-8")
+    archive = backup(install)
+    (install / ".env").write_text(live_file + "\n", encoding="utf-8")
+    live_db = install / "data" / "gateway.db"
+    db = sqlite3.connect(live_db)
+    db.execute("insert into users(email) values ('added-after-the-backup@example.com')")
+    db.commit()
+    db.close()
+    before = live_db.read_bytes()
+
+    done = restore_in_place(install, archive)
+    assert done.returncode == 1 and "REFUSING" in done.stderr
+    assert live_db.read_bytes() == before, "ปฏิเสธแล้วต้องไม่มีอะไรถูกเขียนทับ"
+    assert not list((install / "data").glob("gateway.db.before-restore-*"))
