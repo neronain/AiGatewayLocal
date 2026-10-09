@@ -96,21 +96,32 @@ def _sealed_rows():
     return ApiKey.key_sealed.is_not(None), ApiKey.key_sealed != ""
 
 
-def _warnings(counts: dict[str, int], live_lost: int) -> list[dict[str, str]]:
+def _warnings(counts: dict[str, int], lost: list[dict[str, Any]]) -> list[dict[str, str]]:
     """สิ่งที่ผู้ดูแลควรรู้เกี่ยวกับการตั้งค่า — แต่ละข้อบอกว่าเกิดอะไรและให้ทำอะไร
 
     ทุกข้อคือจังหวะที่พลาดได้จริงระหว่างเปลี่ยน secret และเดิมจบที่อาการเดียวกันหมดคือ
     "กด Reveal แล้วไม่ได้" · ไม่มีข้อไหนใส่ secret หรือป้ายของมันลงในข้อความ เพราะข้อความ
     ชุดนี้ถูกเขียนลง log ด้วย
+
+    ใบที่เปิดไม่ได้ถูกแยกตามเหตุ เพราะทางออกไม่เหมือนกัน: secret ผิดตัวกู้ได้ด้วยการเอา secret
+    เดิมกลับมา · ข้อมูลเสียกู้ไม่ได้ · สำเนาผิดใบแปลว่าแถวถูกแก้จากนอกเกตเวย์ — บอกทุกเหตุว่า
+    "ไปตาม secret เก่า" คือส่งผู้ดูแลไปหาของที่ไม่ช่วย
     """
     out: list[dict[str, str]] = []
 
     def warn(code: str, level: str, message: str) -> None:
         out.append({"code": code, "level": level, "message": message})
 
+    def having(*reasons: str) -> list[dict[str, Any]]:
+        return [row for row in lost if row["reason"] in reasons]
+
     enabled = keyvault.reveal_enabled()
     has_previous = keyvault.previous_configured()
-    pending, lost, off = counts[keyvault.PREVIOUS], counts[keyvault.LOST], counts[keyvault.OFF]
+    pending, off = counts[keyvault.PREVIOUS], counts[keyvault.OFF]
+    wrong_secret = having(keyvault.WRONG_SECRET, keyvault.UNREADABLE)
+    damaged = having(keyvault.DAMAGED)
+    newer = having(keyvault.NEWER_FORMAT)
+    mismatched = having(keyvault.NOT_THIS_KEY)
 
     if not enabled:
         if has_previous:
@@ -134,7 +145,7 @@ def _warnings(counts: dict[str, int], live_lost: int) -> list[dict[str, str]]:
              "NEW secret and GW_KEY_REVEAL_SECRET_PREVIOUS the old one. Otherwise remove "
              "GW_KEY_REVEAL_SECRET_PREVIOUS and restart.")
     elif has_previous and not pending:
-        if lost:
+        if wrong_secret:
             warn("previous_does_not_match", "warning",
                  "GW_KEY_REVEAL_SECRET_PREVIOUS is set, but it opens none of the sealed "
                  "copies that the current secret cannot open - it is not the secret that "
@@ -153,13 +164,34 @@ def _warnings(counts: dict[str, int], live_lost: int) -> list[dict[str, str]]:
              "GW_KEY_REVEAL_SECRET_PREVIOUS. Re-seal them (console: Access & Keys > API keys "
              "> Re-seal, or `python -m app.tools keyvault reseal`) before removing the "
              "previous secret - removing it first makes them unreadable.")
-    if lost:
-        warn("lost", "error",
-             f"{lost} sealed key copies open under neither secret ({live_lost} of them "
-             "belong to keys that are not revoked) and cannot be revealed. The keys "
-             "themselves still work. If you still hold the secret that sealed them, set "
-             "it as GW_KEY_REVEAL_SECRET_PREVIOUS, restart, and re-seal; if it is gone, "
-             "issue a new key to whoever needs theirs shown again.")
+
+    unreadable = [*wrong_secret, *damaged, *newer]
+    if unreadable:
+        live = sum(1 for row in unreadable if not row["revoked"])
+        parts = [f"{len(unreadable)} sealed key copies cannot be revealed ({live} of them "
+                 "belong to keys that are not revoked). The keys themselves still work."]
+        if wrong_secret:
+            parts.append(
+                f"{len(wrong_secret)} do not open under the configured secret(s): if you "
+                "still hold the secret that sealed them, set it as "
+                "GW_KEY_REVEAL_SECRET_PREVIOUS, restart, and re-seal.")
+        if damaged:
+            parts.append(f"{len(damaged)} are damaged: no secret will open them.")
+        if newer:
+            parts.append(f"{len(newer)} were written in a format this version does not "
+                         "read: upgrade LiteGate to open them.")
+        parts.append("Where a copy cannot be recovered, issue a new key to whoever needs "
+                     "theirs shown again.")
+        warn("lost", "error", " ".join(parts))
+    if mismatched:
+        warn("sealed_copy_mismatch", "error",
+             f"{len(mismatched)} sealed key copies open, but are not copies of the key they "
+             "are stored on (what opens does not match that key's hash). They are not "
+             "shown and are left out of re-sealing. A row of api_keys was changed outside "
+             "the gateway - a restore or merge that mixed rows, or tampering - or "
+             "GW_API_KEY_PEPPER changed after these keys were issued. Find out which "
+             "before trusting this database. The keys themselves still work; issue a new "
+             "key to whoever needs theirs shown again.")
     return out
 
 
@@ -170,15 +202,15 @@ async def survey(session: AsyncSession) -> Survey:
     """
     rows = (await session.execute(
         select(ApiKey.id, ApiKey.name, ApiKey.key_prefix, ApiKey.user_id,
-               ApiKey.revoked_at, ApiKey.key_sealed)
+               ApiKey.revoked_at, ApiKey.key_sealed, ApiKey.key_hash)
         .where(*_sealed_rows())
         .order_by(ApiKey.created_at, ApiKey.id)
     )).all()
 
     counts = {keyvault.CURRENT: 0, keyvault.PREVIOUS: 0, keyvault.LOST: 0, keyvault.OFF: 0}
     lost: list[dict[str, Any]] = []
-    for key_id, name, prefix, user_id, revoked_at, sealed in rows:
-        opened = keyvault.inspect(sealed)
+    for key_id, name, prefix, user_id, revoked_at, sealed, key_hash in rows:
+        opened = keyvault.inspect(sealed, key_hash)
         counts[opened.state] += 1
         if opened.state == keyvault.LOST:
             lost.append({
@@ -193,14 +225,13 @@ async def survey(session: AsyncSession) -> Survey:
             })
 
     current_id, previous_id = keyvault.key_ids()
-    live_lost = sum(1 for row in lost if not row["revoked"])
     return Survey(
         enabled=keyvault.reveal_enabled(),
         current_key_id=current_id,
         previous_key_id=previous_id,
         counts=counts,
         lost=lost,
-        warnings=_warnings(counts, live_lost),
+        warnings=_warnings(counts, lost),
     )
 
 
@@ -279,6 +310,9 @@ async def reseal(session: AsyncSession, result: ResealResult | None = None) -> R
         ยังเปิดได้อยู่
       * แถวที่เปิดได้ด้วยตัวปัจจุบันอยู่แล้วไม่ถูกแตะ รอบที่สองจึงไม่เขียนอะไรเลย
       * แถวที่เปิดไม่ได้สักตัวไม่ถูกแตะเช่นกัน — วันหนึ่งอาจมีคนหา secret เดิมเจอ
+      * แถวที่เปิดออกแต่ไม่ใช่สำเนาของ key ใบนั้น (`NOT_THIS_KEY`) ก็ไม่ถูกแตะ — ผนึกใหม่ให้
+        คือ "ฟอก" สำเนาผิดใบให้ดูเป็นของที่ผนึกถูกต้องใต้ secret ตัวปัจจุบัน และลบร่องรอยว่า
+        แถวนั้นถูกแก้มาจากที่อื่น · นับรวมใน `lost`
 
     ใบที่เพิกถอนแล้วก็ย้ายด้วย: สำเนายังอยู่ในฐาน ถ้าข้ามไป ตัวนับ "รอผนึกใหม่" จะไม่มีวัน
     เป็นศูนย์ และผู้ดูแลจะไม่รู้ว่าเอา secret เก่าออกได้เมื่อไร
@@ -294,15 +328,15 @@ async def reseal(session: AsyncSession, result: ResealResult | None = None) -> R
         )
 
     rows = (await session.execute(
-        select(ApiKey.id, ApiKey.key_sealed).where(*_sealed_rows())
+        select(ApiKey.id, ApiKey.key_sealed, ApiKey.key_hash).where(*_sealed_rows())
         .order_by(ApiKey.created_at, ApiKey.id)
     )).all()
     # ปิด transaction ที่ใช้อ่าน ก่อนเริ่มเขียนทีละแถว — ไม่ถือ snapshot ค้างข้ามทั้งงาน
     await session.commit()
 
     result = result if result is not None else ResealResult()
-    for key_id, observed in rows:
-        opened = keyvault.inspect(observed)
+    for key_id, observed, key_hash in rows:
+        opened = keyvault.inspect(observed, key_hash)
         if opened.state == keyvault.CURRENT:
             result.already_current += 1
             continue

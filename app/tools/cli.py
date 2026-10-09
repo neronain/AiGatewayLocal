@@ -148,9 +148,14 @@ def _print_survey(found) -> None:  # noqa: ANN001
     if found.lost:
         print("cannot be opened:")
         for row in found.lost:
-            why = ("damaged - no secret opens it" if row["reason"] == keyvault.DAMAGED
-                   else f"sealed under key id {row['sealed_key_id']}" if row["sealed_key_id"]
-                   else "sealed by 1.12.1 or earlier - the secret that sealed it is not recorded")
+            why = {
+                keyvault.DAMAGED: "damaged - no secret opens it",
+                keyvault.NOT_THIS_KEY: "opens, but is a copy of a different key - the row "
+                                       "was changed outside the gateway",
+                keyvault.NEWER_FORMAT: "written in a format this version does not read",
+                keyvault.WRONG_SECRET: f"sealed under key id {row['sealed_key_id']}",
+            }.get(row["reason"], "sealed by 1.12.1 or earlier - the secret that sealed it "
+                                 "is not recorded (or it is damaged)")
             print(f"  {row['key_prefix']}…  {row['name'] or '(unnamed)'}"
                   f"{'  [revoked]' if row['revoked'] else ''}  {why}")
     for warning in found.warnings:

@@ -1612,7 +1612,7 @@ async def reveal_api_key(
             "That key was revoked, so it cannot be revealed. Issue a new one.",
         )
 
-    opened = keyvault.inspect(row.key_sealed)
+    opened = keyvault.inspect(row.key_sealed, row.key_hash)
     if opened.plaintext is None:
         raise _cannot_reveal(opened)
 
@@ -1647,7 +1647,18 @@ def _cannot_reveal(opened: keyvault.Opened) -> GatewayError:
         details["reason"] = opened.reason
         if opened.key_id:
             details["sealed_key_id"] = opened.key_id
-        if opened.reason == keyvault.DAMAGED:
+        if opened.reason == keyvault.NOT_THIS_KEY:
+            # เปิดออก แต่ของข้างในเป็น key ของใบอื่น — คืนไปคือเอาความลับของอีกคนไปให้
+            # ภายใต้ชื่อของใบนี้ และ audit จะจดผิดว่าใบไหนถูกเปิดดู
+            message = (
+                "A sealed copy is stored on this key, but it is not a copy of this key: "
+                "what opens does not match the key's hash, so it is not shown. The row "
+                "was changed outside the gateway - a restore or merge that mixed rows, "
+                "or tampering - or GW_API_KEY_PEPPER changed after the key was issued. "
+                "No reveal secret fixes this. The key itself still works - issue a new "
+                "key if it has to be shown again, and find out how the row changed."
+            )
+        elif opened.reason == keyvault.DAMAGED:
             message = (
                 "The sealed copy of this key is damaged: it was sealed under a secret "
                 "that is configured, but its contents no longer open. No secret will "
@@ -1726,7 +1737,7 @@ async def list_api_keys(
         # เปิดจริงแล้วทิ้งผล เก็บแค่สถานะ · เดิมตอบ `revealable: true` ให้ทุกใบที่มีสำเนา
         # ตราบที่ตั้ง secret อะไรไว้สักตัว หน้าเว็บจึงวาดปุ่ม Reveal ให้ใบที่ผนึกด้วย secret
         # ตัวอื่น ซึ่งกดแล้วล้มแน่ ๆ
-        seal_state = keyvault.inspect(k.key_sealed).state
+        seal_state = keyvault.inspect(k.key_sealed, k.key_hash).state
         data.append({
             "id": k.id,
             "user_id": k.user_id,

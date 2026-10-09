@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -47,6 +48,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from app.config import get_settings
+from app.core.auth import hash_api_key
 
 # ป้ายรุ่นของรูปแบบ — ขึ้นต้นด้วยตัวนี้เสมอ จะได้เปลี่ยนวิธีผนึกในอนาคตโดยยัง
 # อ่านของเก่าออก แทนที่จะเดาจากความยาวแล้วพังตอนอ่านผิดรุ่น
@@ -78,6 +80,7 @@ WRONG_SECRET = "unknown_secret"    # v2: ป้ายไม่ตรงกับ
 DAMAGED = "damaged"                # v2: ป้ายตรง แต่เนื้อเปิดไม่ออก — secret ไหนก็ไม่ช่วย
 UNREADABLE = "unreadable"          # v1: ไม่มีป้าย แยกสองเหตุข้างบนไม่ได้
 NEWER_FORMAT = "unknown_format"    # รูปแบบที่รุ่นนี้ไม่รู้จัก — น่าจะถอยรุ่นลงมา
+NOT_THIS_KEY = "not_this_key"      # เปิดออก แต่ไม่ใช่สำเนาของ key ใบที่มันเก็บอยู่ด้วย
 
 
 @dataclass(frozen=True)
@@ -189,12 +192,28 @@ def _open(secret: _Secret, payload: str, aad: bytes | None) -> str | None:
         return None
 
 
-def inspect(sealed: str | None) -> Opened:
+def inspect(sealed: str | None, key_hash: str | None = None) -> Opened:
     """ลองเปิดหนึ่งใบ แล้วบอกว่าอยู่สถานะไหน — ตัวปัจจุบันก่อน แล้วค่อยตัวเก่า
 
     สถานะมาจากการ **เปิดจริง** ไม่ใช่จากการอ่านป้ายอย่างเดียว: ใบที่ป้ายถูกแต่เนื้อเสีย
     ต้องไม่ถูกรายงานว่าเปิดได้ · ป้ายใช้ตอบคำถามถัดไปคือ "แล้วเปิดไม่ได้เพราะอะไร"
+
+    `key_hash` คือ hash ของ key ในแถวที่ค่านี้เก็บอยู่ (`ApiKey.key_hash`) · ส่งมาแล้วของที่
+    เปิดออกต้อง hash ได้ค่านั้นด้วย ไม่งั้นถือว่าเปิดไม่ได้ (`NOT_THIS_KEY`) และไม่คืนเนื้อ —
+    ทุกที่ที่เปิดสำเนาจากแถวในฐานต้องส่งมา
+
+    เคสจริง 2026-10-09 (ผู้ตรวจอิสระ): วาง `key_sealed` ของใบ B ลงในแถวของใบ A แล้ว Reveal
+    ใบ A คืน key ของ B ภายใต้ prefix ของ A · เปิดออกได้ไม่ได้แปลว่าเป็นของแถวนั้น
     """
+    opened = _inspect(sealed)
+    if key_hash is None or opened.plaintext is None:
+        return opened
+    if hmac.compare_digest(hash_api_key(opened.plaintext), key_hash):
+        return opened
+    return Opened(LOST, key_id=opened.key_id, reason=NOT_THIS_KEY)
+
+
+def _inspect(sealed: str | None) -> Opened:
     if not sealed:
         return Opened(NONE)
     version, _, rest = sealed.partition(":")
