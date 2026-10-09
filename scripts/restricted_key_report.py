@@ -49,9 +49,6 @@ try:
 except ImportError:  # pragma: no cover - the venv always has it
     sys.exit("sqlalchemy is not installed; run this from the gateway's venv")
 
-# ไดรเวอร์ sync ของ Postgres เลือกไว้แล้วในรายงานพี่น้อง — ใช้ตัวเดียวกัน ไม่เขียนซ้ำ
-from access_change_report import sync_url  # noqa: E402
-
 # กติกามาจากที่เดียวกับด่านจริง: รายงานที่นิยาม "ถูกจำกัด" เองจะเริ่มตอบไม่ตรงกับเกตเวย์
 # ในวันที่มีคนเพิ่มข้อจำกัดชนิดใหม่ แล้วไม่มีอะไรแดง
 from app.core.auth import (  # noqa: E402
@@ -80,6 +77,28 @@ LIMIT_WORDS = {
 }
 
 
+def _sync_url(url: str) -> str:
+    """URL แบบ sync ของฐานเดียวกัน · SQLite ทำเองที่นี่ · PostgreSQL ยืมตัวเลือกไดรเวอร์จากรายงานพี่น้อง
+
+    เดิม import `access_change_report` ตั้งแต่บรรทัดบนสุดของไฟล์ — เคสจริง 2026-10-09 บนเครื่องเกตเวย์
+    หลังอัปเดตเป็น 1.13.0 ผ่านปุ่ม Update (ปุ่มไม่ติดตั้ง scripts/): ก๊อปไฟล์นี้ไปไฟล์เดียวตามเอกสาร แล้วรัน
+    กับฐาน SQLite ตัวจริง ได้ traceback `No module named 'access_change_report'` และ status 1
+    ซึ่งในสคริปต์นี้แปลว่า "มี key ที่เปลี่ยน" · ไฟล์พี่น้องจำเป็นเฉพาะตอนเลือกไดรเวอร์ sync ของ
+    PostgreSQL — ฐาน SQLite ไม่ควรล้มเพราะไม่มีมัน
+    """
+    if "sqlite" in url:
+        return url.replace("+aiosqlite", "")       # ตรงกับ access_change_report.sync_url
+    try:
+        from access_change_report import sync_url
+    except ImportError:
+        raise CannotRun(
+            "ฐานข้อมูลนี้ไม่ใช่ SQLite — ต้องมี scripts/access_change_report.py อยู่ข้างไฟล์นี้ "
+            "(ใช้เลือกไดรเวอร์ของ PostgreSQL)\n"
+            "ก๊อปมาจาก checkout ของรุ่นเดียวกัน หรือรันรายงานนี้จาก checkout นั้นตรง ๆ"
+        ) from None
+    return sync_url(url)
+
+
 def read_only_url(target: str) -> str:
     """URL ที่เปิดฐานข้อมูลได้โดยเขียนไม่ได้ · รับได้ทั้ง URL และ path ของไฟล์ SQLite
 
@@ -92,7 +111,7 @@ def read_only_url(target: str) -> str:
     if "://" not in url:
         url = f"sqlite:///{Path(target).expanduser().resolve()}"
     try:
-        url = sync_url(url)
+        url = _sync_url(url)
     except SystemExit as stop:
         # รายงานพี่น้องจบด้วย `sys.exit(ข้อความ)` เมื่อไม่มีไดรเวอร์ sync ของ Postgres —
         # ข้อความของมันบอกวิธีแก้ครบแล้ว เปลี่ยนแค่ status

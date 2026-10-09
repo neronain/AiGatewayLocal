@@ -444,3 +444,50 @@ def test_a_database_from_before_bundles_and_key_caps_is_still_read(tmp_path):
     assert {row["id"] for row in out["unchanged"]} == {"k2"}
     assert "api_keys.access_groups" in out["columns_missing"]
     assert "quota_policies.api_key_id" in out["columns_missing"]
+
+
+# ── เครื่องที่อัปเดตผ่านปุ่ม Update มี scripts/ ไม่ครบ ────────────────────────────────
+
+def _installed_alone(tmp_path: Path) -> Path:
+    """รูปของ /opt/litegate บนเครื่องที่ก๊อปสคริปต์นี้มาไฟล์เดียว: มี app/ มี scripts/ แต่ไม่มีรายงานพี่น้อง"""
+    root = tmp_path / "opt-litegate"
+    (root / "scripts").mkdir(parents=True)
+    (root / "app").symlink_to(REPO / "app", target_is_directory=True)
+    alone = root / "scripts" / SCRIPT.name
+    alone.write_bytes(SCRIPT.read_bytes())
+    assert not (root / "scripts" / "access_change_report.py").exists()
+    return alone
+
+
+def _run_installed(alone: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(alone), *args], capture_output=True, text=True,
+                          cwd=alone.parents[1], timeout=120)
+
+
+@on_sqlite
+def test_it_runs_on_a_sqlite_gateway_without_the_sibling_report(client, fleet, tmp_path):
+    """เคสจริง 2026-10-09 บนเครื่องเกตเวย์ หลังอัปเดตเป็น 1.13.0 ผ่านปุ่ม: ปุ่มไม่ติดตั้ง scripts/ · ก๊อป
+    restricted_key_report.py ไปไฟล์เดียวตามเอกสาร แล้วรันกับฐาน SQLite ตัวจริง — จบด้วย traceback
+    `ModuleNotFoundError: No module named 'access_change_report'` และ **status 1** ซึ่งสัญญาของสคริปต์นี้
+    แปลว่า "มี key ที่เปลี่ยน" · ไฟล์พี่น้องใช้แค่เลือกไดรเวอร์ของ PostgreSQL ฐาน SQLite ไม่ต้องใช้มันเลย"""
+    _keys, db_path = fleet
+    alone = _installed_alone(tmp_path)
+
+    done = _run_installed(alone, "--db", str(db_path), "--json")
+
+    assert "Traceback" not in done.stderr, done.stderr
+    assert done.returncode in (0, 1), (done.returncode, done.stderr)
+    with_sibling = run(db_path, "--json")
+    assert json.loads(done.stdout) == json.loads(with_sibling.stdout), "คำตอบต้องเท่ากับตอนมีไฟล์พี่น้อง"
+    assert done.returncode == with_sibling.returncode
+
+
+def test_a_postgres_url_without_the_sibling_report_says_what_is_missing(tmp_path):
+    """PostgreSQL ต้องใช้ตัวเลือกไดรเวอร์จากไฟล์พี่น้อง — ไม่มีไฟล์นั้น = "รันไม่ได้" (2) พร้อมชื่อไฟล์ที่ต้องก๊อป"""
+    alone = _installed_alone(tmp_path)
+
+    done = _run_installed(alone, "--db", "postgresql+asyncpg://litegate:not-a-real-password@127.0.0.1:1/x")
+
+    reason = _could_not_run(done)
+    assert "access_change_report.py" in reason
+    assert "not-a-real-password" not in reason
