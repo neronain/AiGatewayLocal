@@ -53,6 +53,16 @@ tar -xzf "$ARCHIVE" -C "$work"
 unpacked="$(find "$work" -maxdepth 1 -type d -name 'litegate-*' | head -1)"
 [[ -n "$unpacked" ]] || { echo "ERROR: this does not look like a litegate backup." >&2; exit 1; }
 
+# How to read one value out of the archive's .env, printed where the script
+# tells the operator to go and get one. The exact member name, not a glob: the
+# earlier advice was `tar -xzOf ARCHIVE '*/env'`, which bsdtar (macOS) matches
+# and GNU tar (the Ubuntu the gateway runs on) does not without --wildcards -
+# so the command worked for whoever wrote it and failed for whoever needed it
+# (docs team, 2026-10-09). The script knows both names; it prints them.
+show_from_backup() {  # show_from_backup NAME -> a command line that prints NAME=... from the backup
+    printf '  tar -xzOf %q %q | grep %q\n' "$ARCHIVE" "$(basename "$unpacked")/env" "^$1="
+}
+
 echo "Restoring from $ARCHIVE"
 [[ -f "$unpacked/MANIFEST" ]] && sed 's/^/  /' "$unpacked/MANIFEST"
 echo
@@ -116,8 +126,11 @@ key again: the sealed copies in this backup open only under the backup's secret.
 To keep them readable after the restore, before starting the gateway:
 
   1. put the backup's value in this deployment's .env as
-     GW_KEY_REVEAL_SECRET_PREVIOUS (leave GW_KEY_REVEAL_SECRET as it is):
-       tar -xzOf ARCHIVE '*/env' | grep '^GW_KEY_REVEAL_SECRET='
+     GW_KEY_REVEAL_SECRET_PREVIOUS (leave GW_KEY_REVEAL_SECRET as it is).
+     This prints it:
+WARN
+    show_from_backup GW_KEY_REVEAL_SECRET | sed 's/^/     /'
+    cat <<'WARN'
   2. start the gateway, then re-seal: console > Access & Keys > API keys,
      or `python -m app.tools keyvault reseal`
   3. remove GW_KEY_REVEAL_SECRET_PREVIOUS again and restart
@@ -138,9 +151,10 @@ Every API key in the database is a hash under the pepper it was issued with.
 Restoring across a change means every key ever issued stops working, with no
 way to recover them - every member needs a new one.
 
-If that is genuinely what you want, set the pepper from the backup first:
-  grep GW_API_KEY_PEPPER <(tar -xzOf ARCHIVE '*/env')
+If that is genuinely what you want, set the pepper from the backup first.
+This prints it:
 STOP
+        show_from_backup GW_API_KEY_PEPPER >&2
         exit 1
     fi
     reveal_note

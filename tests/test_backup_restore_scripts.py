@@ -256,3 +256,71 @@ def test_a_quoted_secret_that_really_differs_still_warns(tmp_path):
     done = restore_in_place(install, archive)
     assert done.returncode == 0, done.stderr
     assert "WARNING" in done.stdout + done.stderr
+
+
+# ── คำสั่งที่สคริปต์บอกให้พิมพ์ต้องรันได้จริง ───────────────────────────────────
+
+def printed_tar_command(output: str) -> str:
+    lines = [line.strip() for line in output.splitlines() if "tar -x" in line]
+    assert len(lines) == 1, output
+    return lines[0]
+
+
+def run_printed(command: str, cwd: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(["bash", "-c", command], cwd=cwd, capture_output=True, text=True,
+                          timeout=60)
+
+
+def test_the_printed_way_to_read_the_backups_reveal_secret_actually_runs(tmp_path):
+    """ทีมเอกสาร 2026-10-09: คำแนะนำเดิมคือ `tar -xzOf ARCHIVE '*/env'` — ชื่อสมาชิกแบบ glob
+
+    GNU tar (Ubuntu ที่เกตเวย์รัน) ไม่จับ glob ตอนแตกไฟล์ถ้าไม่ใส่ --wildcards · bsdtar (macOS)
+    จับให้เอง คำสั่งเดียวกันจึงใช้ได้บนเครื่องคนเขียนและล้มบนเครื่องจริง ในจังหวะที่ผู้ดูแลกำลัง
+    กู้ระบบ · สคริปต์รู้ทั้งพาธของ archive และชื่อสมาชิกจริงอยู่แล้ว จึงพิมพ์คำสั่งที่ไม่พึ่ง glob เลย
+
+    เทสนี้รันคำสั่งที่พิมพ์ออกมาจริง (บนเครื่องนี้คือ tar ตัวที่ติดมากับระบบ) และตรวจว่าไม่มี
+    อักขระ glob เหลืออยู่ ซึ่งเป็นเงื่อนไขที่ทำให้มันไม่ขึ้นกับว่าเป็น tar ตัวไหน
+    """
+    install = make_install(tmp_path / "live")
+    set_env(install, GW_KEY_REVEAL_SECRET="old-reveal-secret-not-real")
+    archive = backup(install)
+    set_env(install, GW_KEY_REVEAL_SECRET="new-reveal-secret-not-real")
+
+    done = restore_in_place(install, archive)
+    command = printed_tar_command(done.stdout + done.stderr)
+    assert not set("*?[") & set(command), f"ต้องไม่พึ่งการจับ glob ของ tar: {command}"
+    assert "ARCHIVE" not in command, "พิมพ์พาธจริง ไม่ใช่ที่ว่างให้ผู้ดูแลเติมเอง"
+
+    shown = run_printed(command, install)
+    assert shown.returncode == 0, shown.stderr
+    assert shown.stdout.strip() == "GW_KEY_REVEAL_SECRET=old-reveal-secret-not-real"
+
+
+def test_the_printed_way_to_read_the_backups_pepper_actually_runs(tmp_path):
+    """คำแนะนำของ pepper ใช้รูปแบบ glob เดียวกัน — สองที่ต้องตรงกันและรันได้ทั้งคู่"""
+    install = make_install(tmp_path / "live")
+    archive = backup(install)
+    (install / ".env").write_text("GW_API_KEY_PEPPER=a-different-pepper\n", encoding="utf-8")
+
+    done = restore_in_place(install, archive)
+    assert done.returncode != 0 and "REFUSING" in done.stderr
+    command = printed_tar_command(done.stdout + done.stderr)
+    assert not set("*?[") & set(command), f"ต้องไม่พึ่งการจับ glob ของ tar: {command}"
+    assert "ARCHIVE" not in command
+
+    shown = run_printed(command, install)
+    assert shown.returncode == 0, shown.stderr
+    assert shown.stdout.strip() == "GW_API_KEY_PEPPER=pepper-of-this-install"
+
+
+def test_the_printed_command_survives_a_path_with_spaces(tmp_path):
+    """โฟลเดอร์ backup ที่มีช่องว่างในชื่อ — คำสั่งที่พิมพ์ต้องยังคัดลอกไปวางแล้วรันได้"""
+    install = make_install(tmp_path / "live install")
+    set_env(install, GW_KEY_REVEAL_SECRET="old-reveal-secret-not-real")
+    archive = backup(install)
+    set_env(install, GW_KEY_REVEAL_SECRET="new-reveal-secret-not-real")
+
+    done = restore_in_place(install, archive)
+    shown = run_printed(printed_tar_command(done.stdout + done.stderr), install)
+    assert shown.returncode == 0, shown.stderr
+    assert shown.stdout.strip() == "GW_KEY_REVEAL_SECRET=old-reveal-secret-not-real"
