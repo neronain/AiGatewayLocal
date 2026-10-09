@@ -334,6 +334,18 @@ class ModelSpec(BaseModel):
     # นับขาด = ช่องโหว่โควตา · วัดจาก /tokenize ของ backend แล้วค่อยใส่ (docs ใน core/tokens)
     ascii_chars_per_token: float | None = Field(default=None, gt=0.2, lt=20.0)
     symbol_chars_per_token: float | None = Field(default=None, gt=0.2, lt=20.0)
+    # คะแนนคุณภาพที่ **ผู้ดูแลตั้งเอง** 0–100 — ไม่ตั้ง = ยังไม่มีคะแนน (ไม่ใช่ศูนย์)
+    #
+    # ใช้ที่เดียว: `model="auto"` เมื่อกลยุทธ์เป็น `quality` หรือ `balanced` (core/auto.py) ·
+    # กลยุทธ์ตั้งต้น `fastest` ไม่อ่านค่านี้เลย ใส่ไว้เฉย ๆ จึงไม่เปลี่ยนอะไร
+    #
+    # ทำไมให้คนตั้ง ไม่ดึงจากดัชนีสาธารณะแบบ OrcaRouter-Lite (Artificial Analysis): โมเดลบน
+    # ฟลีตเป็น fine-tune กับตัว quantise ที่ไม่มีดัชนีไหนครอบ และเกตเวย์ต้องทำงานได้โดยไม่มีเน็ต ·
+    # ของเขาเอง "ค่าที่ผู้ดูแลตั้งชนะเสมอ" อยู่แล้ว — เราเก็บไว้แค่ส่วนนั้น
+    #
+    # ตัวเลขเทียบกันเองภายในฟลีตเท่านั้น: ผลต่าง 1 คะแนนมีความหมายเท่ากันทุกช่วง (`balanced`
+    # เอาไปชั่งกับความเร็วตรง ๆ) จึงควรมาจากชุดทดสอบเดียวกันทุกตัว ไม่ใช่ความรู้สึกทีละตัว
+    quality_score: int | None = Field(default=None, ge=0, le=100)
     modalities: Modalities = Field(default_factory=Modalities)
     capabilities: Capabilities = Field(default_factory=Capabilities)
     protocols: Protocols = Field(default_factory=Protocols)
@@ -342,6 +354,18 @@ class ModelSpec(BaseModel):
     routing: RoutingRules = Field(default_factory=RoutingRules)
     endpoints: list[Endpoint] = Field(min_length=1)
     enabled: bool = True
+
+    @field_validator("quality_score", mode="before")
+    @classmethod
+    def _a_score_is_a_number_not_a_switch(cls, value: object) -> object:
+        """`quality_score: yes` ใน YAML คือ `True` ซึ่ง pydantic แปลงเป็น 1 ให้เงียบ ๆ
+
+        คนที่เขียนแบบนั้นหมายถึง "ตัวนี้ดี" แต่จะได้คะแนนต่ำสุดเกือบสุด และ `auto` จะเลี่ยงตัวนั้น —
+        ปฏิเสธตอนโหลดดีกว่าปล่อยให้ความหมายกลับด้าน
+        """
+        if isinstance(value, bool):
+            raise ValueError("ต้องเป็นจำนวนเต็ม 0–100 (expects a whole number from 0 to 100)")
+        return value
 
     @model_validator(mode="after")
     def _check_internal_consistency(self) -> ModelSpec:

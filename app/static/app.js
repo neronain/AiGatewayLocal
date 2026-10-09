@@ -2281,6 +2281,12 @@ function editorValues() {
   for (const [field, value] of Object.entries(state.cache.editingAsciiRates || {})) {
     if (value) definition.spec[field] = value;
   }
+  // คะแนนคุณภาพ (model="auto" · กลยุทธ์ quality/balanced) — **ส่งคีย์เสมอ** ต่างจากสามค่าข้างบน:
+  // ตัวเลขเมื่อกรอก · null เมื่อช่องว่าง · ฝั่ง API ถือว่า "ไม่มีคีย์" = ผู้ส่งไม่รู้จักฟิลด์นี้และเก็บค่า
+  // เดิมไว้ (กันแท็บที่เปิดค้างข้ามการอัปเดต) ถ้าช่องว่างแล้วไม่ส่งอะไร ผู้ดูแลจะล้างคะแนนไม่ได้เลย
+  // 0 คือคะแนน ไม่ใช่ช่องว่าง — จึงเทียบกับ '' ตรง ๆ ไม่ใช้การทดสอบความจริง
+  const quality = String($('m-quality').value ?? '').trim();
+  definition.spec.quality_score = quality === '' ? null : Number(quality);
   return definition;
 }
 
@@ -2337,6 +2343,10 @@ function openEditor(model) {
   // silently never renders.
   const set = (id, v) => { const el = $(id); if (el) el.value = v; };
   const check = (id, v) => { const el = $(id); if (el) el.checked = !!v; };
+
+  // เติมทุกครั้ง ทั้งโมเดลใหม่และตัวที่ไม่มีคะแนน — ช่องที่ค้างค่าของตัวที่เปิดก่อนหน้าไว้
+  // จะถูก Save ไปเป็นคะแนนของตัวนี้ · `??` ไม่ใช่ `||` เพราะ 0 คือคะแนน
+  set('m-quality', model?.quality_score ?? '');
 
   if (!model) {
     ['m-alias', 'm-name', 'm-desc', 'm-upstream'].forEach((i) => set(i, ''));
@@ -2419,6 +2429,17 @@ function editorProblems() {
     problems.push({
       field: 'm-ctx',
       message: 'ยังไม่ได้ใส่ Context — กด Detect ที่ backend ให้วัดค่าจริง หรือใส่จำนวน token ที่ "คำขอเดียว" ใช้ได้ (llama.cpp: --ctx-size หารด้วย --parallel)',
+    });
+  }
+  // ช่อง type=number คืน '' เมื่อพิมพ์สิ่งที่ไม่ใช่ตัวเลข (badInput) — ถ้าไม่ดักตรงนี้ editorValues
+  // จะอ่านเป็น "ช่องว่าง" แล้วส่ง null ไปล้างคะแนนเดิมทิ้ง ทั้งที่คนตั้งใจจะแก้ตัวเลข
+  const qualityEl = $('m-quality');
+  const quality = String(qualityEl.value ?? '').trim();
+  if (qualityEl.validity?.badInput
+      || (quality !== '' && !(/^\d+$/.test(quality) && Number(quality) <= 100))) {
+    problems.push({
+      field: 'm-quality',
+      message: 'Quality score ต้องเป็นจำนวนเต็ม 0–100 — หรือเว้นว่างไว้ถ้ายังไม่ให้คะแนนโมเดลนี้',
     });
   }
   const endpoints = editorValues().spec.endpoints;

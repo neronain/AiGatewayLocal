@@ -2481,6 +2481,9 @@ async def admin_models(
                 # แล้ว prompt โค้ด/เครื่องมือกลับไปถูกนับด้วยค่ากลาง โดยไม่มีอะไรบนหน้าจอบอก
                 "ascii_chars_per_token": model.spec.ascii_chars_per_token,
                 "symbol_chars_per_token": model.spec.symbol_chars_per_token,
+                # คะแนนคุณภาพที่ผู้ดูแลตั้ง (model="auto" · กลยุทธ์ quality/balanced) — ฟอร์มมีช่องให้
+                # และเติมจากค่านี้ · ไม่คืนมา = เปิดฟอร์มเห็นช่องว่าง แล้วกด Save คือล้างคะแนนทิ้ง
+                "quality_score": model.spec.quality_score,
                 # กฎ round-trip เดียวกับข้างบน · ไม่คืน routing มาแล้วคอนโซล
                 # จะประกอบ spec ใหม่โดยไม่มีมัน = ทับ fallback เดิมหายทั้งชุด
                 # โดยที่ผู้ดูแลเห็นแค่ว่าตัวเองแก้ชื่อรุ่น
@@ -3061,9 +3064,13 @@ async def _store(session: AsyncSession, key: str, value: str, actor: Principal) 
 async def preview_model(
     payload: ModelDefinitionIn,
     actor: Principal = Depends(require_admin),
+    state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
     """Validate a draft and render its YAML without touching disk (mode A)."""
-    definition = validate_definition(payload.model_dump())
+    document = payload.model_dump()
+    # ทะเบียน read-only ใช้ปุ่มนี้แทน Save — YAML ที่โชว์ต้องเป็นตัวเดียวกับที่ Save จะเขียน
+    _keep_quality_score(document, _previous_definition(state, payload))
+    definition = validate_definition(document)
     return {
         "alias": definition.alias,
         "filename": f"{definition.alias}.yaml",
@@ -3108,6 +3115,32 @@ def _keep_managed_by(document: dict[str, Any], previous: ModelDefinition | None)
             endpoint["managed_by"] = kept.model_dump()
 
 
+def _previous_definition(state: AppState, payload: ModelDefinitionIn) -> ModelDefinition | None:
+    """ตัวที่อยู่ในทะเบียนตอนนี้ภายใต้ alias เดียวกับเอกสารที่ส่งมา — None เมื่อเป็นโมเดลใหม่"""
+    alias = (payload.metadata or {}).get("alias")
+    return state.registry.snapshot.models.get(alias) if isinstance(alias, str) else None
+
+
+def _keep_quality_score(document: dict[str, Any], previous: ModelDefinition | None) -> None:
+    """คะแนนคุณภาพที่ผู้ดูแลตั้งไว้ต้องไม่หายเพราะ Save ที่ *ไม่ได้พูดถึงมัน*
+
+    เหตุผลเดียวกับ `_keep_managed_by` ข้างบน: Save เขียนทับทั้งเอกสาร ของที่ผู้ส่งไม่ใส่มาจึงหาย ·
+    คอนโซลรุ่นนี้ส่ง `quality_score` มาทุกครั้ง (ตัวเลข หรือ `null` เมื่อช่องว่าง) แต่ผู้ส่งที่ไม่รู้จัก
+    ฟิลด์นี้มีจริง — แท็บคอนโซลที่เปิดค้างข้ามการอัปเดตยังรัน app.js ตัวเก่า · สคริปต์ที่ POST
+    เอกสารของเมื่อวาน · และสิ่งที่เสียไม่ดังเลย: ภายใต้กลยุทธ์ `quality` โมเดลที่คะแนนหายตกไป
+    ท้ายแถว แล้ว `model="auto"` ย้ายงานทั้งหมดไปตัวอื่น โดยที่คนกดแค่แก้ชื่อที่แสดง
+    (รูปเดียวกับ `77e5e9c` ที่อัตรา ASCII หายตอนกด Save)
+
+    ไม่พูดถึง ≠ ขอให้ลบ · `"quality_score": null` ยังล้างได้เสมอ — ผู้ดูแลเลิกให้คะแนนได้
+    """
+    if previous is None or previous.spec.quality_score is None:
+        return
+    spec = document.get("spec")
+    # `in` ไม่ใช่ทดสอบความจริง: `null` กับ `0` คือผู้ส่งพูดเอง
+    if isinstance(spec, dict) and "quality_score" not in spec:
+        spec["quality_score"] = previous.spec.quality_score
+
+
 @router.post("/models", status_code=201)
 async def save_model(
     payload: ModelDefinitionIn,
@@ -3118,11 +3151,9 @@ async def save_model(
 ) -> dict[str, Any]:
     """Validate and write the definition into the registry (mode B)."""
     document = payload.model_dump()
-    alias_in = (payload.metadata or {}).get("alias")
-    _keep_managed_by(
-        document,
-        state.registry.snapshot.models.get(alias_in) if isinstance(alias_in, str) else None,
-    )
+    previous = _previous_definition(state, payload)
+    _keep_managed_by(document, previous)
+    _keep_quality_score(document, previous)
     definition = validate_definition(document)
     existing = definition.alias in state.registry.snapshot.models
 

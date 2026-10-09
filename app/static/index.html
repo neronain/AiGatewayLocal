@@ -329,6 +329,21 @@
       </div>
 
       <div class="field">
+        <label for="m-quality">Quality score (0–100, optional)</label>
+        <input id="m-quality" type="number" min="0" max="100" step="1"
+               placeholder="No score yet" autocomplete="off">
+        <p class="hint">
+          Your own rating of this model against the others on this gateway. Read only by
+          <code>model: "auto"</code> under the <b>quality</b> and <b>balanced</b> strategies;
+          leave it empty and those strategies rank this model after every scored one.
+          <span class="th">คะแนนที่คุณให้เองเทียบกับโมเดลตัวอื่นบนเกตเวย์นี้ · ใช้เฉพาะกับ
+          <code>model: "auto"</code> เมื่อกลยุทธ์เป็น quality หรือ balanced — เว้นว่าง = ยังไม่มีคะแนน
+          ตัวนี้จะอยู่หลังตัวที่มีคะแนนทุกตัว แต่ยังถูกเลือกได้ถ้าไม่มีตัวอื่นรับคำขอนั้นได้ ·
+          ให้คะแนนจากชุดทดสอบเดียวกันทุกตัว ผลต่าง 1 คะแนนถูกชั่งเท่ากันทุกช่วง</span>
+        </p>
+      </div>
+
+      <div class="field">
         <label>API surfaces exposed by the gateway</label>
         <div class="checks">
           <label><input type="checkbox" id="x-openai" checked> OpenAI API</label>
