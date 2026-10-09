@@ -746,3 +746,57 @@ def test_asking_in_full_costs_a_member_nothing_on_the_request_path(client, monke
 
     assert call(client, member["api_key"], "GET", "/v1/me/key").status_code == 200
     assert asked == [member["id"]]
+
+
+# ── ทุกเส้นทาง ไม่ใช่เฉพาะตัวแทน ───────────────────────────────────────────────
+
+def _guarded_routes(app) -> list[tuple[str, str]]:
+    """ทุกเส้นทางที่แขวน `require_admin` หรือ `require_manager` — อ่านจาก app ที่รันอยู่"""
+    from fastapi.routing import APIRoute
+
+    def guards(dependant, found: set[str]) -> set[str]:
+        for sub in dependant.dependencies:
+            found.add(getattr(sub.call, "__name__", ""))
+            guards(sub, found)
+        return found
+
+    # FastAPI รุ่นที่ใช้อยู่เก็บ router ที่ include ไว้เป็นก้อน (`original_router`) ไม่ได้แตก
+    # ออกเป็นเส้นทางใน app.routes — อ่านทั้งสองแบบ และเทสข้างล่างยืนยันว่าอ่านได้จริง
+    flat = [
+        route
+        for entry in app.routes
+        for route in (getattr(entry, "original_router", None) or _Just(entry)).routes
+    ]
+    return sorted(
+        (sorted(route.methods)[0], route.path)
+        for route in flat
+        if isinstance(route, APIRoute)
+        and {"require_admin", "require_manager"} & guards(route.dependant, set())
+    )
+
+
+class _Just:
+    def __init__(self, route) -> None:
+        self.routes = [route]
+
+
+def test_every_guarded_route_refuses_a_limited_admin_key(client):
+    """รายการตัวแทนข้างบนพิสูจน์ว่าด่านทำงาน · ข้อนี้พิสูจน์ว่าไม่มีเส้นทางไหนตกหล่น
+
+    ไล่จาก app จริง (แนวทางของผู้ตรวจอิสระ 2026-10-09) จึงครอบเส้นทางที่เพิ่มวันหน้าเอง ·
+    ด่านอยู่ใน dependency ซึ่งทำงานก่อนอ่าน body — body เปล่าจึงพอ และไม่มีงานไหนถูกทำ
+    """
+    limited = key_for(client, owner_of(client, client.admin_key), models=["coding"])["api_key"]
+    routes = _guarded_routes(client.app)
+    assert len(routes) >= 60, "อ่านเส้นทางจาก app ไม่ได้ — เทสนี้จะผ่านเปล่า ๆ"
+
+    leaks = []
+    for method, path in routes:
+        response = call(client, limited, method, path.replace("{", "").replace("}", ""),
+                        json={})
+        details = (response.json().get("error") or {}).get("details") or {} \
+            if response.status_code == 403 else {}
+        if details.get("reason_code") != "restricted_key":
+            leaks.append(f"{method} {path} → {response.status_code}")
+
+    assert leaks == []
