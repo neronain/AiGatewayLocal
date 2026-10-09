@@ -18,7 +18,9 @@ directory as the service user, so `.env` and the database are the gateway's own.
     python -m app.tools keyvault key-id    # key id of a secret read from stdin (never echoed)
 
 `status` and `reseal` exit 0 when nothing is left to do, 1 when copies are still
-waiting for a re-seal or cannot be opened, 2 when the command was refused.
+waiting for a re-seal or cannot be opened, 2 when the command was refused, 3 when
+a re-seal was stopped by an error part-way (what it moved stays moved and is
+recorded; run it again).
 """
 
 from __future__ import annotations
@@ -180,6 +182,27 @@ def _confirm_reseal(before) -> bool:  # noqa: ANN001
     return reply.strip() == "reseal"
 
 
+async def _reseal_stopped(session, done, exc: Exception) -> int:  # noqa: ANN001
+    """การผนึกใหม่ล้มกลางทาง: จดสิ่งที่ย้ายไปแล้ว แล้วบอกผู้ดูแลเป็นประโยค ไม่ใช่ traceback
+
+    ข้อความของข้อผิดพลาดพิมพ์ได้: engine ซ่อนค่าที่ผูกกับ SQL แล้ว (`hide_parameters` ใน
+    app/db/session.py) จึงเหลือแต่ชนิด ข้อความของไดรเวอร์ และตัวคำสั่ง
+    """
+    from app.core import keyrotation
+
+    print(f"re-seal stopped by an error after moving {done.resealed} sealed key copies:\n"
+          f"  {type(exc).__name__}: {exc}", file=sys.stderr)
+    try:
+        await session.rollback()
+        await keyrotation.record_reseal_from_cli(session, done, interrupted=True)
+    except Exception as failed:  # noqa: BLE001 - ฐานที่ทำให้งานล้มอาจจดไม่ได้เช่นกัน
+        print(f"and the audit record could not be written ({type(failed).__name__}) - note "
+              "by hand who ran this and when.", file=sys.stderr)
+    print("What was moved stays moved, and every copy still opens while both secrets are "
+          "set.\nRun the command again to finish.", file=sys.stderr)
+    return 3
+
+
 async def _keyvault(action: str, assume_yes: bool) -> int:
     from app.core import keyrotation
     from app.db.session import dispose_db, session_scope
@@ -192,11 +215,17 @@ async def _keyvault(action: str, assume_yes: bool) -> int:
                 if before.enabled and not assume_yes and not _confirm_reseal(before):
                     print("Nothing was changed.", file=sys.stderr)
                     return 2
+                done = keyrotation.ResealResult()
                 try:
-                    done = await keyrotation.reseal(session)
+                    await keyrotation.reseal(session, done)
                 except keyrotation.ResealRefused as exc:
                     print(f"refused: {exc}", file=sys.stderr)
                     return 2
+                except Exception as exc:  # noqa: BLE001 - จดก่อน แล้วค่อยบอกผู้ดูแล
+                    # ล้มกลางทาง: แถวที่ย้ายไปแล้วอยู่ถาวร (commit ทีละแถว) จึงต้องมีบันทึก
+                    # เหมือนที่ route ทำ · เดิมจดหลังงานจบเท่านั้น รอบที่ล้มที่ใบที่สามจึงย้าย
+                    # สองใบไปใต้ secret ตัวใหม่โดยไม่มีแถว audit เลย (ผู้ตรวจอิสระ 2026-10-09)
+                    return await _reseal_stopped(session, done, exc)
                 await keyrotation.record_reseal_from_cli(session, done)
                 print(f"resealed {done.resealed} · already current {done.already_current} · "
                       f"cannot be opened {done.lost} · changed meanwhile {done.changed_meanwhile}")

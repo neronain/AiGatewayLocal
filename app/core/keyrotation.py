@@ -237,7 +237,9 @@ async def last_reseal(session: AsyncSession) -> dict[str, Any] | None:
             "via": payload.get("via", "console"), "resealed": payload.get("resealed", 0)}
 
 
-async def record_reseal_from_cli(session: AsyncSession, done: ResealResult) -> None:
+async def record_reseal_from_cli(
+    session: AsyncSession, done: ResealResult, *, interrupted: bool = False
+) -> None:
     """บันทึกการผนึกใหม่ที่สั่งจากบรรทัดคำสั่ง — ไม่มีคำขอ HTTP และไม่มีผู้ใช้ของเกตเวย์
 
     คนที่รันคือคนที่เข้าเครื่องได้ จึงจดชื่อผู้ใช้ของระบบปฏิบัติการไว้แทน · ไม่จดก็เท่ากับ
@@ -254,7 +256,8 @@ async def record_reseal_from_cli(session: AsyncSession, done: ResealResult) -> N
         action=RESEAL_ACTION,
         target_type="keyvault",
         target_id="",
-        payload={**done.as_dict(), "via": "cli", "os_user": os_user[:64]},
+        payload={**done.as_dict(), "via": "cli", "os_user": os_user[:64],
+                 **({"interrupted": True} if interrupted else {})},
         ip="",
     ))
     await session.commit()

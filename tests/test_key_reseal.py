@@ -461,6 +461,54 @@ def test_the_command_line_asks_before_it_moves_anything(secrets, client):
     assert all(opens(client, k) for k in keys)
 
 
+@pytest.mark.sqlite_only
+def test_a_command_line_run_that_dies_midway_still_records_what_it_moved(secrets, client):
+    """ผู้ตรวจอิสระ 2026-10-09: 4 ใบรอผนึก ล้มที่ใบที่สาม → สองใบย้ายไปแล้วถาวร แต่ไม่มีแถว
+    keyvault.reseal ใน audit เลย เพราะ CLI จดหลังงานจบเท่านั้น
+
+    ทาง route แก้เรื่องเดียวกันนี้ไปแล้ว (684b103) — ทางที่คนเข้าเครื่องได้ใช้ต้องไม่ใช่ทางที่ย้าย
+    ของไปใต้ secret ตัวใหม่ได้โดยไม่ทิ้งร่องรอย · ทำให้การเขียนแถวที่สามล้มจริงที่ไดรเวอร์
+    """
+    from sqlalchemy import select, text
+
+    from app.db.models import ApiKey
+    from app.db.session import session_scope
+
+    keys = issued_under(client, secrets, A, 4, prefix="k", fmt="new")
+    secrets(B, previous=A)
+    before = sealed_column(client)
+
+    async def third_write_fails():
+        async with session_scope() as session:
+            order = (await session.execute(
+                select(ApiKey.id).where(ApiKey.key_sealed != "")
+                .order_by(ApiKey.created_at, ApiKey.id))).scalars().all()
+            await session.execute(text(
+                "CREATE TRIGGER third_fails BEFORE UPDATE OF key_sealed ON api_keys "
+                f"WHEN OLD.id = '{order[2]}' "
+                "BEGIN SELECT RAISE(ABORT, 'simulated write failure'); END"
+            ))
+
+    client.portal.call(third_write_fails)
+
+    done = _cli("reseal", "--yes", current=B, previous=A)
+    assert done.returncode == 3, done.stderr
+    assert "Traceback" not in done.stderr, "บอกว่าเกิดอะไรเป็นประโยค ไม่ใช่โยน traceback ให้ผู้ดูแล"
+    assert "simulated write failure" in done.stderr
+    assert "2" in done.stderr and "again" in done.stderr.lower(), "ย้ายไปแล้วกี่ใบ และให้รันซ้ำ"
+
+    after = sealed_column(client)
+    assert sum(1 for key_id in before if after[key_id] != before[key_id]) == 2
+    assert vault(client).json()["counts"] == {"current": 2, "previous": 2, "lost": 0, "off": 0}
+    assert all(opens(client, k) for k in keys), "ครึ่งทาง: ทุกใบยังเปิดได้"
+
+    (actor, payload), = _audit_rows(client, "keyvault.reseal")
+    assert actor is None and payload["via"] == "cli"
+    assert payload["resealed"] == 2 and payload["interrupted"] is True
+    for value in filter(None, (*before.values(), *after.values())):
+        assert value.rsplit(":", 1)[-1] not in str(payload)
+
+
 def test_the_command_line_refuses_to_reseal_with_the_feature_off(secrets, client):
     old_rows(client, secrets)
     before = sealed_column(client)
