@@ -17,10 +17,12 @@ from app import config
 from app.core import assistant_fit, keyrotation, keyvault, lmds, release
 from app.core.audit import audit
 from app.core.auth import (
+    PRIVILEGED_ROLES,
     Principal,
     _aware,
     extract_bearer_token,
     generate_api_key,
+    has_cap_in_force,
     is_member,
     keys_with_a_cap,
     limits_on_key,
@@ -191,6 +193,94 @@ async def _assert_may_lift_key_list(
             "ask an administrator to lift it.",
             details={"models": beyond},
         )
+
+
+# รูปของข้อจำกัดบน key ใบหนึ่ง ในแบบที่ `limits_on_key` รับ · None = ใบนั้นไม่มีอยู่
+# (ก่อนออก หรือหลังเพิกถอน)
+def _shape(api_key: ApiKey, **changed) -> dict[str, Any]:
+    return {
+        "models": api_key.models, "access_groups": api_key.access_groups,
+        "workspace_id": api_key.workspace_id, **changed,
+    }
+
+
+async def _assert_may_decide_key(
+    session: AsyncSession,
+    actor: Principal,
+    owner: User | None,
+    doing: str,
+    *,
+    key_id: str = "",
+    before: dict[str, Any] | None = None,
+    after: dict[str, Any] | None = None,
+) -> None:
+    """Who may bring a key into being, change it, or end it - as far as the
+    owner's rights over other people are concerned. One rule for every route
+    that does any of those (`doing` is "issue", "change" or "revoke").
+
+    Since 2026-10 a key with no limit of its own carries its owner's admin or
+    manager rights, and a key with any limit carries none (core/auth
+    `limits_on_key`). That made *lifting a limit* the same act as handing those
+    rights out - and the amend route still asked only one question about it,
+    "could this manager call those models themselves". A manager who held an
+    administrator's model-limited key added that administrator to their own
+    workspace, sent `{"models": []}`, and the key was a full admin key again;
+    the other way round, a list put on somebody's unlimited key quietly took
+    their automation's rights away (independent review, 2026-10-09). Issuing had
+    the guard below for administrators and nothing for the manager next door: a
+    manager of CS101 issued an unlimited key to a colleague who also manages
+    ART200, was handed the key, and managed ART200 with it.
+
+      1. An administrator's keys are an administrator's to issue, change and
+         revoke. Nobody outranked decides anything about the credentials of the
+         people who run the gateway - not their limits, not their expiry.
+      2. A manager's key that carries their rights - no limit on it, before the
+         change or after it - is theirs or an administrator's to decide.
+         Another manager may sit in the same workspace and still manage
+         different ones; that difference is exactly what such a key would carry
+         across.
+      3. Everything else is as it was. A member has no such rights to gain or
+         lose, and a manager's key that is limited and stays limited is an
+         ordinary key: the model checks (`_assert_may_grant`,
+         `_assert_may_lift_key_list`) are the whole question there.
+
+    Revoking is held to the same rule as narrowing. It is the same act - taking
+    the rights off somebody's key - done irreversibly, and a guard on one with
+    the other left open would guard nothing.
+    """
+    if actor.is_admin or owner is None:
+        return
+    role = normalise_role(owner.role)
+    if role == "admin":
+        raise GatewayError(
+            ErrorCode.INSUFFICIENT_SCOPE, f"Only an admin can {doing} an admin key."
+        )
+    if role not in PRIVILEGED_ROLES or owner.id == actor.user_id:
+        return
+
+    # เพดานเฉพาะใบก็เป็นข้อจำกัด — ถามเฉพาะเมื่อมาถึงตรงนี้ (manager แตะ key ของ manager
+    # อีกคน) ทางเดินปกติของการออก/แก้ key ให้สมาชิกไม่เสีย query เพิ่ม
+    capped = bool(key_id) and await has_cap_in_force(session, key_id)
+
+    def carries_rights(shape: dict[str, Any] | None) -> bool:
+        return shape is not None and not limits_on_key(**shape, capped=capped)
+
+    if not (carries_rights(before) or carries_rights(after)):
+        return
+    who = owner.external_id
+    advice = {
+        "issue": f"Give it a model list or a workspace, or ask {who} to issue it "
+                 "from their own console.",
+        "change": f"{who} can change it from their own console.",
+        "revoke": f"{who} can revoke it from their own console.",
+    }[doing]
+    raise GatewayError(
+        ErrorCode.INSUFFICIENT_SCOPE,
+        f"A key of {who}'s with no limit on it carries their manager rights, which "
+        f"may reach workspaces you do not manage. Only an administrator or {who} "
+        f"can {doing} one. {advice}",
+        details={"reason_code": "key_carries_rights", "owner_role": role},
+    )
 
 
 async def _assert_may_read_model(
@@ -1316,10 +1406,9 @@ async def create_api_key(
     user = await session.get(User, payload.user_id)
     if user is None:
         raise GatewayError(ErrorCode.INVALID_REQUEST, "Unknown user_id.")
-    if user.role == "admin" and not actor.is_admin:
-        raise GatewayError(
-            ErrorCode.INSUFFICIENT_SCOPE, "Only an admin can issue an admin key."
-        )
+    # ครึ่งแรกของกติกา (key ของ admin) ตัดสินได้เลย · ครึ่งหลังต้องรอรู้ว่าใบจะมีข้อจำกัด
+    # อะไรหลังเติมค่าเริ่มต้นของ workspace — ดูก่อน generate_api_key ข้างล่าง
+    await _assert_may_decide_key(session, actor, user, "issue")
 
     # Issuing a key is the act of handing out access, so it is where the scope
     # matters most: to somebody in your workspaces, for a workspace of yours,
@@ -1405,6 +1494,11 @@ async def create_api_key(
                 applied["expires_in_days"] = payload.expires_in_days
             if applied:
                 applied["from_workspace"] = home.code
+
+    await _assert_may_decide_key(session, actor, user, "issue", after={
+        "models": payload.models, "access_groups": payload.access_groups,
+        "workspace_id": payload.workspace_id,
+    })
 
     plaintext, prefix, digest = generate_api_key()
     expires_at = (
@@ -1861,6 +1955,13 @@ async def amend_api_key(
             ErrorCode.INVALID_REQUEST,
             "Send {'days': <number|null>} and/or {'models': [<alias>, ...]}.",
         )
+    owner = await session.get(User, api_key.user_id)
+    # วันหมดอายุก็อยู่ใต้กติกาเดียวกัน: ต่ออายุใบที่พกสิทธิ์ (หรือปลุกใบที่หมดอายุไปแล้ว)
+    # คือการให้สิทธิ์นั้นต่อ · รูปของใบหลังแก้ยังไม่รู้จนกว่าจะอ่าน models ข้างล่าง จึงถามสอง
+    # จังหวะ — ตรงนี้ด้วยรูปปัจจุบัน และอีกครั้งเมื่อรู้ว่ารายการใหม่คืออะไร
+    await _assert_may_decide_key(
+        session, actor, owner, "change", key_id=key_id, before=_shape(api_key)
+    )
 
     changes: dict[str, Any] = {}
 
@@ -1898,6 +1999,12 @@ async def amend_api_key(
                 f"Unknown model alias(es): {', '.join(unknown)}.",
                 details={"known_models": sorted(known)},
             )
+        # ถอดรายการ (หรือใส่รายการ) เปลี่ยนว่าใบพกสิทธิ์ผู้ดูแลของเจ้าของหรือไม่ — คนละ
+        # คำถามกับ "เรียกโมเดลพวกนี้ได้ไหม" ที่สองด่านข้างล่างถาม
+        await _assert_may_decide_key(
+            session, actor, owner, "change", key_id=key_id,
+            before=_shape(api_key), after=_shape(api_key, models=models),
+        )
         # แก้ scope คือการให้สิทธิ์ ไม่ต่างจากตอนออก key · ผู้จัดการจึงกว้างเกินตัวเองไม่ได้
         await _assert_may_grant(session, actor, models, state)
         # …และ "ไม่มีรายการ" คือการให้ที่กว้างที่สุด ซึ่งด่านข้างบนมองไม่เห็นเพราะไม่มี
@@ -2201,6 +2308,10 @@ async def revoke_api_key(
         # Same message as "not found": whether a key exists is not something a
         # manager outside its workspace should be able to probe for.
         raise GatewayError(ErrorCode.INVALID_REQUEST, "API key not found.")
+    await _assert_may_decide_key(
+        session, actor, await session.get(User, api_key.user_id), "revoke",
+        key_id=key_id, before=_shape(api_key),
+    )
     api_key.revoked_at = utcnow()
     await audit(session, request, actor, "apikey.revoke", "apikey", key_id)
     await session.commit()
