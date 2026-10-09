@@ -1631,9 +1631,11 @@ def _cannot_reveal(opened: keyvault.Opened) -> GatewayError:
     """
     details: dict[str, Any] = {"seal_state": opened.state}
     if opened.state == keyvault.NONE:
+        why = ("it was issued before key reveal was switched on" if keyvault.reveal_enabled()
+               else "key reveal is not switched on (GW_KEY_REVEAL_SECRET is unset)")
         message = (
-            "Only this key's hash was stored, so there is nothing to reveal - it was "
-            "issued before reveal was switched on. Issue a replacement instead."
+            f"Only this key's hash was stored, so there is nothing to reveal - {why}. "
+            "Issue a replacement instead."
         )
     elif opened.state == keyvault.OFF:
         message = (

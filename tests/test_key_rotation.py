@@ -291,7 +291,11 @@ def test_a_key_issued_while_disabled_stays_unsealed_through_a_rotation(secrets, 
     assert sealed_column(client)[bare["id"]] == ""
     response = reveal(client, bare["id"])
     assert response.status_code == 400
-    assert "hash" in response.json()["error"]["message"].lower()
+    message = response.json()["error"]["message"].lower()
+    assert "hash" in message and "before key reveal was switched on" in message
+
+    secrets()            # ไม่เคยเปิดฟีเจอร์: บอกตามนั้น ไม่ใช่ "ออกก่อนเปิด"
+    assert "is unset" in reveal(client, bare["id"]).json()["error"]["message"]
 
 
 def test_mixed_old_rows_all_open_under_current_plus_previous(secrets, client):
