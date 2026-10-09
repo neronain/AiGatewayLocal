@@ -279,7 +279,12 @@ async def authenticate(
 
 
 async def has_cap_in_force(session: AsyncSession, api_key_id: str) -> bool:
-    """มีเพดานโควตาเฉพาะใบนี้ที่ด่านโควตายังบังคับอยู่ไหม
+    """มีเพดานโควตาเฉพาะใบนี้ที่ด่านโควตายังบังคับอยู่ไหม"""
+    return api_key_id in await keys_with_a_cap(session, [api_key_id])
+
+
+async def keys_with_a_cap(session: AsyncSession, api_key_ids) -> set[str]:
+    """ในใบพวกนี้ ใบไหนมีเพดานโควตาของตัวเองที่ยังมีผล · query เดียวไม่ว่ากี่ใบ
 
     "ยังมีผล" ต้องหมายความอย่างเดียวกับ `QuotaManager.resolve_key_limits`
     (เปิดอยู่ และยังไม่หมดอายุ) — เพดานที่ปิดไปแล้วไม่ได้จำกัดอะไร นับมันคือถอดอำนาจ
@@ -289,13 +294,16 @@ async def has_cap_in_force(session: AsyncSession, api_key_id: str) -> bool:
     เทียบเวลาใน Python ไม่ใช่ใน SQL เหมือนที่ quota ทำ: SQLite คืนเวลาแบบไม่มีโซน
     PostgreSQL คืนแบบมีโซน และ `_aware` คือที่เดียวที่ทำให้สองฝั่งเทียบกันได้
     """
+    ids = list(api_key_ids)
+    if not ids:
+        return set()
     rows = await session.execute(
-        select(QuotaPolicy.expires_at).where(
-            QuotaPolicy.enabled.is_(True), QuotaPolicy.api_key_id == api_key_id
+        select(QuotaPolicy.api_key_id, QuotaPolicy.expires_at).where(
+            QuotaPolicy.enabled.is_(True), QuotaPolicy.api_key_id.in_(ids)
         )
     )
     now = utcnow()
-    return any(cap_still_runs(expires, now) for (expires,) in rows)
+    return {key_id for key_id, expires in rows if cap_still_runs(expires, now)}
 
 
 def cap_still_runs(expires_at: datetime | None, now: datetime) -> bool:

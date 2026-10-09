@@ -623,3 +623,65 @@ def test_only_keys_that_could_lose_something_pay_for_the_cap_lookup(client, monk
         assert call(client, key["api_key"], "GET", "/v1/models").status_code == 200
 
     assert asked == [plain["id"]]
+
+
+# ── หน้า Access ต้องบอกได้ว่าใบไหนเป็นแบบนี้ ───────────────────────────────────
+
+def test_the_key_list_says_which_keys_carry_a_limit_and_whose_they_are(client):
+    """ผู้ดูแลต้องเห็นจากหน้าจอ ไม่ใช่ไปรู้จาก 403 ของสคริปต์ตัวเอง"""
+    root, student = person(client, "root", "admin"), person(client, "s1", "member")
+    made = {
+        "plain": key_for(client, root),
+        "models": key_for(client, root, models=["coding"]),
+        "cap": _capped(client, root["id"]),
+        "member": key_for(client, student, models=["coding"]),
+    }
+
+    listed = {k["id"]: k for k in admin(client, "GET", "/admin/api-keys").json()["data"]}
+
+    seen = {name: (listed[key["id"]]["owner_role"], listed[key["id"]]["limited_by"])
+            for name, key in made.items()}
+    assert seen == {
+        "plain": ("admin", []),
+        "models": ("admin", ["models"]),
+        "cap": ("admin", ["cap"]),
+        "member": ("member", ["models"]),
+    }
+    # และสิ่งที่รายการบอก ตรงกับสิ่งที่ด่านทำ
+    for name, key in made.items():
+        role, limits = seen[name]
+        refused = call(client, key["api_key"], "GET", "/admin/models").status_code == 403
+        assert refused == (role != "admin" or bool(limits)), name
+
+
+def test_issuing_says_so_when_defaults_nobody_typed_made_the_key_a_limited_one(client):
+    """ค่าเริ่มต้นของ workspace เติม "มัด" ให้ใบที่คอนโซลออก (คอนโซลไม่ได้ส่งช่องนั้น)
+
+    manager ที่อยู่ workspace เดียวจึงได้ใบที่มีข้อจำกัดโดยไม่มีใครเลือก — คำตอบของการ
+    ออกต้องบอก ไม่งั้นเขาเอาใบไปใส่สคริปต์ดูแลวิชาแล้วเจอ 403
+    """
+    boss, cs101 = _manager_with_a_class(client)
+    bundle = admin(client, "POST", "/admin/access-groups",
+                   json={"name": "coding-set", "models": ["coding"]}).json()
+    assert admin(client, "POST", f"/admin/workspaces/{cs101['id']}/models",
+                 json={"models": ["coding", "gemma-vision"],
+                       "default_access_groups": [bundle["id"]]}).status_code == 200
+
+    # สิ่งที่คอนโซลส่งจริง: มี models (ว่าง) ไม่มี access_groups
+    issued = key_for(client, boss, models=[])
+
+    assert issued["applied_defaults"]["access_groups"] == [bundle["id"]]
+    assert issued["owner_role"] == "manager"
+    assert issued["limited_by"] == ["access_groups"]
+    assert call(client, issued["api_key"], "GET", "/admin/users").status_code == 403
+
+
+def test_the_console_draws_what_the_list_says():
+    """หน้าเว็บอ่าน `limited_by` กับ `owner_role` จากเซิร์ฟเวอร์ — ไม่ตัดสินกติกาเอง"""
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "app/static/app.js").read_text()
+    rule = source[source.index("function noAdminAccess(k)"):][:200]
+    assert "k.owner_role" in rule and "k.limited_by" in rule
+    assert source.count("noAdminAccess(") >= 3, "ต้องใช้ทั้งในรายการ key และตอนออก key"
+    assert ">no admin access</span>" in source

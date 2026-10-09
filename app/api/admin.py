@@ -22,6 +22,8 @@ from app.core.auth import (
     extract_bearer_token,
     generate_api_key,
     is_member,
+    keys_with_a_cap,
+    limits_on_key,
     managed_workspaces,
     membership_counts,
     models_via_membership,
@@ -1444,6 +1446,13 @@ async def create_api_key(
         "workspace_id": payload.workspace_id,
         "models": payload.models,
         "access_groups": payload.access_groups,
+        # ใบของ admin/manager ที่มีข้อจำกัดเรียก /admin ไม่ได้ · ต้องรู้ตอนออก ไม่ใช่ตอน
+        # สคริปต์ได้ 403 — โดยเฉพาะเมื่อข้อจำกัดมาจากค่าเริ่มต้นของ workspace ที่ไม่มีใครพิมพ์
+        "owner_role": normalise_role(user.role),
+        "limited_by": list(limits_on_key(
+            models=payload.models, access_groups=payload.access_groups,
+            workspace_id=payload.workspace_id,
+        )),
         "kind": api_key.kind,
         "expires_at": expires_at.isoformat() if expires_at else None,
         # What was filled in for you, and where it came from. A default that
@@ -1651,17 +1660,32 @@ async def list_api_keys(
     visible = await _visible_users(session, actor)
     if visible is not None:
         stmt = stmt.where(ApiKey.user_id.in_(visible))
-    result = await session.execute(stmt)
+    keys = list((await session.execute(stmt)).scalars())
+    # ใบที่มีข้อจำกัดของตัวเองไม่พกสิทธิ์ admin/manager ของเจ้าของ (core/auth.limits_on_key)
+    # · หน้า Access ต้องบอกได้ว่าใบไหนเป็นแบบนั้น ไม่ใช่ให้ผู้ดูแลไปรู้จาก 403 ของสคริปต์
+    capped = await keys_with_a_cap(session, [k.id for k in keys])
+    owners = {k.user_id for k in keys}
+    roles = {
+        user_id: normalise_role(role)
+        for user_id, role in await session.execute(
+            select(User.id, User.role).where(User.id.in_(owners))
+        )
+    } if owners else {}
     return {
         "data": [
             {
                 "id": k.id,
                 "user_id": k.user_id,
+                "owner_role": roles.get(k.user_id, ""),
                 "workspace_id": k.workspace_id,
                 "name": k.name,
                 "key_prefix": k.key_prefix,
                 "models": list(k.models or []),
                 "access_groups": list(k.access_groups or []),
+                "limited_by": list(limits_on_key(
+                    models=k.models, access_groups=k.access_groups,
+                    workspace_id=k.workspace_id, capped=k.id in capped,
+                )),
                 "kind": k.kind or "person",
                 "revoked": k.revoked_at is not None,
                 "expires_at": k.expires_at.isoformat() if k.expires_at else None,
@@ -1670,7 +1694,7 @@ async def list_api_keys(
                 # ไม่ใช่ให้กดแล้วค่อยบอกว่าทำไม่ได้
                 "revealable": bool(k.key_sealed) and reveal_enabled(),
             }
-            for k in result.scalars()
+            for k in keys
         ]
     }
 

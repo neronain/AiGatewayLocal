@@ -2806,6 +2806,16 @@ function quotaCell(q) {
   </div>${quotaOthers(q)}`;
 }
 
+/* ใบของ admin/manager ที่มีข้อจำกัดของตัวเอง — รายการโมเดล · มัด · ผูก workspace · เพดาน
+ * เฉพาะใบ — ไม่พกสิทธิ์ผู้ดูแลของเจ้าของ (เซิร์ฟเวอร์ตัดสินที่ core/auth.limits_on_key
+ * แล้วส่ง `limited_by` มา หน้านี้ไม่ได้ตัดสินเอง) · ใบของสมาชิกไม่ขึ้นป้าย เพราะไม่มีสิทธิ์
+ * ให้เสียตั้งแต่ต้น */
+const NO_ADMIN_ACCESS = 'ใบนี้มีข้อจำกัดของตัวเอง จึงเรียก /admin ไม่ได้ แม้เจ้าของเป็นผู้ดูแล'
+  + ' · งานดูแลระบบให้ใช้ใบที่ออกโดยไม่เลือกโมเดล ไม่ผูก workspace และไม่ตั้งเพดาน';
+function noAdminAccess(k) {
+  return ['admin', 'manager'].includes(k.owner_role) && (k.limited_by || []).length > 0;
+}
+
 async function loadAccess() {
   // โควตาอ่านต่อคน · กิจกรรมอ่านต่อ key · ล้มแล้วไม่ทำให้ทั้งหน้าพัง เพราะสองอันนี้
   // เป็นข้อมูลประกอบ ไม่ใช่สิ่งที่หน้านี้มีไว้ทำ
@@ -3019,7 +3029,8 @@ async function loadAccess() {
       <div class="kc-top">
         <div class="kc-id">
           <div class="kc-label"><code>${esc(k.key_prefix)}…</code> ${esc(k.name || '—')}${
-            k.kind === 'service' ? ' <span class="pill mute">service</span>' : ''}</div>
+            k.kind === 'service' ? ' <span class="pill mute">service</span>' : ''}${
+            noAdminAccess(k) ? ` <span class="pill warn" title="${esc(NO_ADMIN_ACCESS)}">no admin access</span>` : ''}</div>
           <div class="hint">${esc(u ? u.external_id : k.user_id)}${
             workspace ? ' · ' + esc(workspace.code) : ''}${scope ? ' · ' + scope : ''}</div>
         </div>
@@ -3418,6 +3429,12 @@ $('issue-key').onclick = async () => {
       <code class="mono">${esc(result.api_key)}</code>
       <button class="ghost small" id="copy-key">Copy</button></div>`;
     $('copy-key').onclick = () => navigator.clipboard.writeText(result.api_key);
+    // เพดานถูกตั้งหลังออกใบ (ข้างล่าง) คำตอบของการออกจึงยังไม่รู้ — แต่ช่องติ๊กรู้
+    const limitedBy = [...(result.limited_by || []), ...($('k-cap-on').checked ? ['cap'] : [])];
+    if (noAdminAccess({ ...result, limited_by: limitedBy })) {
+      $('key-out').insertAdjacentHTML('beforeend',
+        `<p class="hint">${esc(NO_ADMIN_ACCESS)}</p>`);
+    }
 
     // เพดานเฉพาะใบนี้ · ตั้งหลังออก key เพราะต้องรู้ id ของใบก่อน
     //
