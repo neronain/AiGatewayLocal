@@ -17,6 +17,11 @@ journalctl -u litegate -n 100 --no-pager   # or: docker compose logs --tail=100 
 
 `/readyz` answers most of what follows without reading a log.
 
+`$ADMIN` in the commands below is an administrator's API key **with no limit of
+its own**. A key that was given a model list, an access group, a workspace or a
+quota of its own is refused on every `/admin` and `/v1/health` route, whoever
+owns it — see [An admin's key is refused on `/admin`](#an-admins-key-is-refused-on-admin).
+
 > **Check the unit name once, now, not at 3am.** A gateway upgraded from EduLLM
 > Gateway still answers to `edullm-gateway` in `/opt/edullm-gateway`, and every
 > `litegate` command below will report success while doing nothing at all.
@@ -192,6 +197,13 @@ database rather than the models.
 * Watch out for a usage dashboard being left open on a large window; it is the
   most expensive read in the system.
 
+If the complaint is that a **model** is slow rather than the console, this alert
+is the wrong instrument — it deliberately excludes generation. Open
+**Dashboard → Latency percentiles**: p50 / p95 / p99 and the slowest request per
+model, and per machine for an administrator, from requests a backend actually
+answered. A p95 far above the p50 on one machine and not on its twin is that
+machine; a column of dashes means too few requests to say, not that all is well.
+
 ## The gateway is saturated
 
 *`LiteGateSaturated` — in-flight requests near the tested ceiling of 200.*
@@ -269,22 +281,24 @@ reset to the audit log. Fix the loop too, or you will be back within the hour.
 ## Somebody's key cannot reach a model
 
 Nothing is broken. `MODEL_NOT_PERMITTED` names the models the key does allow —
-read the message before changing anything, because the other three causes look
-identical to the user and none of them is the key:
+read the message before changing anything, because the other causes look
+identical to the user and are not fixed on the key's model list:
 
 | The message says | Cause |
 |---|---|
 | `not available to you. Allowed by the model list on this key` | The key's own scope |
 | the workspace's models | The workspace, or it is suspended |
+| `this key is limited to an access group that is switched off or no longer exists` | Every access group the key names is off, deleted or empty, and the key has no model list. It calls nothing until a group is switched back on (**Access & Keys → Access groups**) or the key is given a model list. Before 2026-10 such a key called everything instead, so this can appear right after an upgrade |
 | unknown model | The alias is not in the registry — a typo, or the file failed validation (`/readyz`) |
 
-A fourth case looks the same to the caller and is not about permission at all:
+One more case looks the same to the caller and is not about permission at all:
 `PROTOCOL_NOT_SUPPORTED` — *"Model 'x' is not available over the embeddings API.
 Available: openai, anthropic."* The key is fine and the alias exists; it is the
 **surface** that is not enabled for it. Fix it in the model's `spec.protocols`,
 not on the key. `GET /v1/models` lists the surfaces each alias exposes.
 
-Only the first is fixed on the key, and it no longer needs reissuing:
+Only the first row is fixed on the key's model list, and it no longer needs
+reissuing:
 
 ```bash
 curl -s -X PATCH https://gateway/admin/api-keys/<id> -H "Authorization: Bearer $ADMIN" \
@@ -293,6 +307,71 @@ curl -s -X PATCH https://gateway/admin/api-keys/<id> -H "Authorization: Bearer $
 
 Send the whole list you want. `[]` removes the restriction entirely, which
 widens the key — rarely what is wanted during an incident.
+
+## An admin's key is refused on `/admin`
+
+*No alert. A script that worked yesterday gets `403 INSUFFICIENT_SCOPE`.*
+
+Nothing is broken, and the person is still an administrator. The **key** carries
+a limit — a model list, an access group, a workspace, or a quota of its own —
+and a key with a limit does not carry its owner's manager or admin rights. The
+error says which:
+
+```json
+"details": { "reason_code": "restricted_key", "limited_by": ["workspace"], "owner_role": "admin" }
+```
+
+This is the rule doing its job, and it appears on the first start of the version
+that introduced it (2026-10) for keys issued long before. The key can report on
+itself, with nothing but itself:
+
+```bash
+curl -s https://gateway/v1/me/key -H "Authorization: Bearer $KEY" | jq '.key | {limited_by, admin_access}'
+```
+
+Pick by what the key is for:
+
+| The key is used for | Do |
+|---|---|
+| calling models only | Nothing. It still calls them |
+| admin calls from a script | Issue that script a key with **no** model list, access group, workspace or quota, from the console, and replace it in the script |
+| both, and the limit is `models` or `cap` | Take the limit off from the console — the key's `model` button under **Access & Keys**, or the policy in the **Quota** tab. It cannot be done with the limited key itself |
+| both, and the limit is `access_groups` or `workspace` | Those cannot be removed from an issued key. Issue a new one |
+
+Do not "fix" it by widening a key that a job only uses to call one model. A
+people-shaped task — adding a member, changing a quota — belongs in the console,
+where the session is not limited.
+
+To find every such key at once rather than one `403` at a time: the key list
+under **Access & Keys → API keys** marks them `no admin access`, and
+`scripts/restricted_key_report.py` prints them from the database
+([DEPLOYMENT.md](DEPLOYMENT.md#before-upgrading-keys-that-lose-admin-rights)).
+
+## Reveal fails for a key
+
+*No alert. An administrator presses Reveal and is refused.*
+
+The key itself still works in every case below — only showing it again is
+affected. The console replaces the Reveal button with the reason; the API puts
+it in `details.seal_state`:
+
+| State | What happened | Do |
+|---|---|---|
+| `none` | No copy was ever kept — the key was issued while reveal was off | Issue a replacement |
+| `off` | A copy is stored, but `GW_KEY_REVEAL_SECRET` is no longer set | Put the secret back in `.env` and restart |
+| `lost`, reason `unknown_secret` or `unreadable` | The copy was sealed under a secret that is not configured — the secret was changed without the old one being kept as `GW_KEY_REVEAL_SECRET_PREVIOUS`, or an older backup was restored | [Restoring a backup made before the secret was changed](#restoring-a-backup-made-before-the-secret-was-changed) — the same steps apply |
+| `lost`, reason `damaged` | Sealed under a configured secret and the contents no longer open | No secret helps. Issue a replacement |
+| `lost`, reason `unknown_format` | Written by a newer version than the one running | Upgrade |
+
+The whole picture at once — how many copies are in each state, which keys are
+lost, and what in the configuration is wrong:
+
+```bash
+cd /opt/litegate && sudo -u litegate .venv/bin/python -m app.tools keyvault status
+```
+
+or the **Sealed key copies** panel under **Access & Keys → API keys**, which
+appears when something needs attention, or `GET /admin/key-vault`.
 
 ---
 
@@ -323,6 +402,121 @@ Issue the new one, confirm it works, then revoke the old one. In that order —
 revoking first locks you out of the plane you need to issue the replacement
 from.
 
+"Confirm it works" means an admin call, not a chat completion: issue it with no
+model list, access group, workspace or quota of its own, and check
+`GET /v1/me/key` answers `"admin_access": true`. A key that carries any of those
+calls its models and is refused on `/admin`.
+
+### Change `GW_KEY_REVEAL_SECRET`
+
+For when the secret that seals the API-key copies has to change — it leaked, or
+policy says it is time. Done this way every key stays revealable throughout, and
+you can stop after any step and pick up later.
+
+Commands are for the native install (`/opt/litegate`, unit `litegate`). On
+Docker Compose the two variables are not passed to the container as shipped —
+see [DEPLOYMENT.md §10](DEPLOYMENT.md#configuration-and-deployment).
+
+1. **Back up, and take the archive off the machine.**
+
+   ```bash
+   ./scripts/backup.sh --out /srv/backups
+   ```
+
+   The archive contains `.env`, and so the secret you are about to retire. It
+   was a secret before and it still is. If the secret is set somewhere other
+   than `.env`, record the old value separately.
+
+2. **Edit `.env`: the old value moves down, the new one goes in its place.**
+
+   ```bash
+   python3 -c "import secrets; print(secrets.token_urlsafe(48))"   # the new secret
+   ```
+
+   ```
+   GW_KEY_REVEAL_SECRET=<the new value>
+   GW_KEY_REVEAL_SECRET_PREVIOUS=<the value GW_KEY_REVEAL_SECRET had>
+   ```
+
+   They must differ. The same value in both does nothing, and the gateway says
+   so.
+
+3. **Restart, and read what it found.**
+
+   ```bash
+   sudo systemctl restart litegate
+   journalctl -u litegate -n 200 --no-pager | grep 'key vault'
+   ```
+
+   Expect `current=0 previous=N lost=0` and a warning that N copies still open
+   only under the previous secret. Every key can still be revealed. If `lost` is
+   not 0, stop and read [Reveal fails for a key](#reveal-fails-for-a-key) before
+   going on — a re-seal will not fix those.
+
+4. **Re-seal.** Either in the console — **Access & Keys → API keys → Re-seal N
+   keys** — or:
+
+   ```bash
+   cd /opt/litegate && sudo -u litegate .venv/bin/python -m app.tools keyvault reseal
+   ```
+
+   The command line names the key ids it is moving from and to and asks you to
+   type `reseal`; compare them with the ones the console shows, because the
+   command uses the secrets of the shell it runs in, not necessarily the
+   gateway's (`--yes` skips the question, for scripts). Either way it is safe to
+   run twice, to interrupt, and to run while the gateway serves traffic.
+
+5. **Check.**
+
+   ```bash
+   cd /opt/litegate && sudo -u litegate .venv/bin/python -m app.tools keyvault status; echo "exit $?"
+   ```
+
+   `previous=0 lost=0`, a note that the previous secret is no longer needed, and
+   exit status `0`. Status `1` means copies are still waiting or cannot be
+   opened; `2` means the command was refused.
+
+6. **Remove `GW_KEY_REVEAL_SECRET_PREVIOUS` from `.env` and restart.** The log
+   line now reads `current=N previous=0 lost=0` with no warning. Do not skip
+   this: a secret that is no longer needed should not stay on the machine.
+
+7. **Take a new backup.** It is the first one whose database and `.env` agree on
+   the new secret.
+
+**Keep the old secret — or the archive from step 1 — for as long as you keep any
+backup made before step 4.** Those databases are sealed under it.
+
+What this does not cover: only one previous secret is supported, so finish one
+change before starting the next. The count line is logged once per worker, so
+with several workers you will see it several times. And the provider keys in
+`data/secrets.json` are a different store that this secret does not protect.
+
+### Restoring a backup made before the secret was changed
+
+After a restore of an older backup, every key works and every sealed copy is
+`lost`: the restored database is sealed under the secret that was current when
+the backup was made, and an in-place restore leaves the live `.env` alone.
+`scripts/restore.sh --in-place` warns about exactly this before it writes.
+
+1. Get the backup's secret. It is in the archive's copy of `.env`:
+
+   ```bash
+   ARCHIVE=/srv/backups/litegate-20260813-020000.tar.gz
+   tar -xzOf "$ARCHIVE" "$(basename "$ARCHIVE" .tar.gz)/env" | grep '^GW_KEY_REVEAL_SECRET='
+   ```
+
+   That prints a secret on your terminal. If the archive was renamed, list it
+   (`tar -tzf "$ARCHIVE"`) and use the path of its `env` entry instead.
+2. Put that value in the live `.env` as `GW_KEY_REVEAL_SECRET_PREVIOUS`. Leave
+   `GW_KEY_REVEAL_SECRET` as it is.
+3. Start the gateway. The log line shows the copies under `previous=`.
+4. Re-seal, check, then remove the variable and restart — steps 4 to 6 above.
+
+The same steps recover from a secret that was changed by overwriting it, if the
+old value can still be found: a `lost` copy says which secret it needs by key
+id, and `python -m app.tools keyvault key-id` prints the key id of a secret you
+type in, without echoing it.
+
 ### Before an upgrade
 
 ```bash
@@ -332,3 +526,16 @@ from.
 Then read [DEPLOYMENT.md §6.1](DEPLOYMENT.md#61-restoring--rehearse-it-now).
 If you have never restored one, that is the thing to do this week rather than
 during an incident.
+
+Then ask which keys the upgrade changes. From the directory holding the **new**
+version, against the database of the one still running:
+
+```bash
+python scripts/restricted_key_report.py --db /opt/litegate/data/gateway.db
+```
+
+It writes nothing. Exit `0` means no key changes; `1` means read the list — or
+that the database could not be opened, which it says on stderr. What the two
+lists mean and what to do about each key is in
+[DEPLOYMENT.md §9](DEPLOYMENT.md#before-upgrading-keys-that-lose-admin-rights),
+with what the upgrade changes on disk and what to undo before rolling back.

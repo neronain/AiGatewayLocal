@@ -522,6 +522,10 @@ Two things are counted **per process** unless Redis is configured:
 * **The response cache** (off by default) — a hit only lands on the worker that
   produced it.
 
+A third thing is per process whatever you configure: the speed statistics that
+`model: "auto"` ranks with. Each worker measures the requests it served itself
+and starts from nothing on restart — see §4.4.
+
 **Fixed in 1.12.1.** `scripts/bootstrap.sh` used to write `GW_REDIS_URL=` (empty)
 next to `GW_WORKERS=4`, so *a default native install was the one that
 oversubscribed its backends* — the container path, which ships a Redis service
@@ -649,6 +653,11 @@ curl -s -X POST $GW/admin/api-keys -H "Authorization: Bearer $ADMIN_KEY" \
 
 Then revoke the bootstrap key with `DELETE /admin/api-keys/{id}`.
 
+Issue that admin key exactly as above — no `models`, no `access_groups`, no
+`workspace_id`, and no quota of its own afterwards. A key with any of those
+written on it does not carry its owner's admin rights (§2.2), and you would
+revoke the bootstrap key only to find the new one refused on `/admin`.
+
 ### 2.2 Create a workspace and issue member keys
 
 ```bash
@@ -732,6 +741,16 @@ Then give the bundle to a workspace alongside (or instead of) individual models
 Editing the bundle reaches every workspace holding it, which the response counts for
 you; disabling it takes its models away everywhere at once, reversibly.
 
+"Everywhere" includes API keys limited to the bundle. A key whose only limit is
+access groups, all of them switched off, deleted or empty, **calls nothing**
+(`403 MODEL_NOT_PERMITTED`, `reason_code: key_bundle_off`) until one is switched
+back on or the key is given a model list. Until 2026-10 such a key fell through
+to "no limit was written" and could call everything its owner could — switching
+a bundle off widened the keys that named it. A key that has a model list as well
+keeps the list. And a bundle cannot be deleted while a key that is not revoked
+still names it: `DELETE /admin/access-groups/{id}` answers `400` with the count
+in `details.api_keys`.
+
 A bundle is a shorter way of *writing* a rule, never a new one: what it expands
 to is added to the models ticked on the workspace, and then narrowed by everything
 that narrowed before. Only an admin can define one, and a manager can only hand
@@ -758,6 +777,47 @@ its extent.
 A manager who is in no workspace administers nothing. Put them in their
 workspaces first — the opposite default from model access, so that promoting
 somebody does not quietly hand them the organisation.
+
+**A key with a limit of its own does not carry its owner's admin rights.** The
+table above is about the person. A key belonging to a manager or an admin has
+the "may administer" column only while nothing was written on the key to narrow
+it:
+
+| Written on the key | Counts as a limit | Can be taken off the same key |
+|---|---|---|
+| a model list (`models`) | yes | yes — `PATCH /admin/api-keys/{id}` with `"models": []`, or **Access & Keys → the key's `model` button** |
+| access groups (`access_groups`) | yes | no — issue a new key |
+| a workspace (`workspace_id`, a key issued *for* a workspace) | yes | no — issue a new key |
+| a quota of its own (a quota policy aimed at the key, enabled and not expired) | yes | yes — remove the policy in the **Quota** tab, or `DELETE /admin/quota-policies/{id}` |
+| `scopes` | **no** — see §10 | — |
+| an expiry date, `kind` | no | — |
+
+One is enough. Such a key calls its models exactly as before and gets
+`403 INSUFFICIENT_SCOPE` (`reason_code: restricted_key`, with `limited_by` naming
+the limits) on `/admin/*`, `/admin/tools/*`, `/v1/health/endpoints` and
+`/v1/health/probe`; `GET /v1/models` shows it the member view, without
+`upstream_model` and `endpoints`. Limits can only be taken off from a console
+session or with a key that has none — not with the limited key itself, which is
+the point.
+
+Why: a key is issued for a job, and "this key may only call `coding`" is a
+statement about that job. While the key still carried its owner's role it could
+call `PATCH /admin/api-keys/<itself>` and remove the list, issue itself a wider
+key, edit the registry and reveal other people's keys — the limit was a request,
+and one leaked script key was the whole gateway. There is no switch for this
+rule: it applies from the first start of the version that has it. Before
+upgrading a gateway that predates it, run the report in
+[§9](#before-upgrading-keys-that-lose-admin-rights).
+
+Two places where a limit arrives without anyone typing it: a workspace's
+**defaults** (`default_member_models`, `default_access_groups`) fill the blanks
+of a key issued for one of its members, and `scripts/provision.py` issues every
+key for the workspace it enrols into. Either way a manager's or admin's key
+comes out limited. The issue response says so (`limited_by`, `owner_role`), the
+key list shows `no admin access` on it, and the key can ask about itself at
+`GET /v1/me/key`. People who administer should do it from the console; scripts
+that administer need a key issued with no limits, guarded like the credential it
+is.
 
 **Defaults for a whole workspace.** These are a different question from the
 allowed models, and the console keeps them apart: the checkboxes are *what this
@@ -837,6 +897,11 @@ member of it** — keys that worked until then, because the membership of a
 workspace-bound key was never read, and that stop entirely afterwards. For each
 one, add the owner to that workspace (the key then works unchanged) or issue an
 unbound key instead.
+
+A second report covers a different change in the same period — keys of managers
+and admins that lose their admin rights because they carry a limit, and keys
+limited to bundles that grant nothing:
+[§9 Before upgrading](#before-upgrading-keys-that-lose-admin-rights).
 
 ### 2.3 Set quota
 
@@ -1140,6 +1205,103 @@ curl -s $GW/v1/health/endpoints -H "Authorization: Bearer $ADMIN_KEY" | jq
 curl -s -X POST $GW/v1/health/probe -H "Authorization: Bearer $ADMIN_KEY" | jq   # probe now
 ```
 
+### 4.4 Choosing how `model: "auto"` ranks
+
+A caller who sends `"model": "auto"` gets a model the gateway picks from the ones
+that key may already use and that can serve the request. *Which* of those is a
+strategy an administrator chooses:
+
+| Strategy | Picks | Needs |
+|---|---|---|
+| `fastest` (default) | the highest measured output tok/s | nothing — it is what every install does until someone changes it |
+| `roomiest` | the largest context window | nothing |
+| `quality` | the highest quality score; ties go to the faster model | a score on the models you want preferred |
+| `balanced` | the highest `(2 × score + 100 × speed) ÷ 3`, `speed` being the model's tok/s as a fraction of the fastest candidate's | scores |
+
+The score is yours to set — a whole number from 0 to 100 per model, in the
+registry:
+
+```yaml
+spec:
+  quality_score: 85        # optional; leave the line out for "no score yet"
+```
+
+or **Models → Edit → Quality score** in the console. There is no external index
+behind it: the models on a private fleet are fine-tunes and quantisations nobody
+ranks, and the gateway has to work with no internet. Score the models against
+each other from the same test set — `balanced` weighs one point the same across
+the whole scale.
+
+Set the strategy under **Dashboard → Available models →** the `model: "auto"`
+panel **→ Strategy**. Pick one to preview what it would choose with the numbers
+that decide it, then **Use this strategy** (administrators only). Or:
+
+```bash
+curl -s -X PUT $GW/admin/auto/strategy -H "Authorization: Bearer $ADMIN_KEY" \
+  -H 'Content-Type: application/json' -d '{"strategy":"quality"}'
+```
+
+The choice is stored in the database and read on every `auto` request, so all
+workers follow it at once, and it is written to the audit log (`auto.strategy`).
+
+Things to know before switching:
+
+* **Scores alone change nothing.** `fastest` never reads them. Nothing moves
+  until the strategy is changed.
+* **A model without a score sorts last** under `quality` and `balanced` — not
+  dropped: it is still chosen when it is the only one that can serve the
+  request. A model you add to the registry therefore takes no `auto` traffic
+  under those strategies until you score it.
+* **`balanced` gives a scored model with no speed samples the benefit of the
+  doubt** — it is weighed as if it were as fast as the fastest candidate until
+  it has been measured (three requests on that worker). The preview marks those
+  rows.
+* **Speed is measured per worker and forgotten on restart.** With more than one
+  worker, `fastest` and `balanced` can pick differently on different workers
+  while their numbers are close; `quality` does not depend on speed unless
+  scores tie. This is read from the code, not measured on a multi-worker
+  deployment.
+* **Answers from the response cache are not counted as speed.** They used to
+  be — one real request and five cache hits turned 1,000 tok/s into 4,050 and
+  `auto` ranked by how fast the cache was.
+* **Rolling back:** a model file containing `quality_score` does not load on a
+  version that predates the field. Remove the line before downgrading (§9).
+
+Field reference: [API.md](API.md#get-adminautopreview).
+
+### 4.5 Reading latency — percentiles, not the average
+
+**Dashboard → Latency percentiles**, under *Usage by model*, or
+`GET /admin/usage/latency`. It shows p50 / p95 / p99 and the slowest request for
+total latency and for time to first token, per model and — for administrators —
+per machine and model, over the last 24 hours, 7, 14 or 30 days. Managers see
+their own workspaces' traffic and no machine names.
+
+How to read it:
+
+* **Every figure has its sample count beside it, and too few samples is shown as
+  no number.** p50 and p95 need 20 requests, p99 needs 100. A blank is the
+  honest answer for a model with nine requests this week; the slowest request
+  seen is still shown, because that is a fact rather than a statistic.
+* **Only requests a backend answered are measured.** Failures, hang-ups and
+  answers from the response cache are counted beside the figures, not in them —
+  so a model that fails in 5 ms does not look fast. Streams that never produced
+  a first token are counted separately for the same reason.
+* **A busy model's figures may cover less time than you asked for.** At most the
+  newest 10,000 requests per model per measure are used, and at most 50 groups
+  are listed. When either limit is hit the panel says so and names the time the
+  sample starts at.
+* **The "Avg latency" card above it is a different number**: a plain average over
+  every usage row, failures and cache hits included. It is kept for continuity;
+  do not size a timeout from it.
+
+The first load after an upgrade adds nothing to wait for: the one new column the
+report relies on, `usage_logs.cache_hit`, is added at startup (§9). Cache hits
+recorded before that have no mark and are counted as backend answers.
+
+Field reference and the exact counting rules:
+[API.md](API.md#get-adminusagelatency).
+
 ---
 
 ## 5. Moving from SQLite to PostgreSQL
@@ -1211,6 +1373,11 @@ its own protocol and does not know about SQLAlchemy driver names.
 Rehearse it on a copy first, and check the row count matches before pointing
 production at it.
 
+`\copy` matches columns by position, so both ends must be on the same version
+before you copy: a column added by an upgrade (`client_request_id`, then
+`cache_hit`) is appended at the end of an existing table and declared last in a
+new one, which keeps the order identical — but only once both databases have it.
+
 ### Things that behave differently, and what the gateway does about them
 
 These are the places where the two databases genuinely disagree. They are
@@ -1231,10 +1398,11 @@ rather than take it on faith.
 * **Timezone of the server does not matter** for reports (see the table above),
   but it does matter for anything you query by hand. `SET TIME ZONE 'UTC';`
   before running ad-hoc SQL, or your day boundaries will not match the console.
-* **`scripts/access_change_report.py` reads the database synchronously** and
-  therefore cannot use `asyncpg`. It picks up `psycopg` or `psycopg2` if either
-  is installed and tells you to install one if neither is:
-  `pip install 'psycopg[binary]'`.
+* **`scripts/access_change_report.py` and `scripts/restricted_key_report.py`
+  read the database synchronously** and therefore cannot use `asyncpg`. They
+  pick up `psycopg` or `psycopg2` if either is installed and tell you to install
+  one if neither is: `pip install 'psycopg[binary]'`. The second of the two has
+  no test that runs it against PostgreSQL — read its output with that in mind.
 * **Behind pgbouncer**, use session pooling. Transaction pooling breaks
   asyncpg's prepared-statement cache; if you must use it, the gateway needs
   `statement_cache_size=0` passed through the URL query string.
@@ -1483,6 +1651,12 @@ console and run the script again.
 
 It works through the admin API, not the database, so role checks, key format and
 the audit log all apply exactly as they would to a human doing it by hand.
+
+Every key it issues is issued **for the workspace** named by `--workspace`. For
+the `manager` and `admin` rows of a roster that means a key that calls the
+workspace's models and carries no admin rights (§2.2) — those people administer
+from the console. `LITEGATE_ADMIN_KEY` itself has to be a key with no limit of
+its own, or every call the script makes is refused with `403`.
 
 ---
 
@@ -1749,8 +1923,8 @@ without. Only one of them is the database:
 |---|---|
 | `database.sqlite` / `database.dump` | Members, keys, quota policies, usage history |
 | `config/` | The registry. Probably in git — but a restore that needs someone to remember which branch is a restore that goes badly at 3am |
-| `.env` | **The pepper.** Every API key is a hash under it |
-| `secrets.json` | Provider keys entered in the console (`data/secrets.json`). The registry only names them, so this file is the only copy of the values |
+| `.env` | **The pepper.** Every API key is a hash under it. Also `GW_KEY_REVEAL_SECRET`, if you use key reveal — the secret the sealed key copies in *this* database open under |
+| `secrets.json` | Provider keys entered in the console (`data/secrets.json`). The registry only names them, so this file is the only copy of the values. It is plain JSON, not sealed — on the host it is protected by file mode alone (`0600`, in a `0700` directory), and it is copied into the archive as it is |
 
 The `.env` row is the one that matters most. Restore a database under a different
 `GW_API_KEY_PEPPER` and every key ever issued stops working, silently, with no
@@ -1796,6 +1970,19 @@ Note the four slashes in that SQLite URL. `sqlite:///tmp/x.db` is a *relative*
 path; the gateway will happily create an empty database beside it and report
 itself healthy while every key is rejected.
 
+**The key-reveal secret is compared too, and only warned about.** An in-place
+restore leaves the live `.env` alone. If the archive's `GW_KEY_REVEAL_SECRET` is
+not the one this deployment has now — the backup predates a change of secret —
+every key in it still authenticates, but its sealed copies open only under the
+backup's secret, and the first anyone would hear of it is a Reveal that fails.
+The script says so before it writes, and says what to do: put the backup's value
+in `GW_KEY_REVEAL_SECRET_PREVIOUS`, start, re-seal, remove it again
+([RUNBOOK.md](RUNBOOK.md#restoring-a-backup-made-before-the-secret-was-changed)).
+When the archive's secret is already this deployment's
+`GW_KEY_REVEAL_SECRET_PREVIOUS` it prints a note instead: the copies will open,
+and need a re-seal before that variable is removed. The values are compared,
+never printed.
+
 **Ownership.** A restore run under `sudo` leaves everything owned by root. The
 gateway then reads the database fine and fails on the first write with an error
 that says nothing about permissions. The script sets ownership when it can and
@@ -1830,6 +2017,7 @@ sudo sqlite3 /opt/litegate/data/gateway.db ".backup '/backup/gateway-$(date +%F)
 | `litegate_requests_total{path,method,status,model}` | Request counts |
 | `litegate_request_duration_seconds{path,model}` | Latency histogram — **time to first header, not request duration** (§10) |
 | `litegate_requests_in_flight` | Concurrency — **excludes streams already sending** (§10) |
+| `litegate_time_to_first_token_seconds{model}` | Histogram of time to first token on streamed requests. Answers served from the response cache are not observed |
 | `litegate_errors_total{code}` | Errors by gateway error code |
 | `litegate_quota_counters_degraded` | `1` when quota counting has fallen back from Redis to the database (§5f) |
 
@@ -1962,6 +2150,97 @@ egress firewall that blocks it breaks nothing — the button simply always answe
 reaches the internet only through a proxy needs no extra setting either: the
 call honours `HTTPS_PROXY` / `NO_PROXY` from the service environment like any
 other client on the host.
+
+#### Before upgrading: keys that lose admin rights
+
+From 2026-10 an API key that carries a limit of its own — a model list, an
+access group, a workspace, a quota of its own — no longer carries its owner's
+manager or admin rights (§2.2). There is no switch: the rule applies from the
+first start of the new version. A scheduled job that uses such a key for
+`/admin` calls gets `403` at that moment, so find those keys first.
+
+`scripts/restricted_key_report.py` ships with the new version and reads the
+database of the gateway you are about to upgrade. It imports its rules from the
+new `app/core/auth.py` — the same function the request path uses — so run it
+**from the new checkout**, with a Python that has the gateway's dependencies:
+
+```bash
+# on the host, from the directory holding the new version, against the live file
+/opt/litegate/.venv/bin/python scripts/restricted_key_report.py \
+    --db /opt/litegate/data/gateway.db
+
+# or against a copy taken elsewhere
+sqlite3 /opt/litegate/data/gateway.db ".backup '/tmp/gateway-copy.db'"
+python scripts/restricted_key_report.py --db /tmp/gateway-copy.db
+
+# PostgreSQL, or any URL; --json for a machine-readable report
+python scripts/restricted_key_report.py --db "$GW_DATABASE_URL" --json
+```
+
+It writes nothing. A SQLite file is opened read-only (`mode=ro`), which still
+reads what a running gateway has committed to its write-ahead log, so pointing
+it at the live file is safe; run it as a user that can read that file. It reads each key's id, prefix, label, limits and
+owner's role — never the key and never its hash. A database from an older
+version that lacks a column is read anyway, and the report says which columns
+were missing.
+
+| Exit status | Meaning |
+|---|---|
+| `0` | No key changes |
+| `1` | At least one key changes — read the report. **Also** what you get when the database file is not found or no synchronous PostgreSQL driver is installed; the reason is on stderr, so do not act on the status alone |
+| `2` | No database was given (`--db` or `GW_DATABASE_URL`) |
+
+The report has three sections:
+
+* **Keys that lose admin rights** — live keys of managers and admins that carry a
+  limit, with what limits them and when each was last used. For any that an
+  admin job depends on, either issue that job a new key with no limits, or take
+  the limit off the existing key where that is possible (the table in §2.2).
+  Keys used only to call models need nothing: that is what the rule intends.
+* **Keys limited to bundles that grant nothing** — every access group the key
+  names is switched off, deleted or empty, and the key has no model list. Today
+  such a key calls every model its owner can; after the upgrade it calls none.
+  Switch a group back on or give the key a model list.
+* **Unchanged** — including admin and manager keys that keep their rights. A key
+  whose only narrowing is `scopes` is listed here: scopes are not counted.
+
+PostgreSQL needs `psycopg` or `psycopg2` beside `asyncpg`, and this script has no
+test that runs it against PostgreSQL.
+
+#### What this upgrade changes, and what to know before rolling back
+
+*Changes made for you at the first start:*
+
+| | |
+|---|---|
+| `usage_logs.cache_hit` | A new nullable `BOOLEAN` column, added with `ALTER TABLE … ADD COLUMN` at startup, appended after `client_request_id`. Rows written earlier are `NULL`, read as "not a cache hit". Nothing is rewritten |
+| `gateway_settings` | No schema change. The `model: "auto"` strategy is one row (`auto_strategy`) written the first time an administrator changes it |
+| Sealed key copies | Not touched. Copies written before the upgrade keep their `v1` format and still open; keys issued afterwards are sealed as `v2` |
+
+*New, optional configuration:* `GW_KEY_REVEAL_SECRET_PREVIOUS`, used only while
+changing `GW_KEY_REVEAL_SECRET`
+([below](#reading-an-issued-key-back-optional)). Nothing new is required.
+
+*Behaviour that changes without any setting* — check these against your
+callers: limited keys lose admin rights (above); a key limited only to
+switched-off bundles calls nothing (§2.2); a malformed `response_format` is
+repaired or answered with `400` instead of being forwarded
+([API.md](API.md#post-v1chatcompletions)); `/v1/responses` and `/v1/messages`
+refuse a structured-output format the translator cannot carry.
+
+*Rolling back to the previous version:*
+
+* **Remove `quality_score` from every model file first.** The older registry
+  schema rejects unknown keys, so a file that has the line fails to load.
+* **Keys issued or re-sealed after the upgrade cannot be revealed by 1.12.1 or
+  earlier.** Their copies are `v2`, which those versions do not read; Reveal
+  answers that only a hash was stored. The keys authenticate as normal, and the
+  copies open again once you are back on a version that reads them.
+* The `auto_strategy` row and the `cache_hit` column need nothing: older code
+  does not read the first and can still write usage rows with the second
+  present.
+* Limited keys get their owner's admin rights back, since the older code does
+  not have the rule.
 
 #### Why there is no update button
 
@@ -2216,11 +2495,26 @@ counted. On a gateway whose whole job is long streams, the gauge is closer to
 near zero while every backend is saturated. The 80%-of-200-streams alert in §5e (scrape config and alert rules)
 inherits this.
 
-**TTFT is measured but never exported.** `UsageLog.ttft_ms` is populated for
-streaming requests on all three protocol surfaces, and `PerfStore` uses it live
-to rank models for `model: "auto"`. There is no Prometheus metric for it, so the
-number an operator most wants during a slow-model complaint is only reachable by
-querying `usage_logs`.
+**Time to first token has two readers, and they do not count the same rows.**
+`UsageLog.ttft_ms` is populated for streaming requests on all three protocol
+surfaces. It is exported as the histogram
+`litegate_time_to_first_token_seconds{model}` — per worker, like everything else
+in `/metrics`, and in fixed buckets — and it is what
+`GET /admin/usage/latency` computes p50 / p95 / p99 from (§4.5). The histogram
+observes every stream that produced a first token on that worker; the report
+reads the usage rows, can be narrowed to a workspace, and says how many samples
+each figure rests on. Neither counts an answer served from the response cache.
+
+**`litegate_request_duration_seconds` includes failures and cache hits.** It is
+observed for every request the middleware sees, so a burst of fast `4xx`
+answers or a warm response cache pulls its percentiles down. The same is true
+of `avg_latency_ms` in `GET /admin/usage/summary` and of the dashboard's "Avg
+latency" card, which is drawn from it. The latency report in §4.5 is the one
+that leaves them out.
+
+**`GET /admin/usage/summary` does not narrow `errors` by `workspace_id`.** The
+per-model totals follow the `workspace_id` filter; the error counts beside them
+cover every workspace the caller can see.
 
 ### Configuration and deployment
 
@@ -2270,6 +2564,33 @@ numbers, or key the zones on something tenant-shaped, if any of your callers
 share an egress address. The gateway's own per-member quota and per-minute
 limits are unaffected by this — those are the real policy.
 
+**Key reveal cannot be enabled on the shipped Docker Compose files without
+editing them.** `docker/docker-compose.yml` passes the gateway's environment
+variable by variable and lists neither `GW_KEY_REVEAL_SECRET` nor
+`GW_KEY_REVEAL_SECRET_PREVIOUS`; a value in the host's `.env` never reaches the
+container. Add both lines under the gateway's `environment:` to use key reveal,
+or to rotate its secret, on that path. On the native paths the two installers
+differ: `install.sh` writes a generated `GW_KEY_REVEAL_SECRET` into the `.env`
+it creates, `scripts/bootstrap.sh` does not — a bootstrap install has key reveal
+off until you add the variable to `/opt/litegate/.env` and restart.
+
+**Provider keys in `data/secrets.json` are not sealed.** Key reveal seals copies
+of the API keys *this gateway issues*. The upstream provider keys an
+administrator enters in the console are a different store: plain JSON, protected
+by file mode (`0600` in a `0700` directory), and copied as plain JSON into every
+backup archive. `GW_KEY_REVEAL_SECRET` has nothing to do with them.
+
+**Structured output (`response_format`) has been measured against llama.cpp
+only.** What the gateway repairs, what it refuses and what it leaves alone were
+decided from requests sent to a llama.cpp backend. vLLM's handling was read from
+its source and not run. Check a structured-output request end to end on a vLLM
+backend before relying on it there.
+
+**`model: "auto"` ranks with per-worker statistics.** See §4.4: with more than
+one worker the `fastest` and `balanced` strategies can choose differently on
+different workers while the numbers are close. Not measured on a multi-worker
+deployment.
+
 ### Access control
 
 **`ApiKey.scopes` is stored but never enforced.** The column exists, the
@@ -2279,6 +2600,25 @@ call sites. A key issued with narrow scopes is not narrowed by them. What *is*
 enforced on a key is `models` and `access_groups` (see §2.2), plus the role on
 the user behind it. Do not rely on `scopes` as a boundary; if you have issued
 keys assuming it works, re-check them against `models`/`access_groups` instead.
+
+For the same reason `scopes` does **not** make a key a limited one in the sense
+of §2.2: a manager's or admin's key whose only narrowing is `scopes` keeps its
+admin rights. It could not be otherwise without breaking every install on
+upgrade day — the bootstrap key is created with `scopes: ["admin"]`.
+
+**There is no endpoint that reads the audit log in general.** Changes are
+written to `audit_logs` — the `model: "auto"` strategy (`auto.strategy`), each
+re-seal of the key copies (`keyvault.reseal`), each key reveal
+(`apikey.reveal`) among them — and two narrow views exist: the reveals of one
+key (`GET /admin/api-keys/{id}/reveals`) and the last re-seal (in
+`GET /admin/key-vault`). Anything else is read from the table.
+
+**A sealed key copy is not bound to the row it sits in.** The seal authenticates
+the copy against the secret that sealed it, not against the key's id. Someone
+who can already write to the database could move a sealed copy from one row to
+another, and Reveal on the second row would show the first key. That needs
+write access to the database, which is already beyond what the seal defends
+against.
 
 ---
 
@@ -2295,15 +2635,97 @@ GW_KEY_REVEAL_SECRET=$(openssl rand -base64 32)
 - Keep it in the environment or a secrets manager — **never in the database**,
   which is where the sealed values live. Together in one place, the encryption
   buys nothing.
-- Include it in the same rotation policy as any other credential. Rotating it
-  leaves existing keys working but no longer readable.
+- Include it in the same rotation policy as any other credential. It can be
+  changed without losing the copies — see *Changing the secret* below. Changing
+  it by simply overwriting the value leaves existing keys working but their
+  copies unreadable until the old value is supplied again.
 - Back it up with the same care as the database. Losing it does not break the
-  gateway; it permanently removes the ability to read keys back.
+  gateway; it permanently removes the ability to read back the keys sealed
+  under it. `scripts/backup.sh` includes `.env`, so an archive carries the
+  secret that was current when it was made — which is the one its own database
+  needs.
 - Every reveal is written to `audit_logs` with action `apikey.reveal`, and shown
   in the console next to the key.
+- A key keeps a copy only if reveal was on when it was issued. Switching it on
+  later does not make older keys readable.
 
 Leaving it unset keeps the original behaviour, which is the stronger posture: a
 stolen database dump contains no usable credentials.
+
+Not every install path can use it as shipped — the Compose files do not pass the
+variable through, and `scripts/bootstrap.sh` does not generate one
+([§10](#configuration-and-deployment)).
+
+### Changing the secret
+
+Two variables, and a step an administrator takes:
+
+| | Used for |
+|---|---|
+| `GW_KEY_REVEAL_SECRET` | Seals every new copy. Tried first when opening one. Unset = reveal is off |
+| `GW_KEY_REVEAL_SECRET_PREVIOUS` | Tried second when opening. **Never** seals anything, and never switches reveal on by itself. Set only while moving from one secret to the next |
+
+Put the new value in the first and the old value in the second, restart, and
+every copy still opens: new ones under the current secret, older ones under the
+previous. Then **re-seal** — **Access & Keys → API keys → Re-seal N keys**,
+`POST /admin/key-vault/reseal`, or `python -m app.tools keyvault reseal` —
+which rewrites the older copies under the current secret. When none are left
+under the previous one, remove that variable and restart. The step-by-step
+procedure, with what to expect in the log at each point, is in
+[RUNBOOK.md](RUNBOOK.md#change-gw_key_reveal_secret).
+
+Re-sealing does not happen by itself at startup, on purpose. It changes which
+secret opens the copies — after it the old secret opens nothing in the live
+database, while every backup made before it still needs the old one — and that
+should be something a named person did at a recorded time, not a side effect of
+a restart. A mistyped value in `.env` should not have a permanent effect the
+moment the service comes up either. What startup does do is report: each worker
+logs one line,
+
+```
+key vault: 12 sealed key copies - current=0 previous=12 lost=0 off=0 (reveal on)
+```
+
+followed by a warning for anything that needs attention. The line is repeated
+once per worker, and is absent on a gateway that has no sealed copies and
+nothing to warn about.
+
+**The state of each copy** is shown on the key in the console, returned as
+`seal_state` by `GET /admin/api-keys`, and summarised by `GET /admin/key-vault`:
+
+| State | Meaning | Reveal |
+|---|---|---|
+| `current` | Opens under `GW_KEY_REVEAL_SECRET` | works |
+| `previous` | Opens only under `GW_KEY_REVEAL_SECRET_PREVIOUS` — waiting for a re-seal | works |
+| `lost` | A copy is stored and neither secret opens it | fails, and says why |
+| `off` | A copy is stored, but `GW_KEY_REVEAL_SECRET` is unset | fails; set the secret back |
+| `none` | No copy was kept | fails; issue a replacement |
+
+A key whose copy is `lost` or `off` **still authenticates**. Only showing it
+again is affected.
+
+**Finding the secret a lost copy needs.** Copies sealed by this version record a
+*key id* — eight hex characters derived from the secret, safe to display, of no
+use for guessing it. The console and `keyvault status` show the key id each lost
+copy was sealed under. To check a secret you still hold against it without
+typing the secret on a command line:
+
+```bash
+cd /opt/litegate && sudo -u litegate .venv/bin/python -m app.tools keyvault key-id
+```
+
+It reads the secret from the terminal without echoing it (or from stdin) and
+prints its key id. Copies written by 1.12.1 or earlier carry no key id: for
+those the gateway can only say that the configured secrets do not open them, not
+whether the secret is wrong or the copy is damaged.
+
+**Limits.** One previous secret is supported, not a chain: change the secret
+twice without re-sealing in between and the oldest copies are `lost` until that
+oldest secret is put back as the previous one. The gateway cannot tell you that
+a secret is *wrong* — only which copies the configured ones open. And the
+command-line `reseal` uses the secrets of the shell it runs in, which are not
+necessarily the gateway's; it prints both key ids and asks before it writes, so
+compare them with the console first.
 
 
 ## Certificates for clients on other machines
