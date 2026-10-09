@@ -22,3 +22,42 @@ Third-party material
   (https://github.com/openai/codex, tag rust-v0.149.1). Copyright 2025 OpenAI.
   Licensed under the Apache License 2.0, NOT under LiteGate's MIT license; the
   license text and OpenAI's NOTICE are in app/vendor/codex/. Unmodified.
+
+  app/core/responseformat.py — adapted from OrcaRouter-Lite, app/response_format.py
+  (https://github.com/Continuum-AI-Corp/OrcaRouter-Lite, commit 4cacea8).
+  Copyright (c) 2026 OrcaRouter contributors. MIT License; the notice it
+  requires is reproduced below. Modified: the structure that moves misplaced
+  `response_format` keys into `json_schema` comes from that file; the part that
+  rewrote the caller's JSON Schema was removed, and the refusals and the report
+  of what was changed were written here.
+
+  tests/test_response_format_arrives_valid.py — one request payload
+  (LANGCHAIN_MOVIE_REVIEW) is taken from OrcaRouter-Lite,
+  tests/unit/test_json_schema_response_format.py, same commit and license.
+
+  Nothing else in LiteGate is copied from OrcaRouter-Lite. Four features took
+  ideas from it and no code: an administrator-set quality score in model
+  ranking, latency percentiles, a *_PREVIOUS secret with a compare-and-swap
+  re-seal, and a restricted key not carrying its owner's privileges.
+
+  ---- OrcaRouter-Lite — MIT License ----
+
+  Copyright (c) 2026 OrcaRouter contributors
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
