@@ -3878,6 +3878,59 @@ async def usage_summary(
     }
 
 
+@router.get("/usage/latency")
+async def usage_latency(
+    days: int = Query(7, ge=1, le=365),
+    workspace_id: str | None = None,
+    actor: Principal = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+    state: AppState = Depends(get_state),
+) -> dict[str, Any]:
+    """คำขอที่ช้า ช้าแค่ไหน — p50 / p95 / p99 ของ latency และ TTFT ต่อโมเดลและต่อเครื่อง
+
+    `avg_latency_ms` ของ /usage/summary ตอบคำถามนี้ไม่ได้: ค่าเฉลี่ยซ่อนคำขอที่คนมาบ่นพอดี
+    และยังนับ error กับคำตอบจากแคชรวมเข้าไปด้วย · แถวไหนถูกนับ วิธีคิด ขั้นต่ำของตัวอย่าง
+    และเพดานของงาน อยู่ใน `core/latency.py` ที่เดียว — คำตอบพาค่าพวกนั้นไปด้วยให้หน้าเว็บ
+    แสดงตามจริง ไม่ต้องพิมพ์ซ้ำ
+
+    ขอบเขตการมองเห็นเท่ากับ /usage/summary ทุกอย่าง (manager เห็นเฉพาะคนในกลุ่มที่ดูแล) ·
+    ต่างกันข้อเดียวคือ `by_endpoint` เป็นของ admin เท่านั้น: ชื่อเครื่องและสุขภาพของเครื่องอยู่
+    หลัง `require_admin` มาตลอด (/admin/models · /v1/health/endpoints) รายงานนี้ต้องไม่เป็น
+    ทางอ้อม · manager ได้ `null` — ลิสต์ว่างจะอ่านว่า "ไม่มีทราฟฟิก" ซึ่งไม่จริง
+    """
+    from app.core import latency
+
+    await state.usage.flush()
+    scope = [UsageLog.ts >= datetime.now(timezone.utc) - timedelta(days=days)]
+    if workspace_id:
+        await _assert_owns(session, actor, workspace_id)
+        scope.append(UsageLog.workspace_id == workspace_id)
+    visible = await _visible_users(session, actor)
+    if visible is not None:
+        scope.append(UsageLog.user_id.in_(visible))
+
+    by_model, models_cut = await latency.report(session, scope, {"model": UsageLog.model_alias})
+    by_endpoint, endpoints_cut = None, False
+    if actor.is_admin:
+        # คู่ (เครื่อง, โมเดล) ไม่ใช่เครื่องอย่างเดียว: เครื่องที่เสิร์ฟสองโมเดลปนกันแล้วได้
+        # เลขที่ไม่มีคำขอไหนเป็นแบบนั้น และโมเดลที่ช้าจะถูกบังด้วยโมเดลที่เร็ว
+        by_endpoint, endpoints_cut = await latency.report(
+            session, scope,
+            {"endpoint": UsageLog.endpoint_name, "model": UsageLog.model_alias},
+        )
+    return {
+        "window_days": days,
+        "method": latency.METHOD,
+        "min_samples": {f"p{p}": latency.MIN_SAMPLES[p] for p in latency.PERCENTILES},
+        "sample_cap": latency.SAMPLE_CAP,
+        "group_cap": latency.GROUP_CAP,
+        "by_model": by_model,
+        "by_model_truncated": models_cut,
+        "by_endpoint": by_endpoint,
+        "by_endpoint_truncated": endpoints_cut,
+    }
+
+
 @router.get("/providers")
 async def cloud_providers(
     actor: Principal = Depends(require_admin),
