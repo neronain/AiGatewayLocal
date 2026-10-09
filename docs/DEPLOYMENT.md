@@ -748,8 +748,13 @@ back on or the key is given a model list. Until 2026-10 such a key fell through
 to "no limit was written" and could call everything its owner could — switching
 a bundle off widened the keys that named it. A key that has a model list as well
 keeps the list. And a bundle cannot be deleted while a key that is not revoked
-still names it: `DELETE /admin/access-groups/{id}` answers `400` with the count
-in `details.api_keys`.
+still names it: `DELETE /admin/access-groups/{id}` answers `400`, names the keys
+(up to five in the message, up to fifty in `details.keys`) and says how many of
+them have expired. An expired key still blocks the delete on purpose — it can be
+extended, and would come back pointing at a bundle that is gone — while a
+revoked one does not. A bundle cannot be taken off a key once it is issued, so
+the way to free a bundle for deletion is to revoke those keys and issue
+replacements; disabling the bundle instead is usually what was wanted.
 
 A bundle is a shorter way of *writing* a rule, never a new one: what it expands
 to is added to the models ticked on the workspace, and then narrowed by everything
@@ -785,7 +790,7 @@ it:
 
 | Written on the key | Counts as a limit | Can be taken off the same key |
 |---|---|---|
-| a model list (`models`) | yes | yes — `PATCH /admin/api-keys/{id}` with `"models": []`, or **Access & Keys → the key's `model` button** |
+| a model list (`models`) | yes | yes — `PATCH /admin/api-keys/{id}` with `"models": []`, or **Access & Keys → the key's `model` button** — by an administrator, or by the key's owner if the owner is a manager (see below) |
 | access groups (`access_groups`) | yes | no — issue a new key |
 | a workspace (`workspace_id`, a key issued *for* a workspace) | yes | no — issue a new key |
 | a quota of its own (a quota policy aimed at the key, enabled and not expired) | yes | yes — remove the policy in the **Quota** tab, or `DELETE /admin/quota-policies/{id}` |
@@ -798,7 +803,32 @@ the limits) on `/admin/*`, `/admin/tools/*`, `/v1/health/endpoints` and
 `/v1/health/probe`; `GET /v1/models` shows it the member view, without
 `upstream_model` and `endpoints`. Limits can only be taken off from a console
 session or with a key that has none — not with the limited key itself, which is
-the point.
+the point. The error and `GET /v1/me/key` list every limit on the key, the same
+list the admin key list shows.
+
+**Who may decide a key that carries rights.** Once "no limit" means "carries its
+owner's rights", lifting a limit is handing those rights out, and limiting or
+revoking is taking them away. So the three things a manager can do to keys —
+issue, change (the model list *and* the expiry), revoke — are narrower than
+"anyone in my workspaces" in two cases:
+
+| The key belongs to | Decided by |
+|---|---|
+| an administrator | an administrator, only. A manager who has that administrator in one of their workspaces can see the key in the list and cannot amend, extend or revoke it |
+| a manager, with no limit on the key — before the change or after it | an administrator, or that manager themselves. Another manager may sit in the same workspace and still manage different ones; that difference is what such a key would carry across |
+| a manager, limited and staying limited; or a member | as the rest of this section describes |
+
+In practice a manager who is not the owner can no longer issue another manager
+an unlimited key (a limited one is fine), lift the last limit from another
+manager's key, or limit, extend or revoke another manager's unlimited key. The
+refusal is `403 INSUFFICIENT_SCOPE` and says who can do it instead
+([API.md](API.md#who-may-decide-a-key)). Without this, a manager could add an
+administrator to their own workspace and send `{"models": []}` to that
+administrator's model-limited key, turning it back into a full admin key.
+
+One thing is unchanged and worth knowing: a manager can still add an
+administrator to a workspace they manage, and then sees that administrator among
+the users, the names, prefixes and limits of their keys, and their usage.
 
 Why: a key is issued for a job, and "this key may only call `coding`" is a
 statement about that job. While the key still carried its owner's role it could
@@ -1935,6 +1965,11 @@ same protection as the live `.env`.
 SQLite is copied with `.backup`, not `cp`, so a gateway that is serving traffic
 cannot produce a torn snapshot. PostgreSQL uses `pg_dump --format=custom`.
 
+The `MANIFEST` inside the archive carries the rehearsal command for that very
+archive — `scripts/restore.sh <where it was written> --into ./restored` — so the
+line somebody copies while something is broken runs as written. If the archive
+has been moved since, give its new path.
+
 **Two things the script deliberately does not do:** copy the archive off the
 machine, and prove it restores. Both are yours.
 
@@ -1952,6 +1987,16 @@ Before writing anything, `--in-place` compares the pepper in the archive with
 the one this deployment uses and **refuses** if they differ. Discovering that
 mismatch after the data is restored is exactly the failure the script exists to
 prevent.
+
+The two are compared the way the gateway would read them, not as raw text:
+surrounding quotes, trailing whitespace, a carriage return at the end of the
+line and a leading `export ` make no difference. (They used to — the same pepper
+written `X="abc"` in one file and `X=abc` in the other was refused, which is the
+wrong moment to be blocked over a pair of quotes.) A pepper that really differs
+is still refused, and nothing is touched. When it refuses, the script prints the
+command that reads the backup's value out of the archive, with the archive's own
+path and member name filled in. `--into` makes neither comparison: it restores
+the archive's `.env` alongside the data.
 
 Then prove it, rather than trusting a file of the right size:
 
@@ -1980,8 +2025,9 @@ in `GW_KEY_REVEAL_SECRET_PREVIOUS`, start, re-seal, remove it again
 ([RUNBOOK.md](RUNBOOK.md#restoring-a-backup-made-before-the-secret-was-changed)).
 When the archive's secret is already this deployment's
 `GW_KEY_REVEAL_SECRET_PREVIOUS` it prints a note instead: the copies will open,
-and need a re-seal before that variable is removed. The values are compared,
-never printed.
+and need a re-seal before that variable is removed. The values are compared —
+as the gateway reads them, like the pepper — and never printed; what is printed
+is the command that would show the backup's value, ready to run.
 
 **Ownership.** A restore run under `sudo` leaves everything owned by root. The
 gateway then reads the database fine and fails on the first write with an error
@@ -2186,9 +2232,11 @@ were missing.
 
 | Exit status | Meaning |
 |---|---|
-| `0` | No key changes |
-| `1` | At least one key changes — read the report. **Also** what you get when the database file is not found or no synchronous PostgreSQL driver is installed; the reason is on stderr, so do not act on the status alone |
-| `2` | No database was given (`--db` or `GW_DATABASE_URL`) |
+| `0` | The database was read and no key changes |
+| `1` | The database was read and at least one key changes — read the report |
+| `2` | The report could not be produced: no database given, no such file, a file that is not a database or has no `api_keys` table, no permission to read it, no synchronous PostgreSQL driver, or a server that cannot be reached. The reason is on stderr and stdout is empty |
+
+A deploy script can branch on the status: `1` only ever means "keys change".
 
 The report has three sections:
 
@@ -2233,9 +2281,14 @@ refuse a structured-output format the translator cannot carry.
 * **Remove `quality_score` from every model file first.** The older registry
   schema rejects unknown keys, so a file that has the line fails to load.
 * **Keys issued or re-sealed after the upgrade cannot be revealed by 1.12.1 or
-  earlier.** Their copies are `v2`, which those versions do not read; Reveal
-  answers that only a hash was stored. The keys authenticate as normal, and the
-  copies open again once you are back on a version that reads them.
+  earlier.** Their copies are `v2`, which those versions do not read. The older
+  console still draws the Reveal button on such a key, and pressing it answers
+  *"Only this key's hash was stored … Issue a replacement instead."* — which is
+  wrong: the copy is intact. **Do not issue replacements on the strength of that
+  message.** The keys authenticate as normal, and the copies open again once you
+  are back on a version that reads them. So until you are sure you will not go
+  back to 1.12.1 or earlier, do not re-seal (every copy a re-seal moves is
+  written as `v2`), and keep a note of which keys were issued after the upgrade.
 * The `auto_strategy` row and the `cache_hit` column need nothing: older code
   does not read the first and can still write usage rows with the second
   present.
@@ -2613,12 +2666,31 @@ re-seal of the key copies (`keyvault.reseal`), each key reveal
 key (`GET /admin/api-keys/{id}/reveals`) and the last re-seal (in
 `GET /admin/key-vault`). Anything else is read from the table.
 
-**A sealed key copy is not bound to the row it sits in.** The seal authenticates
-the copy against the secret that sealed it, not against the key's id. Someone
-who can already write to the database could move a sealed copy from one row to
-another, and Reveal on the second row would show the first key. That needs
-write access to the database, which is already beyond what the seal defends
-against.
+**Database errors in the log carry no bound values — with one untested gap on
+PostgreSQL.** Nearly every statement this application runs binds a key hash, a
+password hash or a sealed key copy, and logs outlive databases. Two things keep
+those values out of them: the `aiosqlite` logger is held at `INFO`, because at
+`DEBUG` it wrote every statement with its values (so `GW_LOG_LEVEL=DEBUG` copied
+the database into the journal row by row — treat logs kept from such a period as
+sensitive); and the engine is created with `hide_parameters`, so an error from a
+failed write reads `[SQL parameters hidden due to hide_parameters=True]` where
+the values used to be. You still get the error type, the driver's message, the
+SQL statement and the traceback; to see the values, reproduce against a copy
+with SQL echo switched on deliberately. The gap: on PostgreSQL the driver's own
+message for a unique violation includes `DETAIL: Key (column)=(value)`, which
+this setting does not touch. The unique columns are `api_keys.key_hash` and
+`users.external_id`, not the sealed copy. This has not been tested against a
+PostgreSQL server.
+
+**A copy that opens is shown only if it is a copy of that key.** Sealing
+authenticates a copy against the secret, not against the row it is stored in, so
+whatever opens is hashed and compared with the key's own stored hash before it
+is shown, counted as revealable, or re-sealed. A copy that fails the comparison
+is reported as `lost` with reason `not_this_key` and left exactly as it is.
+Seeing one means a row of `api_keys` was changed outside the gateway — a restore
+or merge that mixed rows, or tampering — or that `GW_API_KEY_PEPPER` changed
+after those keys were issued. In the second case every copy is `not_this_key`
+(and every key has stopped authenticating, which you will have noticed first).
 
 ---
 
@@ -2697,7 +2769,7 @@ nothing to warn about.
 |---|---|---|
 | `current` | Opens under `GW_KEY_REVEAL_SECRET` | works |
 | `previous` | Opens only under `GW_KEY_REVEAL_SECRET_PREVIOUS` — waiting for a re-seal | works |
-| `lost` | A copy is stored and neither secret opens it | fails, and says why |
+| `lost` | A copy is stored and cannot be shown — no configured secret opens it, or it opens and is not a copy of this key | fails, and says why |
 | `off` | A copy is stored, but `GW_KEY_REVEAL_SECRET` is unset | fails; set the secret back |
 | `none` | No copy was kept | fails; issue a replacement |
 
@@ -2718,6 +2790,14 @@ It reads the secret from the terminal without echoing it (or from stdin) and
 prints its key id. Copies written by 1.12.1 or earlier carry no key id: for
 those the gateway can only say that the configured secrets do not open them, not
 whether the secret is wrong or the copy is damaged.
+
+Not every `lost` copy is waiting for a secret. The reason is shown with each
+one — in the console, in `seal_reason` of the key list, and by
+`keyvault status` — and three of the five have nothing to do with which secret
+you hold: `damaged` (no secret opens it), `unknown_format` (written by a newer
+version; upgrade), and `not_this_key` (it opens, but is a copy of a different
+key — see §10). Only `unknown_secret` and `unreadable` are helped by finding an
+old secret.
 
 **Limits.** One previous secret is supported, not a chain: change the secret
 twice without re-sealing in between and the oldest copies are `lost` until that

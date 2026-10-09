@@ -288,7 +288,7 @@ identical to the user and are not fixed on the key's model list:
 |---|---|
 | `not available to you. Allowed by the model list on this key` | The key's own scope |
 | the workspace's models | The workspace, or it is suspended |
-| `this key is limited to an access group that is switched off or no longer exists` | Every access group the key names is off, deleted or empty, and the key has no model list. It calls nothing until a group is switched back on (**Access & Keys → Access groups**) or the key is given a model list. Before 2026-10 such a key called everything instead, so this can appear right after an upgrade |
+| `this key is limited to an access group that is switched off or no longer exists` | Every access group the key names is off, deleted or empty, and the key has no model list. It calls nothing until a group is switched back on (**Access & Keys → Access groups**) or the key is given a model list. A caller that sends `model: "auto"` gets the same answer. Before 2026-10 such a key called everything instead, so this can appear right after an upgrade |
 | unknown model | The alias is not in the registry — a typo, or the file failed validation (`/readyz`) |
 
 One more case looks the same to the caller and is not about permission at all:
@@ -335,8 +335,11 @@ Pick by what the key is for:
 |---|---|
 | calling models only | Nothing. It still calls them |
 | admin calls from a script | Issue that script a key with **no** model list, access group, workspace or quota, from the console, and replace it in the script |
-| both, and the limit is `models` or `cap` | Take the limit off from the console — the key's `model` button under **Access & Keys**, or the policy in the **Quota** tab. It cannot be done with the limited key itself |
+| both, and the limit is `models` or `cap` | Take the limit off from the console — the key's `model` button under **Access & Keys**, or the policy in the **Quota** tab. It cannot be done with the limited key itself, and for an administrator's key only an administrator can do it |
 | both, and the limit is `access_groups` or `workspace` | Those cannot be removed from an issued key. Issue a new one |
+
+`limited_by` lists every limit on the key, so one look says whether taking a
+single limit off would be enough.
 
 Do not "fix" it by widening a key that a job only uses to call one model. A
 people-shaped task — adding a member, changing a quota — belongs in the console,
@@ -346,6 +349,27 @@ To find every such key at once rather than one `403` at a time: the key list
 under **Access & Keys → API keys** marks them `no admin access`, and
 `scripts/restricted_key_report.py` prints them from the database
 ([DEPLOYMENT.md](DEPLOYMENT.md#before-upgrading-keys-that-lose-admin-rights)).
+
+## A manager cannot change, extend or revoke a key
+
+*No alert. A manager gets `403 INSUFFICIENT_SCOPE` on a key that is in their own
+key list.*
+
+Seeing a key and deciding it are different things. Two kinds of key are not a
+manager's to issue, amend, extend or revoke, even for people in their own
+workspaces:
+
+| The message says | The key is | Who can |
+|---|---|---|
+| `Only an admin can change an admin key.` (or `issue`, `revoke`) | an administrator's | an administrator |
+| `A key of <owner>'s with no limit on it carries their manager rights …` (`reason_code: key_carries_rights`) | another manager's, with no limit on it — or it would have none after the change | an administrator, or that manager from their own console |
+
+Nothing is broken. A key with no limit carries its owner's rights, so letting
+the manager next door lift a limit, or issue one without, would hand them
+rights over workspaces they do not manage. The fix is the one the message
+names: ask the owner or an administrator. A manager can still issue another
+manager a key *with* a model list or a workspace, and everything about members'
+keys is as it was.
 
 ## Reveal fails for a key
 
@@ -362,6 +386,7 @@ it in `details.seal_state`:
 | `lost`, reason `unknown_secret` or `unreadable` | The copy was sealed under a secret that is not configured — the secret was changed without the old one being kept as `GW_KEY_REVEAL_SECRET_PREVIOUS`, or an older backup was restored | [Restoring a backup made before the secret was changed](#restoring-a-backup-made-before-the-secret-was-changed) — the same steps apply |
 | `lost`, reason `damaged` | Sealed under a configured secret and the contents no longer open | No secret helps. Issue a replacement |
 | `lost`, reason `unknown_format` | Written by a newer version than the one running | Upgrade |
+| `lost`, reason `not_this_key` | The copy opens, but it is a copy of a **different** key, so it is not shown. A row of `api_keys` was changed outside the gateway — a restore or merge that mixed rows, or tampering — or `GW_API_KEY_PEPPER` changed after the key was issued | No secret helps and a re-seal leaves it alone. Issue a replacement, and find out how the row changed before trusting that database. If *every* copy says this, look at the pepper first |
 
 The whole picture at once — how many copies are in each state, which keys are
 lost, and what in the configuration is wrong:
@@ -371,7 +396,14 @@ cd /opt/litegate && sudo -u litegate .venv/bin/python -m app.tools keyvault stat
 ```
 
 or the **Sealed key copies** panel under **Access & Keys → API keys**, which
-appears when something needs attention, or `GET /admin/key-vault`.
+appears when something needs attention, or `GET /admin/key-vault`. The reason is
+also on each row of the key list (`seal_reason`).
+
+If the gateway is running a version **older** than the one that issued the key —
+after a rollback to 1.12.1 or earlier — Reveal answers *"Only this key's hash
+was stored … Issue a replacement instead."* for keys whose copies are perfectly
+good. Do not issue replacements on that message; the copies open again after
+upgrading back.
 
 ---
 
@@ -406,6 +438,10 @@ from.
 model list, access group, workspace or quota of its own, and check
 `GET /v1/me/key` answers `"admin_access": true`. A key that carries any of those
 calls its models and is refused on `/admin`.
+
+Both halves need an administrator: an administrator's key can be issued,
+amended and revoked only by an administrator, from the console or with an
+unlimited admin key.
 
 ### Change `GW_KEY_REVEAL_SECRET`
 
@@ -466,6 +502,16 @@ see [DEPLOYMENT.md §10](DEPLOYMENT.md#configuration-and-deployment).
    gateway's (`--yes` skips the question, for scripts). Either way it is safe to
    run twice, to interrupt, and to run while the gateway serves traffic.
 
+   If it stops on an error part-way — a locked database, a dropped connection —
+   it says how many copies it had moved, records that in the audit log, and
+   exits with status `3`. What was moved stays moved and every copy still opens
+   while both secrets are set; run it again to finish.
+
+   **Not if you might still roll back.** Every copy a re-seal moves is written
+   in the new format, which 1.12.1 and earlier cannot read. If this is the first
+   rotation after upgrading and going back is still on the table, stop after
+   step 3 — everything is revealable there — and come back to this step later.
+
 5. **Check.**
 
    ```bash
@@ -474,7 +520,8 @@ see [DEPLOYMENT.md §10](DEPLOYMENT.md#configuration-and-deployment).
 
    `previous=0 lost=0`, a note that the previous secret is no longer needed, and
    exit status `0`. Status `1` means copies are still waiting or cannot be
-   opened; `2` means the command was refused.
+   opened; `2` means the command was refused; `3` (from `reseal` only) means a
+   re-seal was stopped by an error part-way.
 
 6. **Remove `GW_KEY_REVEAL_SECRET_PREVIOUS` from `.env` and restart.** The log
    line now reads `current=N previous=0 lost=0` with no warning. Do not skip
@@ -498,14 +545,18 @@ After a restore of an older backup, every key works and every sealed copy is
 the backup was made, and an in-place restore leaves the live `.env` alone.
 `scripts/restore.sh --in-place` warns about exactly this before it writes.
 
-1. Get the backup's secret. It is in the archive's copy of `.env`:
+1. Get the backup's secret. It is in the archive's copy of `.env`.
+   `restore.sh --in-place` prints the command for the archive it was given, with
+   the real path and member name filled in; by hand it is:
 
    ```bash
    ARCHIVE=/srv/backups/litegate-20260813-020000.tar.gz
    tar -xzOf "$ARCHIVE" "$(basename "$ARCHIVE" .tar.gz)/env" | grep '^GW_KEY_REVEAL_SECRET='
    ```
 
-   That prints a secret on your terminal. If the archive was renamed, list it
+   That prints a secret on your terminal. The member is named exactly, not with
+   a `*/env` pattern: GNU tar, which is what the gateway's hosts have, does not
+   expand patterns when extracting. If the archive was renamed, list it
    (`tar -tzf "$ARCHIVE"`) and use the path of its `env` entry instead.
 2. Put that value in the live `.env` as `GW_KEY_REVEAL_SECRET_PREVIOUS`. Leave
    `GW_KEY_REVEAL_SECRET` as it is.
@@ -534,8 +585,9 @@ version, against the database of the one still running:
 python scripts/restricted_key_report.py --db /opt/litegate/data/gateway.db
 ```
 
-It writes nothing. Exit `0` means no key changes; `1` means read the list — or
-that the database could not be opened, which it says on stderr. What the two
-lists mean and what to do about each key is in
+It writes nothing. Exit `0` means no key changes; `1` means at least one does —
+read the list; `2` means the report could not be produced (no such file, not a
+gateway database, no driver, no permission), with the reason on stderr. What the
+two lists mean and what to do about each key is in
 [DEPLOYMENT.md §9](DEPLOYMENT.md#before-upgrading-keys-that-lose-admin-rights),
 with what the upgrade changes on disk and what to undo before rolling back.
