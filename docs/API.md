@@ -12,6 +12,7 @@ Interactive docs: `/docs` · OpenAPI: `/openapi.json`
 | GET | [`/v1/models`](#get-v1models) | OpenAI-shaped catalogue, filtered by the caller's role |
 | GET | [`/v1/catalog`](#get-v1catalog) | The same models grouped by purpose, for a member-facing UI |
 | GET | [`/v1/me`](#get-v1me) | Identity plus remaining quota |
+| GET | [`/v1/me/key`](#get-v1mekey) | What is written on the key making this call — its limits, its expiry, and whether it carries admin rights |
 | POST | [`/v1/chat/completions`](#post-v1chatcompletions) | OpenAI chat, unary or streaming, text and images |
 | POST | [`/v1/messages`](#post-v1messages) | Anthropic surface — what Claude Code talks to |
 | POST | [`/v1/responses`](#post-v1responses) | Responses API — what Codex talks to |
@@ -67,6 +68,19 @@ OpenAI routes:
 Branch on `error.code` — it is stable. See [PRD §13.1](PRD.md#131-error-taxonomy)
 for the full table.
 
+Two `403` codes carry a `details.reason_code` that says *which* rule refused,
+for a client or a console that wants to explain it rather than print the
+message:
+
+| `code` | `details.reason_code` | Meaning |
+|---|---|---|
+| `INSUFFICIENT_SCOPE` | `restricted_key` | The key's owner is a manager or an admin, but the key carries a limit of its own and so does not carry those rights. `details.limited_by` and `details.owner_role` say which — see [Keys that carry a limit](#keys-that-carry-a-limit) |
+| `MODEL_NOT_PERMITTED` | `key_bundle_off` | The key is limited to access groups and none of them grants anything now — switched off, deleted or empty. `details.allowed` is `[]`. The key calls nothing until a group is switched back on or the key is given a model list |
+| `MODEL_NOT_PERMITTED` | `workspace_left` | The key was issued for a workspace its owner is no longer a member of |
+
+`MODEL_NOT_PERMITTED` carries other `reason_code` values for the ordinary
+cases; the message names the models the key does allow.
+
 ### Request ids
 
 Every response carries two id headers:
@@ -110,7 +124,11 @@ OpenAI-shaped catalogue, filtered by the caller's role.
 }
 ```
 
-`upstream_model` and `endpoints` appear **only** for `role=admin`.
+`upstream_model` and `endpoints` appear **only** for an administrator — a
+console session, or an administrator's key that carries no limit of its own. An
+administrator's key that was limited to a model list, an access group, a
+workspace or a quota of its own gets the member view; see
+[Keys that carry a limit](#keys-that-carry-a-limit).
 
 `protocols` also carries `embeddings` and `rerank` for retrieval models — those
 aliases answer on `/v1/embeddings` or `/v1/rerank` and nowhere else, so the list
@@ -260,6 +278,38 @@ that one, any policy aimed at a specific model or bundle, and this key's own
 ceilings — each with the usage of its own counter. Same shape as `policies`
 under [`GET /admin/users/{id}/quota`](#get-adminusersidquota).
 
+### `GET /v1/me/key`
+
+The facts about the key making this call. Nothing the holder does not already
+have: the key itself is theirs, and its limits are what they run into when a
+request is refused.
+
+```json
+{
+  "via": "key",
+  "key": {
+    "prefix": "lg_sk_jYPu", "label": "nightly report",
+    "issued_at": "2026-10-01T02:11:09+00:00",
+    "expires_at": "2027-03-30T02:11:09+00:00",
+    "last_used_at": "2026-10-09T07:40:00+00:00",
+    "limited_to_models": ["coding"],
+    "limited_to_groups": [],
+    "limited_by": ["models"],
+    "admin_access": false
+  }
+}
+```
+
+Never the key and never its hash — only the prefix, to tell which key this is.
+Called with a console session instead of a key, the answer is
+`{"via": "session", "key": null}`.
+
+| Field | Meaning |
+|---|---|
+| `limited_to_models`, `limited_to_groups` | The model list and the access groups written on this key. Empty = the key adds no narrowing of its own |
+| `limited_by` | Every kind of limit written on this key, in a fixed order: `models`, `access_groups`, `workspace` (the key was issued for one workspace), `cap` (a quota policy of its own that is enabled and not expired). `cap` is looked up only where it can change the answer — for an admin's or manager's key that has none of the other three — so a key that already lists `models` does not also list `cap` here; [`GET /admin/api-keys`](#get-adminapi-keys) lists it for every key |
+| `admin_access` | `true` when this key may call the routes its owner's role allows — the owner is a manager or an admin **and** `limited_by` is empty. A script that got `403` from `/admin` asks here and gets the reason |
+
 ---
 
 ### `POST /v1/chat/completions`
@@ -322,27 +372,110 @@ asks the backend for a final usage chunk so accounting stays accurate; if you di
 not set `stream_options.include_usage`, that chunk is stripped before it reaches
 you, so the stream matches exactly what you asked for.
 
+**`response_format`** — structured output
+
+The standard shape is forwarded untouched:
+
+```json
+{ "type": "json_schema",
+  "json_schema": { "name": "movie_review", "strict": true, "schema": { "type": "object", "...": "..." } } }
+```
+
+Anything else is either repaired before it is sent, or refused. It is not passed
+on as it came, because the backends here do not refuse a malformed
+`response_format` — measured against llama.cpp (build b11046, 2026-10-09), every
+shape below except an unknown `type` came back `200` with an answer that
+ignored the schema. The caller then fails while parsing a reply against a schema
+the model never saw.
+
+*Repaired, and announced in the `x-litegate-adjusted` response header:*
+
+| You sent | The backend receives | Header entry |
+|---|---|---|
+| `strict`, `name`, `description`, `schema` or `parameters` beside `type` instead of inside `json_schema` | the key moved inside `json_schema` | `response_format.strict->response_format.json_schema.strict` |
+| the same key in both places | the one inside `json_schema`; the outer one is dropped | `response_format.strict->(dropped)` |
+| `json_schema.parameters` (the function-calling name) | `json_schema.schema` | `response_format.json_schema.parameters->response_format.json_schema.schema` |
+| `json_schema` (or `schema` / `parameters`) with no `type` | `"type": "json_schema"` added | `response_format.type="json_schema"` |
+| no `json_schema.name`, or an empty one | `"name": "response"` | `response_format.json_schema.name="response"` |
+
+Entries are separated by `, ` in the order they were applied. The header is
+sent on streams and on answers served from the response cache, and is absent
+when nothing was changed.
+
+*Refused* — `400 INVALID_REQUEST` with `param` naming the field, before any
+backend is contacted, before a stream opens, and with no usage row:
+
+| `param` | When |
+|---|---|
+| `response_format` | not an object (a bare string such as `"json_object"`, an array) |
+| `response_format.type` | missing with nothing to infer it from, or not a string |
+| `response_format.json_schema` | present and not an object |
+| `response_format.json_schema.schema` | missing, `null`, or not an object, when the type is `json_schema` |
+| `response_format.json_schema.name` | present and not a string |
+
+*Left alone:* a correct `json_schema`, `{"type": "text"}`, `{"type": "json_object"}`
+(including llama.cpp's `json_object` + `schema` extension), `{}`, `null`, and a
+`type` the gateway does not know — the backend judges that one itself.
+
+**The schema itself is never rewritten.** The gateway does not add
+`additionalProperties: false` and does not rewrite `required`. Measured on the
+same llama.cpp build, an object that does not say is already closed, `strict`
+changes nothing, and rewriting `required` changes the answer.
+
+The response cache key is built after the repair, so two spellings that reach the
+backend as the same bytes share one cached answer.
+
+> **Not verified on vLLM.** The repairs and refusals above were measured against
+> llama.cpp only; vLLM's behaviour was read from its source (v0.19.1), not run.
+
+The prompt-size estimate does not count `response_format` on this route: the
+llama.cpp build measured reports the same `prompt_tokens` with and without a
+schema. The translated `/v1/responses` and `/v1/messages` paths do count the
+schema, so the two estimates differ by the size of the schema.
+
 **`model: "auto"`** — let the gateway choose
 
-Send `"model": "auto"` and LiteGate picks the fastest model that can serve the
-request, **from the models that key may already use**. It is not a way around
+Send `"model": "auto"` and LiteGate picks a model that can serve the request,
+**from the models that key may already use**. It is not a way around
 permissions: the gateway does the choosing, but the shortlist is exactly what the
-member could have named themselves.
+member could have named themselves. `auto` is accepted on this route only.
 
-The choice is made from the shape of the request — does it carry images, does it
-ask for tools, how long is the prompt — never from guessing intent, the same rule
-[`app/core/rules.py`](../app/core/rules.py) follows.
+The shortlist is made from the shape of the request — does it carry images, does
+it ask for tools, how long is the prompt — never from guessing intent, the same
+rule [`app/core/rules.py`](../app/core/rules.py) follows. Only then is it ranked,
+by the strategy an administrator chose:
 
-Ranking is by **speed measured from real traffic** through this gateway (output
-tok/s and TTFT, exponentially weighted). Models with too few samples sort last but
-stay eligible — a gateway that was installed this morning has no statistics at all
-and must still answer.
+| Strategy | Ranks by |
+|---|---|
+| `fastest` (default) | **Speed measured from real traffic** through this gateway (output tok/s, then TTFT, exponentially weighted). Never reads the quality score |
+| `roomiest` | Largest context window first |
+| `quality` | The administrator's `spec.quality_score` (0–100), highest first; equal scores are settled by speed |
+| `balanced` | `(2 × quality_score + 100 × speed) ÷ 3`, where `speed` is the model's output tok/s as a fraction of the fastest candidate's. One point of quality is worth 2% of the fastest model's speed: 90 at 40 tok/s beats 40 at 200 tok/s (66.7 to 60.0); 70 at 40 tok/s loses to it (53.3 to 60.0) |
+
+Nothing is ever dropped for missing data — it sorts last and stays eligible. A
+model with too few speed samples sorts last under `fastest`; a model with no
+quality score sorts last under `quality` and `balanced`, and with no scores set
+anywhere those two rank exactly like `fastest`. Under `balanced` a model that has
+a score but no speed samples yet is weighed as if it were as fast as the fastest
+candidate, and the preview marks it (`speed_assumed`).
+
+A gateway where nobody has set a score or changed the strategy behaves as it did
+before these strategies existed. Answers served from the response cache are not
+fed into the speed statistics.
+
+> **More than one worker.** Speed statistics are kept in each worker's memory
+> and start empty on restart. `quality` does not depend on them unless scores
+> tie; `fastest` and `balanced` can pick differently on different workers while
+> their numbers are close. This follows from the code and has not been measured
+> on a multi-worker deployment.
 
 `x-litegate-served-by` names what actually ran, and the response `model` field is
 a real alias, never the word `auto`.
 
-Staff can see the current ranking and the reason behind it at
-`GET /admin/auto/preview`, or in the console above the model catalogue.
+Staff can see the current ranking and the numbers behind it at
+[`GET /admin/auto/preview`](#get-adminautopreview), or in the console under
+**Dashboard → Available models**; an administrator changes the strategy there or
+with [`PUT /admin/auto/strategy`](#put-adminautostrategy).
 
 ```bash
 curl -X POST $GW/v1/chat/completions \
@@ -361,6 +494,7 @@ curl -X POST $GW/v1/chat/completions \
 | `x-litegate-endpoint` | Which backend machine answered |
 | `x-litegate-failed-over` | Backends tried and skipped before this one |
 | `x-litegate-output-cap` | Present **only when the gateway sent the backend a lower output limit than you asked for** (or, if you named none, lower than the model's own limit): `granted=256; requested=4000; reason=context`. `reason` is `model-limit` (above the model's `max_output_tokens`), `n` (the limit is shared between `n` choices) or `context` (the estimated prompt leaves less room in the context window). `requested=default` means you sent no limit. Sent on `/v1/chat/completions`, `/v1/messages` and `/v1/responses`, streaming or not; on a stream it describes the model chosen before the first byte |
+| `x-litegate-adjusted` | Present **only when the gateway rewrote part of the request before forwarding it** — today, a `response_format` whose keys were in the wrong place (see [`response_format`](#post-v1chatcompletions) above): `response_format.strict->response_format.json_schema.strict, response_format.json_schema.parameters->response_format.json_schema.schema`. Entries read `from->to`, `from->(dropped)` or `path="value added"`. `/v1/chat/completions` only; sent on streams and on cached answers; exposed to browsers through CORS |
 | `x-litegate-ignored` | Present **only on `/v1/responses` served by translation, when the request declared tools the backend cannot run** (OpenAI-hosted tools such as `web_search`): `tools[1]:web_search, tools[2]:image_generation`. Those definitions were not offered to the model; everything else was. A request that *depends* on such a tool (`tool_choice` forcing it, or its calls in `input`) is refused with a 400 instead |
 | `x-litegate-by` | Author attribution (present on every response) |
 
@@ -414,6 +548,23 @@ This matters most when a reply runs out of `max_tokens` while still thinking:
 the answer is `stop_reason: "max_tokens"` with a thinking block and no text. A
 caller that did not ask for thinking sees an empty text block — raise
 `max_tokens` (and the model's `limits.max_output_tokens`).
+
+**Structured output.** `output_config.format` (or `output_format`, the beta
+name) of type `json_schema` with a `schema` object is translated to a
+chat-completions `response_format` — `name` defaults to `"response"`, `strict` is
+set. A format the translator cannot carry is refused with
+`400 INVALID_CONTENT_BLOCK` naming the place, instead of being dropped and
+answered with free text as it was before:
+
+| `param` | When |
+|---|---|
+| `output_config.format` / `output_format` | not an object |
+| `output_config.format.schema` / `output_format.schema` | type `json_schema` without a `schema` object — including the chat-shaped `{"type": "json_schema", "json_schema": {...}}` |
+| `output_config.format.type` / `output_format.type` | any other type, or none. This includes `{"type": "json_object"}`, which Anthropic's API does not have |
+
+This applies when the alias is served by translation. An alias with a backend
+that speaks the Anthropic protocol itself receives the request whole and judges
+the format itself.
 
 `x-litegate-protocol` tells you which path served the request:
 `anthropic-native` or `anthropic-via-openai`.
@@ -499,6 +650,22 @@ and **Codex treats `response.incomplete` as a dropped stream and retries it**
 (`stream_max_retries`, 5 by default), so one such turn is billed as six. Give
 reasoning models a `limits.max_output_tokens` that covers thinking *and* the
 answer.
+
+**Structured output.** `text.format` is translated to a chat-completions
+`response_format`: `{"type": "json_object"}` as it is, and
+`{"type": "json_schema", "name": …, "schema": {…}}` with `name` defaulting to
+`"response"` and `strict` / `description` carried over. `{"type": "text"}` and
+`{}` mean plain text. Anything else is refused with `400 INVALID_CONTENT_BLOCK`
+rather than dropped:
+
+| `param` | When |
+|---|---|
+| `text.format` | not an object |
+| `text.format.schema` | type `json_schema` without a `schema` object — a missing schema, `parameters` in its place, or the chat-shaped `json_schema: {...}` wrapper |
+| `text.format.type` | a type with no chat-completions equivalent, or no type at all |
+
+As on `/v1/messages`, an alias with a backend that speaks the Responses API
+itself receives the request whole.
 
 `previous_response_id` returns `400`. Codex uses it to have the server keep the
 conversation; this gateway stores no prompts and no responses (PRD §12), so there
@@ -645,6 +812,44 @@ Nothing is stored: history is the caller's to keep and the console keeps it in
 `manager` or `admin` required as noted. Restrict `/admin/*` to the management
 network at the proxy (SEC-5).
 
+### Keys that carry a limit
+
+The role in the table below is the role of the **person**. Whether a particular
+API key carries that role's rights is a second question, and the answer is no
+for any key that has a limit of its own written on it:
+
+| `limited_by` | The limit | Lifted by |
+|---|---|---|
+| `models` | a model list on the key | `PATCH /admin/api-keys/{id}` with `"models": []` |
+| `access_groups` | one or more access groups on the key | cannot be removed from an issued key — issue a new one |
+| `workspace` | the key was issued for one workspace | cannot be removed from an issued key — issue a new one |
+| `cap` | a quota policy aimed at this key that is enabled and has not expired | `DELETE /admin/quota-policies/{id}`, or let it expire |
+
+One of them is enough. Such a key calls its models exactly as before and is
+refused on every route that needs `manager` or `admin` — `/admin/*`,
+`/admin/tools/*`, `GET /v1/health/endpoints`, `POST /v1/health/probe` — and on
+`GET /v1/models` it gets the member view. A key issued for one job must not be
+able to lift its own limits or issue other keys.
+
+```json
+{ "error": {
+    "code": "INSUFFICIENT_SCOPE",
+    "message": "This API key is limited to a model list, so it does not carry its owner's administrator rights: a key issued for one job must not be able to lift its own limits or issue other keys. Sign in to the console to do this, or use a key issued without a model list, access group, workspace or quota of its own.",
+    "details": { "reason_code": "restricted_key", "limited_by": ["models"], "owner_role": "admin" } } }
+```
+
+`403`. A member's key gets the plain *"Administrator privileges are required."*
+/ *"Manager privileges are required."* it always got, without `details`.
+
+Not counted as a limit: `scopes` (stored, never enforced — and the bootstrap
+key of every install carries `["admin"]`), the expiry date, and `kind`. Console
+sessions are never limited. A key can read all of this about itself at
+[`GET /v1/me/key`](#get-v1mekey); the console marks such keys
+`no admin access` under **Access & Keys → API keys**.
+
+To do admin work from a script, use a key issued with no model list, no access
+group, no workspace and no quota of its own — and guard it accordingly.
+
 | Method | Path | Role | Purpose |
 |---|---|---|---|
 | POST | `/admin/users` | admin | Create a user |
@@ -660,9 +865,12 @@ network at the proxy (SEC-5).
 | POST | `/admin/access-groups` | admin | Name a bundle of aliases |
 | GET | `/admin/access-groups` | manager | List bundles and who holds them |
 | PATCH | `/admin/access-groups/{id}` | admin | Edit — reaches every workspace holding it |
-| DELETE | `/admin/access-groups/{id}` | admin | Refused while any workspace holds it |
+| DELETE | `/admin/access-groups/{id}` | admin | Refused (`400`) while a workspace holds it, a quota policy targets it, or an API key that is not revoked names it — `details` carries the three counts as `used_by`, `quota_policies`, `api_keys`. Disable it instead: that stops it granting anything and is reversible |
 | POST | `/admin/api-keys` | manager | Issue a key (**plaintext returned once**) — `models`, `access_groups`, `kind`; blanks filled from the workspace defaults |
-| GET | `/admin/api-keys?user_id=` | manager | List keys (prefix only) |
+| GET | [`/admin/api-keys?user_id=`](#get-adminapi-keys) | manager | List keys (prefix only), each with what limits it (`limited_by`), its owner's role, and the state of its sealed copy |
+| POST | `/admin/api-keys/{id}/reveal` | **admin** | Show an issued key again — only when a sealed copy exists and opens. See [`POST /admin/api-keys`](#post-adminapi-keys) |
+| GET | [`/admin/key-vault`](#get-adminkey-vault) | admin | Which secret the sealed key copies open under, which cannot be opened, and what in the configuration needs attention |
+| POST | [`/admin/key-vault/reseal`](#post-adminkey-vaultreseal) | admin | Move copies sealed under `GW_KEY_REVEAL_SECRET_PREVIOUS` to the current secret |
 | PATCH | `/admin/api-keys/{id}` | manager | Amend a live key — `{"days": n}` from today (`null` removes it) and/or `{"models": [...]}` replacing the scope. Either alone; neither disturbs the other |
 | DELETE | `/admin/api-keys/{id}` | manager | Revoke |
 | GET | `/admin/users/{id}/quota` | manager | Every limit that can bind this person's requests, each with its own usage |
@@ -681,11 +889,14 @@ network at the proxy (SEC-5).
 | POST | `/admin/version/check` | admin | Ask GitHub whether a newer release exists — the only outbound request the gateway ever makes on its own behalf, and only when this is called. Always `200`: an air-gapped host gets `{"ok": false, "reason": …}`, never an error. Falls back to the newest tag when no release is published |
 | POST | `/admin/models/{alias}/compatibility` | admin | Record a test result |
 | GET | `/admin/models/{alias}/compatibility` | manager | READY / DEGRADED roll-up |
-| GET | `/admin/usage/summary?days=` | manager | Per-model totals |
+| GET | [`/admin/usage/summary?days=`](#get-adminusagesummarydays7) | manager | Per-model totals and averages |
+| GET | [`/admin/usage/latency?days=&workspace_id=`](#get-adminusagelatency) | manager | p50 / p95 / p99 of latency and time to first token, per model and (admin only) per machine |
+| GET | [`/admin/auto/preview`](#get-adminautopreview) | manager | What `model: "auto"` would pick right now, and the numbers that decided it |
+| PUT | [`/admin/auto/strategy`](#put-adminautostrategy) | **admin** | Choose how `model: "auto"` ranks |
 | GET | `/admin/usage/top-users?days=` | manager | Heaviest users |
 | GET | `/admin/usage/quota` | manager | Allowance spent, per person, against the limit that resolves for them |
 | GET | `/admin/usage/by-key?days=` | manager | Requests and tokens per key — activity, not allowance |
-| GET | `/admin/usage/requests?id=&days=` | manager | The usage row(s) for one request. `id` is the gateway's id (`x-litegate-request-id`, or `request_id` from an error body) **or** the `x-request-id` the caller sent — the latter can match several rows, because callers may reuse it. Metadata only; newest first, at most 100; `days` defaults to 7. A request refused before it reached a model (bad key, quota) has no usage row |
+| GET | `/admin/usage/requests?id=&days=` | manager | The usage row(s) for one request. `id` is the gateway's id (`x-litegate-request-id`, or `request_id` from an error body) **or** the `x-request-id` the caller sent — the latter can match several rows, because callers may reuse it. Metadata only; newest first, at most 100; `days` defaults to 7. Each row carries `cache_hit` — `true` when the answer came from the response cache and no backend ran; rows written before that column existed read `false`. A request refused before it reached a model (bad key, quota) has no usage row |
 
 > **`POST /admin/registry/reload` reloads only the worker that handled the
 > request.** With multiple uvicorn workers, the file-watcher
@@ -738,22 +949,64 @@ test the suite could not pass. `404` for an unknown alias.
 Which model `model: "auto"` would pick right now, and why. Uses the same ranker as
 the request path — no second implementation to drift.
 
-Query: `prompt_tokens` (default 1000), `vision`, `tools`, `protocol`.
+Query: `prompt_tokens` (default 1000), `vision`, `tools`, `protocol`, and
+`strategy` — rank with another strategy **without saving it**, to see what it
+would choose before switching. An unknown `strategy` is `400 INVALID_REQUEST`
+with `param: "strategy"`.
 
 ```json
 {
-  "chosen": "coding",
-  "reason": "เร็วที่สุดที่วัดได้ (94 tok/s)",
+  "asked": {"prompt_tokens": 1000, "vision": false, "tools": false, "protocol": "openai"},
+  "strategy": "balanced",
+  "configured_strategy": "fastest",
+  "strategies": ["fastest", "roomiest", "quality", "balanced"],
+  "chosen": "coder-big",
+  "reason": "คะแนนรวมสูงสุด 66.7 (คุณภาพ 90/100 · ความเร็ว 20% ของตัวเร็วสุด)",
   "ranked": [
-    {"rank": 1, "alias": "coding", "output_tps": 94.2, "ttft_ms": 210,
-     "context_tokens": 131072, "samples": 41}
+    {"rank": 1, "alias": "coder-big", "context_tokens": 262144, "quality_score": 90,
+     "output_tps": 40.0, "ttft_ms": 800, "samples": 41,
+     "speed": 0.2, "speed_assumed": false, "combined": 66.7},
+    {"rank": 2, "alias": "coder-small", "context_tokens": 131072, "quality_score": 40,
+     "output_tps": 200.0, "ttft_ms": 210, "samples": 57,
+     "speed": 1.0, "speed_assumed": false, "combined": 60.0}
   ],
   "min_samples": 3
 }
 ```
 
-`output_tps` / `ttft_ms` are `null` until a model has been seen `min_samples`
-times. Those models sort last but remain eligible.
+| Field | Meaning |
+|---|---|
+| `strategy` | The strategy this answer was ranked with — the `strategy` query parameter if sent, otherwise the configured one |
+| `configured_strategy` | The one live requests use |
+| `strategies` | Every strategy this version knows |
+| `ranked[].quality_score` | `spec.quality_score` of the model; `null` = no score set |
+| `ranked[].output_tps`, `ttft_ms` | `null` until the model has been seen `min_samples` times on this worker |
+| `ranked[].speed`, `speed_assumed`, `combined` | Filled under `balanced` only. `speed` is 0–1 against the fastest candidate; `speed_assumed: true` means the model has a score but no speed samples yet and was weighed as if as fast as the fastest; `combined` is the 0–100 figure the ranking used, `null` when the model has no quality score |
+
+The numbers shown are the ones the ranking used: the candidates are ranked once
+and the table is read from that result. They are this worker's statistics —
+another worker may hold different ones.
+
+### `PUT /admin/auto/strategy`
+
+```json
+{ "strategy": "quality" }
+```
+
+```json
+{ "strategy": "quality", "previous": "fastest",
+  "strategies": ["fastest", "roomiest", "quality", "balanced"] }
+```
+
+Admin only — the preview is open to managers, the switch is not, because one
+call moves every `auto` request on the gateway to a different model. The choice
+is stored in the database (`gateway_settings`, key `auto_strategy`) and read on
+each `auto` request, so every worker follows it from its next request. Written
+to the audit log as `auto.strategy` with the previous value. `400
+INVALID_REQUEST` (`param: "strategy"`) for a name that is not in `strategies`.
+
+With no row stored the strategy is `fastest`. A stored value this version does
+not recognise is treated as `fastest` and logged.
 
 ---
 
@@ -970,6 +1223,15 @@ mentions it: nothing in the request path reads it, so an old console or a
 see it until the Apply-fix button was missing months later. An explicit
 `"managed_by": null` still removes it.
 
+`spec.quality_score` is carried across the same way, for the same reason — a
+console tab left open across an upgrade, or yesterday's document, does not know
+the field, and losing the score silently moves `model: "auto"` traffic to another
+model under the `quality` strategy. Leave the key out and the stored score is
+kept; send `"quality_score": null` to clear it. It is a whole number from 0 to
+100 (`true`/`false` are refused, not read as 1/0), `GET /admin/models` returns it
+for each model, and `POST /admin/models/preview` applies the same rule so the
+YAML it shows is the YAML a save would write.
+
 `propagation_seconds` is the honest part of the answer: the other workers pick
 the change up from the registry watcher within that many seconds, not at the
 moment this returns. `registry_errors` reports files that failed to parse after
@@ -1088,9 +1350,18 @@ request path reads it, and every model works without it.
 
 ```json
 { "id": "…", "api_key": "lg_sk_…", "key_prefix": "lg_sk_jYPu",
+  "owner_role": "member", "limited_by": ["workspace"],
   "expires_at": "2027-02-08T…", "revealable": false,
   "warning": "Store this key now. It cannot be retrieved again." }
 ```
+
+`limited_by` lists the limits this key was issued with — `models`,
+`access_groups`, `workspace` — **after** the workspace defaults were filled in,
+and `owner_role` is the role of the person it belongs to. Together they say at
+issue time, rather than at the first `403`, that a key issued to a manager or an
+admin will not carry admin rights ([Keys that carry a limit](#keys-that-carry-a-limit)).
+A quota of its own is added afterwards as a quota policy, so `cap` never appears
+in this response.
 
 By default the plaintext is stored nowhere and a lost key can only be replaced.
 Set `GW_KEY_REVEAL_SECRET` and a sealed copy is kept that an **administrator**
@@ -1101,6 +1372,122 @@ recorded and listed by `GET /admin/api-keys/{id}/reveals`.
 
 > The reveal response is **flat** — `{"id", "api_key", "key_prefix"}` — not
 > wrapped in `data` like the rest of the admin API.
+
+A reveal that cannot be served is `400 INVALID_REQUEST`. For a key that exists
+and is not revoked, `details.seal_state` says which of three situations it is —
+they have different remedies:
+
+| `seal_state` | What it means | `details` also carries |
+|---|---|---|
+| `none` | No copy was kept: the key was issued before reveal was switched on, or reveal is off | — |
+| `off` | A sealed copy is stored, but `GW_KEY_REVEAL_SECRET` is unset. Set it back to the secret that sealed the copy | — |
+| `lost` | A sealed copy is stored and neither configured secret opens it | `reason`, and `sealed_key_id` when the copy records one |
+
+`reason` for a `lost` copy:
+
+| `reason` | Meaning | What helps |
+|---|---|---|
+| `unknown_secret` | Sealed under a secret that is not configured. `sealed_key_id` is the key id of the secret it needs | Put that secret in `GW_KEY_REVEAL_SECRET_PREVIOUS`, restart, re-seal |
+| `damaged` | Sealed under a secret that *is* configured, and the contents no longer open | Nothing — issue a new key |
+| `unreadable` | A copy written by 1.12.1 or earlier, which did not record its secret: a wrong secret and a corrupt copy cannot be told apart | Try the old secret as `GW_KEY_REVEAL_SECRET_PREVIOUS` |
+| `unknown_format` | Written in a format this version does not read — most likely by a newer LiteGate | Upgrade |
+
+In every one of these the key itself still authenticates; only showing it again
+is affected. A refused reveal is not written to the reveal log. A revoked key is
+never revealed (`400`, no `seal_state`). The rotation procedure is in
+[RUNBOOK.md](RUNBOOK.md#change-gw_key_reveal_secret).
+
+### `GET /admin/api-keys`
+
+`?user_id=` narrows to one person. A manager sees the keys of people in their
+own workspaces.
+
+```json
+{ "data": [{
+    "id": "…", "user_id": "…", "owner_role": "admin", "workspace_id": null,
+    "name": "nightly report", "key_prefix": "lg_sk_jYPu",
+    "models": ["coding"], "access_groups": [], "limited_by": ["models"],
+    "kind": "service", "revoked": false,
+    "expires_at": "2027-03-30T…", "last_used_at": "2026-10-09T…",
+    "revealable": true, "seal_state": "current"
+}] }
+```
+
+| Field | Meaning |
+|---|---|
+| `limited_by` | Every limit on the key: `models`, `access_groups`, `workspace`, `cap`. Non-empty on a key whose `owner_role` is `manager` or `admin` means the key has no admin rights — the console shows `no admin access` |
+| `owner_role` | The role of the person the key belongs to |
+| `seal_state` | `none` — no sealed copy · `current` — opens under `GW_KEY_REVEAL_SECRET` · `previous` — opens only under `GW_KEY_REVEAL_SECRET_PREVIOUS`, waiting for a re-seal · `lost` — opens under neither · `off` — a copy is stored but reveal is switched off |
+| `revealable` | `true` only for `current` and `previous`: the copy was actually opened to decide this, not merely found |
+
+### `GET /admin/key-vault`
+
+Admin. Where the sealed key copies stand. No secret, no key and no sealed value
+is in the answer — only key ids, which are short one-way labels of a secret.
+
+```json
+{
+  "enabled": true,
+  "current_key_id": "f9a69d99",
+  "previous_key_id": "3c1e07ab",
+  "sealed": 4,
+  "counts": { "current": 1, "previous": 2, "lost": 1, "off": 0 },
+  "lost": [{ "id": "…", "name": "ci", "key_prefix": "lg_sk_ab12", "user_id": "…",
+             "revoked": false, "reason": "unknown_secret", "sealed_key_id": "77d0c2e4" }],
+  "warnings": [{ "code": "rotation_pending", "level": "warning", "message": "2 sealed key copies still open only under GW_KEY_REVEAL_SECRET_PREVIOUS. …" }],
+  "last_reseal": { "at": "2026-10-09T08:15:00+00:00", "by": "…", "via": "console", "resealed": 3 }
+}
+```
+
+`enabled` is whether `GW_KEY_REVEAL_SECRET` is set. `previous_key_id` is `null`
+unless a previous secret is set, differs from the current one, and reveal is
+enabled. `counts` covers every stored copy, revoked keys included. `last_reseal`
+is `null` until a re-seal has been recorded; `via` is `console` or `cli`, and
+`by` is `null` for the command line (the audit row carries the operating-system
+user instead).
+
+`warnings[].code`:
+
+| Code | Level | Situation |
+|---|---|---|
+| `rotation_pending` | warning | Copies still open only under the previous secret. Re-seal before removing it |
+| `lost` | error | Copies open under neither secret |
+| `previous_unused` | info | The previous secret is set and nothing needs it any more — remove it |
+| `previous_equals_current` | warning | Both variables hold the same value, so the previous one does nothing |
+| `previous_does_not_match` | warning | A previous secret is set but opens none of the lost copies — it is not the one that sealed them |
+| `sealed_but_disabled` | warning | Copies are stored but `GW_KEY_REVEAL_SECRET` is unset |
+| `previous_without_current` | warning | Only the previous secret is set. It never switches reveal on by itself |
+
+The same survey is written to the log once per worker at startup, as one count
+line plus the warnings, and printed by `python -m app.tools keyvault status`.
+
+### `POST /admin/key-vault/reseal`
+
+Admin. No body. Re-seals every copy that opens only under
+`GW_KEY_REVEAL_SECRET_PREVIOUS` under the current secret.
+
+```json
+{ "resealed": 2, "already_current": 1, "lost": 1, "changed_meanwhile": 0,
+  "vault": { "enabled": true, "counts": { "current": 3, "previous": 0, "lost": 1, "off": 0 }, "…": "…" } }
+```
+
+`vault` is the body of `GET /admin/key-vault` after the run. `changed_meanwhile`
+counts rows somebody else re-sealed between this run reading and writing them;
+they are left alone.
+
+It is safe to press twice, to interrupt, and to run from two places at once: each
+row is committed on its own, and written only if it still holds the value that
+was read. Copies already under the current secret are not rewritten, and copies
+neither secret opens are not touched. Copies of revoked keys are re-sealed too,
+so the pending count can reach zero. Each run — including one that failed part
+way — is written to the audit log as `keyvault.reseal`.
+
+`400 INVALID_REQUEST` when `GW_KEY_REVEAL_SECRET` is unset: there is no current
+secret to re-seal under.
+
+Nothing re-seals on its own at startup, by design: it changes which secret can
+open the copies, so it is something an administrator does, with a name and a
+time in the audit log, not something a restart does.
 
 Keys issued before v1.4 carry the `edu_sk_` prefix and keep working: a key is
 verified by HMAC over the whole string, so the prefix is only a label.
@@ -1129,6 +1516,12 @@ somebody tries to use it.
 A manager is held to the same bar as at issue: only models they could call
 themselves, and only for keys belonging to their own workspaces. A revoked key
 cannot be amended — revocation is meant to be final, not a detour.
+
+The call has to come from a console session or a key with no limit of its own:
+a limited key cannot lift the list written on itself, nor push its own expiry
+out ([Keys that carry a limit](#keys-that-carry-a-limit)). Only `days` and
+`models` can be changed here — the access groups and the workspace a key was
+issued with are fixed.
 
 ### `GET /admin/users/{id}/quota`
 
@@ -1223,8 +1616,100 @@ completes the job.
 }
 ```
 
+`avg_latency_ms` and `avg_ttft_ms` are plain averages over **every** row of the
+model in the window — failed requests and answers served from the response cache
+included — so they flatter a model that fails fast or is cached. Use
+[`GET /admin/usage/latency`](#get-adminusagelatency) for how long requests
+actually took. `workspace_id` narrows `by_model`; the `errors` list is **not**
+narrowed by it.
+
 No prompt, response, or image content appears here or in any other response —
 the schema has no column for it (PRD §11).
+
+### `GET /admin/usage/latency`
+
+How slow the slow requests are: p50 / p95 / p99 and the slowest request seen,
+for total latency and for time to first token, per model and per machine. An
+average hides exactly the requests people complain about — 95 requests at 2 s
+and 5 stuck at 90 s average 6.4 s, which nobody experienced.
+
+Query: `days` (default 7, 1–365), `workspace_id`. Manager or admin; a manager
+sees the requests of people in their own workspaces, the same scoping as
+`/admin/usage/summary`.
+
+```json
+{
+  "window_days": 7,
+  "method": "nearest-rank",
+  "min_samples": { "p50": 20, "p95": 20, "p99": 100 },
+  "sample_cap": 10000,
+  "group_cap": 50,
+  "by_model": [{
+    "model": "coding",
+    "requests": 180, "errors": 6, "aborted": 9, "cache_hits": 12,
+    "latency": { "population": 153, "samples": 153, "capped": false, "sampled_since": null,
+                 "p50_ms": 2100, "p95_ms": 8400, "p99_ms": 31000, "max_ms": 90210 },
+    "ttft":    { "population": 61, "samples": 61, "capped": false, "sampled_since": null,
+                 "p50_ms": 310, "p95_ms": 1900, "p99_ms": null, "max_ms": 4200 },
+    "streams_without_first_token": 2
+  }],
+  "by_model_truncated": false,
+  "by_endpoint": [{ "endpoint": "spark-1", "model": "coding", "requests": 180, "…": "…" }],
+  "by_endpoint_truncated": false
+}
+```
+
+**Which rows are measured.** The defaults are chosen so the report cannot look
+better than the system is:
+
+| Measure | Rows counted |
+|---|---|
+| `latency` | `status = success` and answered by a backend, streaming or not — request received to last byte |
+| `ttft` | streamed requests whose first token arrived, however the stream ended. A non-streaming request has no TTFT |
+| neither | answers from the response cache (`cache_hit`). They take about a millisecond and no machine ran |
+
+Everything left out is counted beside the figures instead of hidden: `errors`,
+`aborted`, `cache_hits`, and `streams_without_first_token` — streams that ended
+without a first token ever arriving, which have no TTFT to report and would
+otherwise make a model that hangs look fast.
+
+**Per measure:**
+
+| Field | Meaning |
+|---|---|
+| `population` | Rows in the window that qualify for this measure |
+| `samples` | Rows the percentiles were computed from. Equal to `population` unless `capped` |
+| `capped`, `sampled_since` | `true` when the group had more than `sample_cap` qualifying rows: the newest `sample_cap` were used, and `sampled_since` is the timestamp of the oldest of them. The figures are then exact for that shorter period, not an estimate for the window asked for |
+| `p50_ms`, `p95_ms`, `p99_ms` | `null` when `samples` is below `min_samples` for that percentile — **too few samples is no number, not zero**. Below 20 a "p95" is one slow request with a statistical name |
+| `max_ms` | The slowest request in the sample — a fact, reported at any sample size; `null` only when there are no samples |
+
+Percentiles are **nearest-rank**: the value at position ⌈p·n/100⌉ of the sorted
+samples. The result is always a request that happened, never a value
+interpolated between two, and it is the definition PostgreSQL calls
+`percentile_disc`.
+
+**Groups.** `by_model` is one entry per alias; `by_endpoint` is one per
+(machine, alias) pair — a machine serving two models is two entries, so a slow
+model is not hidden behind a fast one. The alias is the one on the usage row,
+which is the alias the caller asked for: a request that a routing rule moved to
+another model still counts under the name that was requested. Both are ordered by request count and
+limited to `group_cap` groups; `*_truncated` says when groups were left out.
+
+`by_endpoint` is for administrators. A manager gets `"by_endpoint": null` — not
+an empty list, which would read as "no traffic" — because machine names stay
+behind the admin role everywhere else too.
+
+Cache hits recorded before the `cache_hit` column existed carry no mark and
+cannot be separated after the fact; they are counted as backend answers.
+
+**Next to `/metrics`.** The Prometheus histograms are still there and are still
+what alerts are built on. This report is for a site that has the console and no
+Grafana, works from the filtered rows described above rather than fixed
+buckets, and can be narrowed to one workspace.
+
+**Cost.** Measured on SQLite with 1,000,000 synthetic rows on a development
+machine: about 1.1–1.2 s for a 7-day window holding 233,000 rows, 2.7–4.1 s
+across all million, peak memory 2.2 MB. Not measured on PostgreSQL.
 
 ---
 
@@ -1237,6 +1722,10 @@ the schema has no column for it (PRD §11).
 | `GET /metrics` | network-restricted | Prometheus |
 | `GET /v1/health/endpoints` | admin | Per-endpoint health, in-flight, failure counts. `in_flight` is the count on the **backend**; `shares_slots_with` lists the other `alias:endpoint` entries on the same server and upstream model, which show the same number |
 | `POST /v1/health/probe` | admin | Probe every backend immediately |
+
+"admin" here means what it means under [Admin endpoints](#admin-endpoints): a
+console session or an administrator's key with no limit of its own
+([Keys that carry a limit](#keys-that-carry-a-limit)).
 
 ```json
 { "ready": true, "database": "ok",
