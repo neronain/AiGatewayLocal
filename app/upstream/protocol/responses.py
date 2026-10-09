@@ -182,6 +182,40 @@ def response_format(body: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+_FORMAT_SHAPE = '{"type": "json_schema", "name": "...", "schema": {...}}'
+
+
+def _format_problem(body: dict[str, Any]) -> Problem | None:
+    """`text.format` ที่ขอรูปแบบคำตอบไว้ แต่ `response_format` ข้างบนแปลออกมาไม่ได้
+
+    เดิมคืน None เฉย ๆ แล้วคำขอไปถึง backend โดยไม่มี `response_format` — ตรวจ 2026-10-09:
+    ลืม `schema` · ใช้ `parameters` (ชื่อของ function tool) · ส่งรูปซ้อนของ chat
+    (`json_schema: {...}`) ได้ 200 เป็นข้อความอิสระทั้งสามแบบ · อาการเดียวกับที่ llama.cpp ทำบน
+    ทาง chat (app/core/responseformat.py) ต่างกันที่คนทิ้งคือตัวแปลนี้เอง
+    """
+    text = body.get("text")
+    wanted = text.get("format") if isinstance(text, dict) else None
+    # ไม่ได้ขอ · ก้อนว่าง · หรือแปลได้ — ไม่มีอะไรหาย
+    if wanted is None or wanted == {} or response_format(body) is not None:
+        return None
+    if not isinstance(wanted, dict):
+        return "text.format", f"must be an object such as {_FORMAT_SHAPE}"
+    kind = wanted.get("type")
+    if kind == "text":
+        return None
+    if kind == "json_schema":
+        return (
+            "text.format.schema",
+            f"a json_schema format carries its schema here as an object: {_FORMAT_SHAPE}. "
+            "Without it the model would not be held to any schema",
+        )
+    return (
+        "text.format.type",
+        (f"format type '{kind}' has" if kind is not None else "a format without a type has")
+        + ' no chat-completions equivalent; use "text", "json_object" or "json_schema"',
+    )
+
+
 def ignored_in_translation(body: dict[str, Any]) -> list[str]:
     """นิยามเครื่องมือที่จะถูกข้ามเมื่อแปลเป็น chat completions — ผู้เรียกจะถูกบอกทาง header
 
@@ -233,6 +267,8 @@ def untranslatable(body: dict[str, Any]) -> list[Problem]:
             problems.append((field, why))
     if body.get("background") is True:
         problems.append(("background", "background responses need server-side storage"))
+    if (problem := _format_problem(body)) is not None:
+        problems.append(problem)
 
     items = body.get("input")
     for index, item in enumerate(items if isinstance(items, list) else []):

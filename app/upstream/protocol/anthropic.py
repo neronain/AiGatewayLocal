@@ -218,6 +218,8 @@ def untranslatable(body: dict[str, Any]) -> list[Problem]:
             "mcp_servers",
             "remote MCP servers are connected by Anthropic's API, not by this gateway",
         ))
+    if (problem := _format_problem(body)) is not None:
+        problems.append(problem)
 
     messages = body.get("messages")
     for m_index, message in enumerate(messages if isinstance(messages, list) else []):
@@ -316,12 +318,45 @@ def _turn_to_openai(role: str, content: Any) -> list[dict[str, Any]]:
     return out
 
 
-def response_format(body: dict[str, Any]) -> dict[str, Any] | None:
-    """`output_config.format` (structured outputs) → `response_format` ของ chat completions"""
+def _wanted_format(body: dict[str, Any]) -> tuple[str, Any]:
+    """(ตำแหน่งในคำขอ, ค่า) ของรูปแบบคำตอบที่ขอ — ตัวแปลกับตัวตรวจอ่านจากที่เดียวกัน"""
     config = body.get("output_config")
     wanted = config.get("format") if isinstance(config, dict) else None
+    if wanted is not None:
+        return "output_config.format", wanted
+    return "output_format", body.get("output_format")      # ชื่อฟิลด์ช่วง beta
+
+
+def _format_problem(body: dict[str, Any]) -> Problem | None:
+    """รูปแบบคำตอบที่ขอไว้ แต่ `response_format` ข้างล่างแปลออกมาไม่ได้ — เดิมหายเงียบ ๆ
+
+    ตรวจ 2026-10-09: `output_config.format = {"type": "json_schema"}` (ลืม schema) ได้ 200 และ
+    backend ไม่ได้ `response_format` เลย · ดูตัวคู่ใน protocol/responses.py
+    """
+    path, wanted = _wanted_format(body)
+    # ไม่ได้ขอ · ก้อนว่าง · หรือแปลได้ — ไม่มีอะไรหาย
+    if wanted is None or wanted == {} or response_format(body) is not None:
+        return None
+    shape = '{"type": "json_schema", "schema": {...}}'
     if not isinstance(wanted, dict):
-        wanted = body.get("output_format")      # ชื่อฟิลด์ช่วง beta
+        return path, f"must be an object such as {shape}"
+    if wanted.get("type") == "json_schema":
+        return (
+            f"{path}.schema",
+            f"a json_schema format carries its schema here as an object: {shape}. "
+            "Without it the model would not be held to any schema",
+        )
+    kind = wanted.get("type")
+    return (
+        f"{path}.type",
+        (f"format type '{kind}' has" if kind is not None else "a format without a type has")
+        + ' no chat-completions equivalent; the only structured output format is "json_schema"',
+    )
+
+
+def response_format(body: dict[str, Any]) -> dict[str, Any] | None:
+    """`output_config.format` (structured outputs) → `response_format` ของ chat completions"""
+    _, wanted = _wanted_format(body)
     if not isinstance(wanted, dict) or wanted.get("type") != "json_schema":
         return None
     schema = wanted.get("schema")
