@@ -2439,20 +2439,23 @@ button-updated host only when somebody copies it, and unlike the updater the log
 does not mention it. 1.13.0 is such a release: `backup.sh` (the restore command
 written into each archive's `MANIFEST`) and `restore.sh` (the pepper comparison
 that refused a valid restore, and the printed `tar` command that did not run on
-GNU tar) were fixed, and `restricted_key_report.py` is new. See what differs
-first, then install, as root:
+GNU tar) were fixed, and `restricted_key_report.py` is new. Copy
+`access_change_report.py` with it: on SQLite the key report runs on its own, but
+on PostgreSQL it borrows that file's driver selection and exits 2 naming the
+missing file without it. See what differs first, then install, as root:
 
 ```bash
 SRC=/srv/AiGatewayLocal        # the folder GW_UPDATE_SOURCE names
 DST=/opt/litegate
 
-for f in backup.sh restore.sh restricted_key_report.py; do
+for f in backup.sh restore.sh restricted_key_report.py access_change_report.py; do
   sudo cmp "$SRC/scripts/$f" "$DST/scripts/$f" && echo "$f: identical"
 done
 
 sudo install -m 755 -o root -g root \
   "$SRC/scripts/backup.sh" "$SRC/scripts/restore.sh" \
-  "$SRC/scripts/restricted_key_report.py" "$DST/scripts/"
+  "$SRC/scripts/restricted_key_report.py" "$SRC/scripts/access_change_report.py" \
+  "$DST/scripts/"
 ```
 
 `cmp` prints where a file differs, or that it does not exist yet; a line saying

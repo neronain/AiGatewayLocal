@@ -70,6 +70,9 @@ repo มี release หรือ tag `v1.13.0` แล้ว: ตัวตรว�
   บอกว่า key ใบไหนจะเสียสิทธิ์ผู้ดูแล และใบไหนจะเรียกอะไรไม่ได้เพราะมัดที่ระบุไว้ไม่ให้อะไร
   (ข้อถัดไป) · ใช้กติกาจาก `app/core/auth.py` ตัวเดียวกับด่านจริง · ไม่อ่าน key และ hash
   ของมันจากฐานเลย · คำสั่งและ exit code อยู่ที่หัวข้อ **อัปเกรดเป็น 1.13.0** ข้างล่าง
+  · บนฐาน SQLite รันได้ด้วยไฟล์เดียว — บน PostgreSQL ต้องมี `scripts/access_change_report.py` อยู่ข้าง ๆ (ใช้เลือก
+    ไดรเวอร์) ไม่มีแล้วจบด้วย status 2 พร้อมชื่อไฟล์ที่ขาด (เดิม import ไฟล์นั้นเสมอ: เครื่องที่ก๊อปมาไฟล์เดียวได้ traceback
+    กับ status 1 — เจอบนเครื่องเกตเวย์จริงวันอัปเดต 2026-10-09)
 - **ปิดมัดโมเดลแล้ว key ที่ถูกจำกัดด้วยมัดนั้นได้ทั้งแค็ตตาล็อก** (ตรวจ 2026-10-09) · key ที่
   จำกัดด้วย `access_groups` อย่างเดียว พอมัดถูกปิด ถูกลบ หรือว่างเปล่า รายการที่กางออกมาเป็นเซต
   ว่าง ซึ่งถูกอ่านว่า "ไม่ได้เขียนข้อจำกัดไว้" — การปิดมัด ซึ่งคอนโซลเสนอเป็นวิธีหยุดไม่ให้มันให้
@@ -153,12 +156,13 @@ repo มี release หรือ tag `v1.13.0` แล้ว: ตัวตรว�
   ```bash
   SRC=/srv/AiGatewayLocal        # โฟลเดอร์ที่ GW_UPDATE_SOURCE ชี้
   DST=/opt/litegate
-  for f in backup.sh restore.sh restricted_key_report.py; do
+  for f in backup.sh restore.sh restricted_key_report.py access_change_report.py; do
     sudo cmp "$SRC/scripts/$f" "$DST/scripts/$f" && echo "$f: identical"
   done
   sudo install -m 755 -o root -g root \
     "$SRC/scripts/backup.sh" "$SRC/scripts/restore.sh" \
-    "$SRC/scripts/restricted_key_report.py" "$DST/scripts/"
+    "$SRC/scripts/restricted_key_report.py" "$SRC/scripts/access_change_report.py" \
+    "$DST/scripts/"
   ```
 
   ยังไม่ก๊อป = restore บนเครื่องนั้นยังเป็นสคริปต์เดิม (รวมการปฏิเสธ pepper ค่าเดียวกันที่เขียนคนละแบบ) ·
