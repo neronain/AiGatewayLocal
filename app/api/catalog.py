@@ -133,6 +133,11 @@ async def me_key(
             # ข้อจำกัดที่เขียนบนใบนี้เอง · ว่าง = ไม่จำกัดเพิ่มจากที่ workspace/role ให้
             "limited_to_models": list(principal.key_models),
             "limited_to_groups": list(principal.key_access_groups),
+            # ทุกอย่างที่ทำให้ใบนี้แคบลง รวม workspace กับเพดานของใบเอง · ใบที่มีแม้
+            # ข้อเดียวไม่พกสิทธิ์ admin/manager ของเจ้าของ (ดู core/auth.limits_on_key)
+            # — สคริปต์ที่ได้ 403 จาก /admin มาถามที่นี่แล้วต้องได้คำตอบ
+            "limited_by": list(principal.key_limits),
+            "admin_access": principal.is_manager,
         },
     }
 

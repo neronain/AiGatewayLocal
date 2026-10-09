@@ -217,7 +217,11 @@ async def _gather_state(
 
     # Operational detail is for people who operate. A member gets their own
     # quota and catalogue and nothing about anyone else.
-    if principal.role == "admin":
+    #
+    # `is_admin`, not `role == "admin"`: a key an administrator limited to one
+    # model is a script, not an operator, and used to be briefed on every
+    # backend's address and last error all the same (2026-10-09).
+    if principal.is_admin:
         health = state.router.health_report()
         context["backends"] = [
             {

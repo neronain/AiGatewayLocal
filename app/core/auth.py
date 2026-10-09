@@ -31,6 +31,7 @@ from app.db.models import (
     AccessGroup,
     ApiKey,
     Membership,
+    QuotaPolicy,
     User,
     Workspace,
     WorkspaceAccessGroup,
@@ -67,9 +68,70 @@ def hash_api_key(plaintext: str) -> str:
     return hmac.new(pepper, plaintext.encode(), hashlib.sha256).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# key ที่ถูกจำกัด ไม่พกอำนาจของเจ้าของ
+# ---------------------------------------------------------------------------
+# role เป็นของ *คน* · key เป็นของ *งานหนึ่งงาน* — ผู้ดูแลออกใบให้สคริปต์แล้วเขียนไว้ว่า
+# "ใช้ได้แค่ coding" คือการบอกว่าใบนี้มีไว้ทำอะไร · เดิมอำนาจดูจาก role ของเจ้าของอย่าง
+# เดียว ใบนั้นจึงเรียก `PATCH /admin/api-keys/<ตัวเอง>` ถอดรายการของตัวเอง ออกใบใหม่
+# แก้ registry และเปิดดู key ของคนอื่นได้ทั้งหมด (ตรวจ 2026-10-09) — ข้อจำกัดบนใบ
+# เป็นแค่คำขอร้อง และใบที่หลุดหนึ่งใบเท่ากับหลุดทั้งเกตเวย์
+#
+# อะไรนับเป็นข้อจำกัด — ทุกอย่างที่เขียนไว้ *บนใบ* เพื่อให้มันแคบลง และมีเส้นทาง
+# /admin ที่ถอดออกได้ถ้าใบยังพกอำนาจอยู่:
+#
+#   models          รายการ alias บนใบ            ถอดด้วย PATCH /admin/api-keys/{id}
+#   access_groups   มัดโมเดลบนใบ                แก้/ปิดมัดด้วย /admin/access-groups
+#   workspace       ใบผูกกับ workspace เดียว     เพิ่มโมเดลให้ workspace นั้นเอง
+#   cap             เพดานโควตาเฉพาะใบที่ยังมีผล    DELETE /admin/quota-policies/{id}
+#
+# อะไร *ไม่* นับ:
+#
+#   scopes          เก็บไว้แต่ไม่เคยถูกบังคับที่ไหน (`require_scope` ไม่มีใครเรียก) และใบ
+#                   bootstrap ของทุกเครื่องมี ["admin"] — นับเมื่อไรคือถอดอำนาจของใบที่
+#                   ผู้ดูแลทุกคนถืออยู่ในวันที่อัปเกรด ด้วยฟิลด์ที่คอนโซลไม่แสดงและแก้ไม่ได้
+#   expires_at      จำกัดว่าใช้ได้ถึงเมื่อไร ไม่ได้จำกัดว่าทำอะไรได้
+#   kind            ป้ายให้คนอ่าน ไม่เปลี่ยนกติกา (ดู ApiKey.kind)
+#   โควตาของคน/workspace/ทั้งระบบ   ผูกกับเจ้าของ ไม่ได้เขียนบนใบ
+#
+# ชื่อชุดนี้ออกไปถึงผู้เรียกใน `details.limited_by` และ `scripts/restricted_key_report.py`
+# ใช้ฟังก์ชันเดียวกันนี้ — รายงานก่อนอัปเกรดกับด่านจริงจึงตอบไม่ตรงกันไม่ได้
+PRIVILEGED_ROLES = frozenset({"admin", "manager"})
+
+KEY_LIMIT_WORDS = {
+    "models": "a model list",
+    "access_groups": "an access group",
+    "workspace": "a workspace",
+    "cap": "a quota of its own",
+}
+
+
+def limits_on_key(
+    *, models=None, access_groups=None, workspace_id=None, capped: bool = False
+) -> tuple[str, ...]:
+    """ข้อจำกัดที่เขียนไว้บน key ใบหนึ่ง เรียงตามลำดับคงที่ · ว่าง = ไม่มีเลย"""
+    found = []
+    if models:
+        found.append("models")
+    if access_groups:
+        found.append("access_groups")
+    if workspace_id:
+        found.append("workspace")
+    if capped:
+        found.append("cap")
+    return tuple(found)
+
+
 @dataclass
 class Principal:
-    """Everything the request path needs to know about the caller."""
+    """Everything the request path needs to know about the caller.
+
+    `role` is the owner's - who the person is, and so what they can *reach*:
+    which models they see, whether workspaces narrow them. `is_admin` and
+    `is_manager` are about this credential - whether it carries the owner's
+    power over other people and over the gateway. The two differ for exactly one
+    kind of caller: a key somebody limited (see `limits_on_key` above).
+    """
 
     user_id: str
     external_id: str
@@ -86,14 +148,30 @@ class Principal:
     # that mint credentials require a session: a leaked key must not be able to
     # mint more keys for itself.
     via: str = "key"
+    # ใบนี้มีเพดานโควตาของตัวเองที่ยังมีผลอยู่ · `authenticate` ถามให้เฉพาะใบที่คำตอบ
+    # เปลี่ยนอะไรได้ (เจ้าของเป็น admin/manager และยังไม่มีข้อจำกัดอื่น)
+    key_capped: bool = False
 
     @property
+    def key_limits(self) -> tuple[str, ...]:
+        """What was written on this key to narrow it. Never anything for a session."""
+        if self.via != "key":
+            return ()
+        return limits_on_key(
+            models=self.key_models, access_groups=self.key_access_groups,
+            workspace_id=self.workspace_id, capped=self.key_capped,
+        )
+
+    # อำนาจถูกตัดสินตรงนี้ที่เดียว ไม่ใช่ที่แต่ละเส้นทาง: `require_admin` ·
+    # `require_manager` · ข้อยกเว้น scope ข้างล่าง และทุก `if actor.is_admin` ใน
+    # app/api อ่านสองตัวนี้ — เส้นทางที่เขียนเพิ่มวันหน้าจึงลืมกติกานี้ไม่ได้
+    @property
     def is_admin(self) -> bool:
-        return self.role == "admin"
+        return self.role == "admin" and not self.key_limits
 
     @property
     def is_manager(self) -> bool:
-        return self.role in {"admin", "manager"}
+        return self.role in PRIVILEGED_ROLES and not self.key_limits
 
     def require_scope(self, scope: str) -> None:
         if self.is_admin or not self.scopes or scope in self.scopes:
@@ -154,6 +232,19 @@ async def authenticate(
             ErrorCode.ACCOUNT_DISABLED, "This account is not active. Contact your manager."
         )
 
+    role = normalise_role(user.role)
+    # เพดานเฉพาะใบอยู่คนละตาราง จึงต้องถาม — แต่ถามเฉพาะเมื่อคำตอบเปลี่ยนอะไรได้:
+    # สมาชิกไม่มีอำนาจให้เสีย และใบที่จำกัดโมเดล/ผูก workspace อยู่แล้วก็ถูกนับไปแล้ว ·
+    # คำขอของสมาชิก (เกือบทั้งหมดของทราฟฟิก) จึงไม่เสีย query เพิ่มแม้แต่ตัวเดียว
+    capped = (
+        role in PRIVILEGED_ROLES
+        and not limits_on_key(
+            models=api_key.models, access_groups=api_key.access_groups,
+            workspace_id=api_key.workspace_id,
+        )
+        and await has_cap_in_force(session, api_key.id)
+    )
+
     # Best-effort last-used stamp; never fail a request over telemetry.
     #
     # ประทับเวลาแบบหยาบ ๆ พอ — เดิมเขียน + commit **ทุก request** ซึ่งเป็น write
@@ -175,7 +266,7 @@ async def authenticate(
     return Principal(
         user_id=user.id,
         external_id=user.external_id,
-        role=normalise_role(user.role),
+        role=role,
         display_name=user.display_name,
         api_key_id=api_key.id,
         workspace_id=api_key.workspace_id,
@@ -183,7 +274,28 @@ async def authenticate(
         key_models=list(api_key.models or []),
         key_access_groups=list(api_key.access_groups or []),
         via="key",
+        key_capped=capped,
     )
+
+
+async def has_cap_in_force(session: AsyncSession, api_key_id: str) -> bool:
+    """มีเพดานโควตาเฉพาะใบนี้ที่ด่านโควตายังบังคับอยู่ไหม
+
+    "ยังมีผล" ต้องหมายความอย่างเดียวกับ `QuotaManager.resolve_key_limits`
+    (เปิดอยู่ และยังไม่หมดอายุ) — เพดานที่ปิดไปแล้วไม่ได้จำกัดอะไร นับมันคือถอดอำนาจ
+    ของใบที่ไม่มีอะไรจำกัดอยู่จริง · tests/test_a_limited_key_has_no_admin_power.py
+    เทียบสองที่นี้กันทุกสถานะ
+
+    เทียบเวลาใน Python ไม่ใช่ใน SQL เหมือนที่ quota ทำ: SQLite คืนเวลาแบบไม่มีโซน
+    PostgreSQL คืนแบบมีโซน และ `_aware` คือที่เดียวที่ทำให้สองฝั่งเทียบกันได้
+    """
+    rows = await session.execute(
+        select(QuotaPolicy.expires_at).where(
+            QuotaPolicy.enabled.is_(True), QuotaPolicy.api_key_id == api_key_id
+        )
+    )
+    now = utcnow()
+    return any(expires is None or _aware(expires) > now for (expires,) in rows)
 
 
 
@@ -222,6 +334,8 @@ async def _principal_from_session(
 
 async def require_admin(principal: Principal = Depends(authenticate)) -> Principal:
     if not principal.is_admin:
+        if principal.role == "admin":
+            raise _limited_key(principal, "administrator")
         raise GatewayError(
             ErrorCode.INSUFFICIENT_SCOPE, "Administrator privileges are required."
         )
@@ -230,10 +344,42 @@ async def require_admin(principal: Principal = Depends(authenticate)) -> Princip
 
 async def require_manager(principal: Principal = Depends(authenticate)) -> Principal:
     if not principal.is_manager:
+        if principal.role in PRIVILEGED_ROLES:
+            raise _limited_key(
+                principal, "administrator" if principal.role == "admin" else "manager"
+            )
         raise GatewayError(
             ErrorCode.INSUFFICIENT_SCOPE, "Manager privileges are required."
         )
     return principal
+
+
+def _limited_key(principal: Principal, rights: str) -> GatewayError:
+    """คำปฏิเสธของใบที่ *เจ้าของ* มีสิทธิ์ แต่ตัวใบถูกจำกัดไว้
+
+    ข้อความเดิม ("Administrator privileges are required.") จะพาคนไปผิดทาง: เขาเป็น
+    ผู้ดูแลจริง แล้วจะไปขอสิทธิ์จากใคร · ต้องบอกว่าอะไรบนใบที่ทำให้เป็นแบบนี้ และทางออก
+    สองทางที่เดินได้จริง — สมาชิกธรรมดายังได้ข้อความเดิม เพราะสำหรับเขาข้อความเดิมถูก
+    """
+    limits = principal.key_limits
+    return GatewayError(
+        ErrorCode.INSUFFICIENT_SCOPE,
+        f"This API key is limited to {_spoken(limits)}, so it does not carry its "
+        f"owner's {rights} rights: a key issued for one job must not be able to "
+        "lift its own limits or issue other keys. Sign in to the console to do "
+        "this, or use a key issued without a model list, access group, workspace "
+        "or quota of its own.",
+        details={
+            "reason_code": "restricted_key",
+            "limited_by": list(limits),
+            "owner_role": principal.role,
+        },
+    )
+
+
+def _spoken(limits: tuple[str, ...]) -> str:
+    words = [KEY_LIMIT_WORDS[name] for name in limits]
+    return words[0] if len(words) == 1 else f"{', '.join(words[:-1])} and {words[-1]}"
 
 
 @dataclass(frozen=True)
