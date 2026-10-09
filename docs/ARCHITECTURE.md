@@ -36,6 +36,9 @@ POST /v1/chat/completions
    ┌────▼──────────────────┐
    │ authenticate          │ HMAC-SHA256 key lookup            → 401
    ├───────────────────────┤
+   │ request parameters    │ types and ranges; response_format → 400
+   │                       │ repaired in place, or refused     │
+   ├───────────────────────┤
    │ workspace policy      │ workspace_models allow-list       → 403
    ├───────────────────────┤
    │ resolve alias         │ registry snapshot + visibility    → 404
@@ -65,6 +68,19 @@ POST /v1/chat/completions
 The order is not arbitrary. Cheap, local checks run before expensive ones, and
 every check that can reject does so before a backend connection is opened. A
 capability rejection costs a few hundred microseconds and zero GPU time.
+
+**Parameters are checked once, first, and in place.** `core/params.py` runs
+straight after authentication, because every later step *uses* these values and
+was written assuming they are well-typed. Values that are right but not in the
+expected form are rewritten in the body itself (`max_tokens: 100.0` becomes
+`100`), so the capability gate, the cache key and the payload that is forwarded
+all read one corrected body rather than each normalising for itself. Fields the
+gateway neither reads nor translates are passed through for the backend to
+judge. The one exception is chat's `response_format`
+([below](#a-malformed-response_format-is-repaired-or-refused-never-forwarded)).
+Anything the gateway changed on the caller's behalf is reported in a response
+header (`core/notices.py`): `x-litegate-output-cap`, `x-litegate-ignored`,
+`x-litegate-adjusted`.
 
 `/v1/messages` and `/v1/responses` enter the same pipeline after translation.
 `/v1/embeddings` and `/v1/rerank` run the same order with the steps that do not
@@ -141,6 +157,56 @@ and failure reports, `max_output_tokens`, the tokenizer rate — follows the mod
 that actually serves, because the endpoint belongs to that model. Counting a
 rerouted request under the requested alias gave a 1-slot backend two counters.
 
+### `model: "auto"` — a choice made before the pipeline, by the same gates
+
+`auto` is not a third routing layer. It is resolved to a real alias at the top
+of `/v1/chat/completions`, and from there the request runs the pipeline above
+like any other. `core/auto.py` does it in three steps whose order is the design:
+
+1. **Permission.** The caller hands in only the models this key may use. The
+   module knows nothing about members and cannot widen anything.
+2. **Facts.** Candidates are filtered with the *same* checks the pipeline will
+   apply next — the alias is enabled, the surface is on, the capabilities the
+   request needs are declared (`rules.can_serve`), some endpoint can take the
+   request's modalities, and the prompt fits the window when counted at that
+   model's own tokenizer rate. A ranker that picked a model the next gate
+   refuses would be worse than no `auto`.
+3. **Preference.** Only what survives is ranked, by one of four strategies
+   (`fastest`, `roomiest`, `quality`, `balanced`). No score, however high, gets a
+   model past step 2.
+
+Two inputs feed the ranking, and they live in different places on purpose:
+
+| Input | Where it lives | Why there |
+|---|---|---|
+| Speed (output tok/s, TTFT) | `core/perf.py`, in each worker's memory, fed from the same numbers that go into the usage row | Ranking must not touch the database on the request path |
+| Quality score | `spec.quality_score` in the model's YAML | It is a statement about the model, reviewed and versioned with the rest of its definition |
+| Strategy | one row in `gateway_settings`, read on each `auto` request | It is decided on screen and every worker must follow it at once. Not `gateway.yaml`: an older schema rejects a file with a key it does not know, and a downgrade would silently lose the vision, quota and permission policy in the same file |
+
+Missing data never removes a candidate; it decides where the candidate sorts,
+and the two strategies that use scores chose opposite defaults deliberately.
+Without speed samples a model sorts **last** under `fastest`. Without a quality
+score it sorts last under `quality` and `balanced`. But under `balanced` a
+scored model without speed samples is weighed as if it were as **fast** as the
+fastest candidate: the statistics are per worker and gone on restart, so if "no
+samples" meant "loses", whichever model happened to be measured first would win
+for good — the loser is never chosen and so never measured.
+
+`balanced` is `(2 × quality + 100 × speed) ÷ 3` with speed as a fraction of the
+fastest candidate, not min-max normalisation. With two candidates min-max always
+yields 0 and 1 whether they differ by 2% or five-fold, which turns "balanced"
+into "the heavier axis wins". The 2:1 weight is a constant in the code.
+
+The ranking is computed once and returned as a list of frozen candidates, copies
+of the numbers at that moment. `GET /admin/auto/preview` renders that list
+rather than re-reading the statistics, so the explanation cannot drift from the
+decision it explains.
+
+*Cost:* speed statistics are per worker. With several workers, `fastest` and
+`balanced` can disagree between workers while their numbers are close. Answers
+served from the response cache are kept out of the statistics, or a model that
+is asked the same thing repeatedly would rank by the speed of the cache.
+
 ---
 
 ## Modules
@@ -157,13 +223,17 @@ app/
 │   └── store.py          snapshot loading, atomic hot reload
 │
 ├── core/
-│   ├── auth.py           API keys, Principal, workspace permission
+│   ├── auth.py           API keys, Principal, workspace permission, privilege
+│   ├── params.py         request-parameter types and ranges, checked first
+│   ├── responseformat.py structured-output shape: repair or refuse
 │   ├── multimodal.py     content-block parsing, image policy
 │   ├── capability.py     the two capability gates
 │   ├── tokens.py         token estimation + the visual/text split
 │   ├── quota.py          policy resolution, counters (Redis or DB)
 │   ├── routing.py        endpoint selection, health with hysteresis
 │   ├── rules.py          model-level routing rules
+│   ├── auto.py           model="auto": filter, then rank by strategy
+│   ├── perf.py           per-worker speed statistics that feed auto
 │   ├── retrieval.py      embeddings/rerank shapes, batch ceiling, costing
 │   ├── codexcatalog.py   the model catalogue in the shape Codex decodes
 │   ├── inflight.py       concurrency counters (Redis or per-process)
@@ -171,6 +241,9 @@ app/
 │   ├── lmds.py           deploy-tool findings that can be applied
 │   ├── release.py        version comparison for the console's update check
 │   ├── usage.py          buffered usage recording
+│   ├── latency.py        latency / TTFT percentiles read from usage rows
+│   ├── keyvault.py       sealing and opening one API-key copy
+│   ├── keyrotation.py    survey and re-seal of every copy, across secrets
 │   └── errors.py         error taxonomy
 │
 ├── upstream/
@@ -264,6 +337,162 @@ Absent capability flags default to `false`. A model that forgets to declare
 `tools: true` will reject tool requests with a clear message, rather than
 forwarding them and producing confusing partial behaviour.
 
+### Privilege belongs to the credential; the role belongs to the person
+
+`Principal.role` is the owner's role and decides what the caller can *reach* —
+which models they see, whether workspaces narrow them. Whether this credential
+carries the owner's power over other people and over the gateway is a separate
+question, answered in exactly one place: `Principal.is_admin` and
+`Principal.is_manager` in `core/auth.py`. Both are false for a key that has any
+limit written on it (`limits_on_key`: a model list, access groups, a workspace,
+or a quota policy of its own that is still in force). `require_admin`,
+`require_manager` and every `if actor.is_admin` in `app/api` read those two
+properties, so a route added later cannot forget the rule. A console session
+has no key and therefore no limits.
+
+The reasoning is that a limit on a key is a statement about what the key is
+*for*. While privilege came from the role alone, a key limited to one model
+could call the admin route that removes its own limit, so the limit was advisory
+and one leaked script key was the whole gateway.
+
+What counts was chosen so that the rule could ship without a switch. `scopes`
+does not count: it has never been enforced anywhere, and the bootstrap key of
+every install carries `["admin"]` — counting it would have removed admin rights
+from the one key every operator holds, on upgrade day, over a field the console
+neither shows nor edits.
+
+The same function is imported by `scripts/restricted_key_report.py`, so the
+pre-upgrade report and the request path cannot disagree about what "limited"
+means.
+
+*Cost:* a per-key quota lives in another table, so knowing about it costs a
+query. `authenticate` asks only when the answer can change something — the
+owner is a manager or an admin and the key has no other limit — so member
+traffic, which is nearly all of it, pays nothing. The consequence is visible:
+`limited_by` in a `403` or from `/v1/me/key` lists `cap` only in that case,
+while the admin key list, which looks every key up in one query, always does.
+
+### An empty result of a written limit is an empty allow-list
+
+A key limited to access groups is expanded to the models those groups name. When
+every group is switched off the expansion is empty — and "the limit expanded to
+nothing" used to be read as "no limit was written", handing the key the whole
+catalogue. The check is now whether a limit was *written*
+(`key_models or key_access_groups`), not whether it produced anything. It is the
+same distinction the membership rule already drew between "in no workspace" and
+"in workspaces that allow nothing".
+
+### A malformed `response_format` is repaired or refused, never forwarded
+
+Everywhere else the gateway lets the backend judge a field it does not use
+itself. Chat's `response_format` is the exception because the backends do not
+judge it: llama.cpp answers `200` to a schema in the wrong place and generates
+unconstrained text. The caller then fails parsing a reply against a schema the
+model never saw, with nothing to say why.
+
+So `core/responseformat.py` normalises the *envelope* — keys beside `type` moved
+into `json_schema`, `parameters` renamed to `schema`, a missing `type` or `name`
+filled in — reports every change in `x-litegate-adjusted`, and refuses with a
+`400` naming the field when there is no schema to move. It does **not** touch
+the JSON Schema itself. The reference implementation this was adapted from adds
+`additionalProperties: false` and rewrites `required` under `strict`; measured
+against llama.cpp, an unspecified object is already closed, `strict` has no
+effect, and rewriting `required` changes the answer, so that part was left out.
+
+The same failure existed one layer up, in our own translators: a
+`text.format` or `output_config.format` they could not express as a
+chat-completions `response_format` was dropped. Those are now reported through
+the existing "cannot be translated" path (`untranslatable` → the capability
+gate), which already refuses before quota and before a slot is taken, and
+already lets a backend that speaks the protocol natively take the request whole.
+
+Because the repair happens in `core/params.py`, before anything else reads the
+body, the response-cache key is built from the repaired form.
+
+*Cost:* behaviour was measured on one llama.cpp build. vLLM was read, not run.
+And the chat path no longer counts the schema towards the prompt estimate
+(llama.cpp turns it into a sampling grammar, not prompt tokens) while the two
+translated paths still do — the estimates differ by the size of the schema.
+
+### Percentiles are computed in Python, from bounded samples
+
+`core/latency.py` reads `usage_logs`; nothing in it runs on the request path.
+The database is asked only for `WHERE`, `ORDER BY ts`, `LIMIT` and `COUNT`. The
+sorting and the rank are done in Python with integer arithmetic.
+
+SQL would be the obvious place, and is not used because SQLite has no percentile
+function, and the gateway has to give the same answer on both databases it
+supports. Nearest-rank was chosen over interpolation for the same reason it is
+`percentile_disc` in PostgreSQL: the result is always a request that happened,
+and with few samples it cannot report something better than what was seen.
+
+Three decisions keep the report from flattering the system. Only successful,
+backend-answered requests count towards latency; a stream that never produced a
+first token is counted beside the TTFT figures instead of vanishing from them;
+and below a minimum sample size (20 for p50 and p95, 100 for p99) a percentile
+is `null` rather than a number. 20 and 100 are the smallest samples in which at
+least one request is still slower than the p95 and the p99; under that, the
+"percentile" is the slowest request with a statistical name. Whatever is
+excluded is counted in the same answer.
+
+The work is bounded whatever the table size: at most the newest 10,000 samples
+per group per measure, at most 50 groups, and the answer says when either limit
+was reached and what period the sample actually covers. A group known to be
+under the cap is fetched without `ORDER BY`, because ordering by `ts` makes the
+database walk the time index to find a small group.
+
+Cache hits are told apart by a column, `usage_logs.cache_hit`, because nothing
+else distinguishes them: a cached answer is a successful row with a latency of
+about a millisecond. It is nullable on purpose — an upgraded database gets it by
+`ADD COLUMN`, which is nullable anyway, so fresh and upgraded schemas match, and
+the previous version can still write rows after a downgrade.
+
+*Cost:* hits recorded before the column existed cannot be separated. Timing was
+measured on SQLite only.
+
+### Sealed key copies: two secrets and a deliberate re-seal
+
+By default an API key is stored as a keyed hash and cannot be shown again. With
+`GW_KEY_REVEAL_SECRET` set, a second copy is kept, sealed with AES-GCM under a
+key derived from that secret, which must live outside the database.
+
+A secret that cannot be changed cannot be recovered from once it leaks, so
+there are two: the current one seals everything new and is tried first when
+opening; `GW_KEY_REVEAL_SECRET_PREVIOUS` is tried second, never seals, and
+never switches the feature on by itself.
+
+The stored form is `v2:<key id>:<base64(nonce + ciphertext)>`. The key id is
+eight hex characters from a second key-derivation pass over the secret with a
+different salt, so it shares nothing with the encryption key, and it is bound
+into the ciphertext as associated data — editing it in the database makes the
+copy fail to open rather than point at another secret. It exists to answer the
+question the older `v1:<base64>` form could not: *why* does this copy not open —
+the wrong secret, or a damaged copy — and which secret would. `v1` copies still
+open and are not rewritten on upgrade, because the previous version cannot read
+`v2` and converting a row that already opens would only make a downgrade
+harder.
+
+State is always decided by **actually opening** the copy, never by reading the
+label: `current`, `previous`, `lost`, `off`, or `none`.
+
+Moving copies from the previous secret to the current one (`core/keyrotation.py`)
+is an explicit action — console, API or command line — and is not done at
+startup, for three reasons: a multi-worker gateway would run it once per worker
+at the moment the system is trying to come up; it changes which secret opens the
+data, which should have a name and a time in the audit log; and a typo in `.env`
+should not have a permanent effect the instant the service restarts. Startup
+only surveys and logs.
+
+The re-seal is written to survive being repeated, interrupted and run
+concurrently: one commit per row; a row is updated only if it still holds the
+value that was read (compare-and-swap on the sealed value itself, which changes
+on every seal because the nonce does); the new value is opened before it is
+written; rows already current, and rows nothing opens, are not touched.
+
+*Cost:* one previous secret, not a chain. A copy is authenticated against its
+secret, not against the row it is stored in. And none of this covers
+`data/secrets.json`, the upstream provider keys, which are stored unsealed.
+
 ---
 
 ## Concurrency and state
@@ -273,10 +502,12 @@ Per-process, not shared:
 - **Registry snapshot** — immutable, swapped wholesale on reload
 - **Endpoint health** — in-flight counts, failure streaks
 - **Usage buffer** — flushed to the shared database
+- **Speed statistics** — what `model: "auto"` ranks with; empty after a restart
 
 Shared across processes:
 
-- **Database** — identity, permission, usage, audit
+- **Database** — identity, permission, usage, audit, and the settings changed
+  from the console (the assistant's model, the `auto` strategy)
 - **Redis** (optional) — quota counters. Without it, counters live in the
   database, which is correct for a single worker and slightly lossy in ordering
   under many workers.
