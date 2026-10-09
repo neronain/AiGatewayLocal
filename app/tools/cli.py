@@ -14,6 +14,7 @@ directory as the service user, so `.env` and the database are the gateway's own.
 
     python -m app.tools keyvault status    # which secret each sealed copy opens under
     python -m app.tools keyvault reseal    # move copies from the previous secret to the current
+                                           # (asks first; --yes for scripts)
     python -m app.tools keyvault key-id    # key id of a secret read from stdin (never echoed)
 
 `status` and `reseal` exit 0 when nothing is left to do, 1 when copies are still
@@ -154,13 +155,42 @@ def _print_survey(found) -> None:  # noqa: ANN001
         print(f"{'!' if warning['level'] != 'info' else '·'} {warning['message']}")
 
 
-async def _keyvault(action: str) -> int:
+def _confirm_reseal(before) -> bool:  # noqa: ANN001
+    """ถามก่อนย้าย พร้อมบอกว่าจะย้ายจาก secret ตัวไหนไปตัวไหน
+
+    คำสั่งนี้ใช้ secret ของ shell ที่รันมัน ซึ่ง **ไม่จำเป็นต้องเป็นชุดเดียวกับของเกตเวย์** —
+    export ค่าผิดหรือรันผิดโฟลเดอร์ แล้วสำเนาทุกใบจะถูกย้ายไปอยู่ใต้ secret ที่เกตเวย์ไม่รู้จัก
+    ปุ่มในคอนโซลไม่มีปัญหานี้เพราะใช้ secret ของ process เกตเวย์เอง · ป้ายที่พิมพ์ออกมาเทียบกับ
+    ที่คอนโซลแสดงได้ (แบบเดียวกับที่ scripts/restore.sh ให้พิมพ์ 'restore' ก่อนทับของจริง)
+    """
+    from app.core import keyvault
+
+    pending = before.counts[keyvault.PREVIOUS]
+    if not pending:
+        return True                 # ไม่มีอะไรจะถูกเขียน — ไม่มีอะไรให้ถาม
+    print(f"About to re-seal {pending} sealed key copies: from the secret with key id "
+          f"{before.previous_key_id} to the secret with key id {before.current_key_id}.")
+    print("This command uses the secrets of the shell it runs in, which need not be the "
+          "gateway's.\nCheck both key ids against the console (Access & Keys > API keys) "
+          "before going on.")
+    try:
+        reply = input("Type 'reseal' to go on: ")
+    except EOFError:
+        reply = ""
+    return reply.strip() == "reseal"
+
+
+async def _keyvault(action: str, assume_yes: bool) -> int:
     from app.core import keyrotation
     from app.db.session import dispose_db, session_scope
 
     try:
         async with session_scope() as session:
             if action == "reseal":
+                before = await keyrotation.survey(session)
+                if before.enabled and not assume_yes and not _confirm_reseal(before):
+                    print("Nothing was changed.", file=sys.stderr)
+                    return 2
                 try:
                     done = await keyrotation.reseal(session)
                 except keyrotation.ResealRefused as exc:
@@ -211,6 +241,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p_vault = sub.add_parser("keyvault", help="sealed copies of API keys: status / re-seal")
     p_vault.add_argument("action", choices=["status", "reseal", "key-id"])
+    p_vault.add_argument("--yes", action="store_true",
+                         help="reseal without asking (for scripts)")
 
     args = parser.parse_args(argv)
     settings = get_settings()
@@ -218,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "keyvault":
         if args.action == "key-id":
             return _key_id()
-        return asyncio.run(_keyvault(args.action))
+        return asyncio.run(_keyvault(args.action, args.yes))
 
     if args.cmd == "sync":
         platforms = {p.strip() for p in args.platform.split(",")} if args.platform else None

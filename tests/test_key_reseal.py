@@ -378,7 +378,7 @@ def test_the_command_line_reports_and_reseals_against_the_same_database(secrets,
     assert "lost=1" in status.stdout
     assert lost["key_prefix"] in status.stdout, "บอกว่าใบไหน"
 
-    done = _cli("reseal", current=B, previous=A)
+    done = _cli("reseal", "--yes", current=B, previous=A)
     assert done.returncode == 1, done.stderr       # ยังมีใบที่หายอยู่หนึ่งใบ
     assert "resealed 5" in done.stdout
 
@@ -395,8 +395,8 @@ def test_the_command_line_exits_zero_when_there_is_nothing_left_to_do(secrets, c
     keys = old_rows(client, secrets)
     secrets(B, previous=A)
 
-    assert _cli("reseal", current=B, previous=A).returncode == 0
-    again = _cli("reseal", current=B, previous=A)
+    assert _cli("reseal", "--yes", current=B, previous=A).returncode == 0
+    again = _cli("reseal", current=B, previous=A)       # ไม่มีอะไรจะเขียน = ไม่ต้องถาม
     assert again.returncode == 0 and "resealed 0" in again.stdout
     assert _cli("status", current=B).returncode == 0
     secrets(B)
@@ -417,7 +417,7 @@ def test_four_processes_resealing_at_once_move_every_row_exactly_once(secrets, c
 
     env = {**os.environ, "GW_KEY_REVEAL_SECRET": B, "GW_KEY_REVEAL_SECRET_PREVIOUS": A}
     running = [
-        subprocess.Popen([sys.executable, "-m", "app.tools", "keyvault", "reseal"],
+        subprocess.Popen([sys.executable, "-m", "app.tools", "keyvault", "reseal", "--yes"],
                          cwd=REPO_ROOT, env=env, stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, text=True)
         for _ in range(4)
@@ -430,6 +430,32 @@ def test_four_processes_resealing_at_once_move_every_row_exactly_once(secrets, c
     secrets(B)
     assert all(opens(client, k) for k in keys)
     assert vault(client).json()["counts"] == {"current": 12, "previous": 0, "lost": 0, "off": 0}
+
+
+def test_the_command_line_asks_before_it_moves_anything(secrets, client):
+    """คำสั่งใช้ secret ของ shell ที่รัน ซึ่งอาจไม่ใช่ชุดเดียวกับของเกตเวย์
+
+    จึงบอกก่อนว่าจะย้ายจาก secret ตัวไหนไปตัวไหน (เป็นป้าย เทียบกับคอนโซลได้) แล้วรอคำยืนยัน
+    ไม่ยืนยัน = ไม่มีอะไรถูกเขียน
+    """
+    keys = old_rows(client, secrets)
+    secrets(B, previous=A)
+    before = sealed_column(client)
+    ids = vault(client).json()
+
+    refused = _cli("reseal", current=B, previous=A, stdin="no\n")
+    assert refused.returncode == 2
+    assert ids["current_key_id"] in refused.stdout and ids["previous_key_id"] in refused.stdout
+    assert sealed_column(client) == before
+
+    silent = _cli("reseal", current=B, previous=A, stdin="")       # ไม่มีใครตอบ (cron)
+    assert silent.returncode == 2 and sealed_column(client) == before
+
+    agreed = _cli("reseal", current=B, previous=A, stdin="reseal\n")
+    assert agreed.returncode == 0, agreed.stderr
+    assert "resealed 5" in agreed.stdout
+    secrets(B)
+    assert all(opens(client, k) for k in keys)
 
 
 def test_the_command_line_refuses_to_reseal_with_the_feature_off(secrets, client):
