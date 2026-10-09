@@ -32,7 +32,7 @@ from app.api import (
     tools,
 )
 from app.config import get_settings
-from app.core import notices
+from app.core import keyrotation, notices
 from app.core.auth import generate_api_key
 from app.core.errors import ErrorCode, GatewayError
 from app.core.jsonio import FastJSONResponse
@@ -227,6 +227,23 @@ async def _bootstrap_admin(app: FastAPI) -> None:
     )
 
 
+async def _report_key_vault() -> None:
+    """นับว่าสำเนา API key ที่ผนึกไว้เปิดได้ด้วย secret ตัวไหน แล้วเขียนลง log
+
+    อ่านอย่างเดียว · ทุก worker รัน hook นี้ จึงได้บรรทัดเดียวกันซ้ำตามจำนวน worker —
+    ยอมให้ซ้ำ เพราะไม่มีอะไรถูกเขียนและไม่มีอะไรให้แย่งกัน · การย้ายของไปผนึกใต้ secret
+    ตัวใหม่ **ไม่ทำที่นี่** โดยตั้งใจ (เหตุผลอยู่ที่หัวไฟล์ app/core/keyrotation.py)
+
+    ผู้ดูแลต้องรู้จากตรงนี้ว่ามีใบที่เปิดไม่ได้ ไม่ใช่จากคนที่มาบอกว่ากด Reveal แล้วล้ม ·
+    ตรวจไม่สำเร็จไม่ใช่เหตุให้เกตเวย์ไม่ขึ้น — นี่คือรายงาน ไม่ใช่เงื่อนไขของการทำงาน
+    """
+    try:
+        async with session_scope() as session:
+            keyrotation.log_survey(await keyrotation.survey(session))
+    except Exception as exc:  # noqa: BLE001 - รายงานประกอบ ห้ามล้มการเริ่มระบบ
+        log.warning("could not check sealed key copies at startup: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -244,6 +261,7 @@ async def lifespan(app: FastAPI):
     state.started_at = time.time()
     await state.start()
     await _bootstrap_admin(app)
+    await _report_key_vault()
 
     # Mirror the YAML registry into the DB so usage joins and compat rows work.
     # `alias` is unique, so concurrent workers race here too; the loser's rows

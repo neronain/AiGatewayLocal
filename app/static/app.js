@@ -3004,14 +3004,95 @@ function noAdminAccess(k) {
   return ['admin', 'manager'].includes(k.owner_role) && (k.limited_by || []).length > 0;
 }
 
+// ── สำเนา key ที่ผนึกไว้ (GW_KEY_REVEAL_SECRET) ─────────────────────────────────
+//
+// สถานะของแต่ละใบมาจากเซิร์ฟเวอร์ (`seal_state`) ซึ่งลองเปิดจริงด้วย secret ที่ตั้งอยู่ ·
+// หน้านี้แค่แปลเป็นสิ่งที่ผู้ดูแลต้องรู้: ใบไหนรอผนึกใหม่ ใบไหนเปิดไม่ได้ และต้องทำอะไร
+// เดิมรู้ได้ทางเดียวคือกด Reveal แล้วล้ม (2026-10-09)
+function sealPill(k) {
+  if (k.seal_state === 'previous') {
+    return ' <span class="pill warn" title="สำเนาของใบนี้ยังผนึกใต้ secret ตัวเก่า — เปิดดูได้ตามปกติ '
+      + 'แต่ต้องผนึกใหม่ก่อนเอา GW_KEY_REVEAL_SECRET_PREVIOUS ออก">re-seal pending</span>';
+  }
+  if (k.seal_state === 'lost') {
+    return ' <span class="pill err" title="มีสำเนาผนึกไว้ แต่ secret ที่ตั้งอยู่เปิดไม่ได้ · '
+      + 'ตัว key ยังใช้งานได้ตามปกติ">copy unreadable</span>';
+  }
+  return '';
+}
+
+// ข้อความแทนที่ปุ่ม Reveal เมื่อใบนั้นมีสำเนาแต่เปิดไม่ได้ · ว่าง = ใช้ข้อความ "เก็บแค่ hash"
+function sealNote(k) {
+  if (k.seal_state === 'lost') {
+    return 'ดู key ไม่ได้ — สำเนาผนึกไว้ด้วย secret ตัวอื่น · ถ้ายังมี secret เดิม ใส่เป็น '
+      + 'GW_KEY_REVEAL_SECRET_PREVIOUS แล้ว restart · ถ้าไม่มีแล้ว ออก key ใหม่ (ใบเดิมยังใช้งานได้)';
+  }
+  if (k.seal_state === 'off') {
+    return 'ดู key ไม่ได้ — มีสำเนาผนึกไว้ แต่ไม่ได้ตั้ง GW_KEY_REVEAL_SECRET';
+  }
+  return '';
+}
+
+// คำอธิบายเป็นภาษาไทยตามรหัสคำเตือน · รหัสที่หน้านี้ยังไม่รู้จักใช้ข้อความของเซิร์ฟเวอร์
+// แทนที่จะเงียบ — คำเตือนที่ไม่ขึ้นเพราะคอนโซลตามไม่ทันคือคำเตือนที่ไม่มีอยู่
+function vaultAdvice(v, w) {
+  const c = v.counts || {};
+  const thai = {
+    rotation_pending: `สำเนา ${num(c.previous)} ใบยังเปิดได้ด้วย secret ตัวเก่าเท่านั้น · ผนึกใหม่ก่อน `
+      + 'แล้วค่อยเอา GW_KEY_REVEAL_SECRET_PREVIOUS ออก — เอาออกก่อน ใบพวกนี้จะเปิดไม่ได้',
+    lost: `สำเนา ${num(c.lost)} ใบเปิดไม่ได้ด้วย secret ที่ตั้งอยู่ · ตัว key ยังใช้งานได้ตามปกติ · `
+      + 'ถ้ายังมี secret เดิม ใส่เป็น GW_KEY_REVEAL_SECRET_PREVIOUS แล้ว restart · '
+      + 'ถ้าไม่มีแล้ว ออก key ใหม่ให้คนที่ต้องการดูของตัวเองซ้ำ',
+    previous_unused: 'ไม่มีสำเนาใบไหนต้องใช้ GW_KEY_REVEAL_SECRET_PREVIOUS แล้ว · เอาออกจาก .env แล้ว '
+      + 'restart ได้ · เก็บ secret เก่าไว้ในที่ปลอดภัยตราบที่ยังเก็บ backup ที่ทำก่อนการผนึกใหม่',
+    previous_equals_current: 'GW_KEY_REVEAL_SECRET_PREVIOUS เป็นค่าเดียวกับ GW_KEY_REVEAL_SECRET '
+      + 'จึงไม่มีผลอะไร · จะเปลี่ยน secret: ตัวหลักต้องเป็นค่าใหม่ ตัว PREVIOUS เป็นค่าเก่า',
+    previous_does_not_match: 'GW_KEY_REVEAL_SECRET_PREVIOUS ที่ตั้งอยู่ไม่ใช่ตัวที่ผนึกใบที่เปิดไม่ได้ · '
+      + 'เทียบ key id ของแต่ละใบข้างล่างกับผลของ python -m app.tools keyvault key-id',
+    sealed_but_disabled: `มีสำเนาผนึกไว้ ${num(c.off)} ใบ แต่ไม่ได้ตั้ง GW_KEY_REVEAL_SECRET — เปิดดูไม่ได้ `
+      + 'และ key ใหม่จะไม่เก็บสำเนา · ตั้งกลับเป็นค่าเดิมแล้ว restart เพื่อเปิดได้อีก',
+    previous_without_current: 'ตั้ง GW_KEY_REVEAL_SECRET_PREVIOUS ไว้ แต่ไม่ได้ตั้ง GW_KEY_REVEAL_SECRET — '
+      + 'ตัว PREVIOUS ใช้ระหว่างเปลี่ยน secret เท่านั้น ไม่เปิดฟีเจอร์เอง',
+  };
+  return thai[w.code] || w.message;
+}
+
+// แผงเหนือรายการ key · ว่างเมื่อไม่มีอะไรต้องทำ — แผงที่ขึ้นตลอดคือแผงที่คนเลิกอ่าน
+function keyVaultPanel(v) {
+  if (!v || !(v.warnings || []).length) return '';
+  const c = v.counts || {};
+  const lost = (v.lost || []).map((k) => `<li><code>${esc(k.key_prefix)}…</code> ${esc(k.name || '—')}${
+    k.revoked ? ' (revoked)' : ''}${
+    k.reason === 'damaged' ? ' · สำเนาเสีย — secret ตัวไหนก็เปิดไม่ได้'
+      : k.sealed_key_id ? ` · ผนึกด้วย secret ที่มี key id <code>${esc(k.sealed_key_id)}</code>` : ''}</li>`).join('');
+  const ids = v.current_key_id
+    ? ` · key id ปัจจุบัน <code>${esc(v.current_key_id)}</code>${
+      v.previous_key_id ? ` · ตัวเก่า <code>${esc(v.previous_key_id)}</code>` : ''}`
+    : '';
+  return `<div class="note" style="margin:0 0 12px">
+    <strong>Sealed key copies</strong>
+    <div class="hint">current ${num(c.current)} · previous ${num(c.previous)} · lost ${num(c.lost)}${
+      c.off ? ` · off ${num(c.off)}` : ''}${ids}</div>
+    <ul>${v.warnings.map((w) => `<li>${esc(vaultAdvice(v, w))}</li>`).join('')}</ul>
+    ${lost ? `<div class="hint">ใบที่เปิดไม่ได้:</div><ul>${lost}</ul>` : ''}
+    ${c.previous ? `<button id="vault-reseal" class="small"
+      title="ผนึกสำเนาที่ยังอยู่ใต้ secret ตัวเก่าใหม่ ใต้ตัวปัจจุบัน · กดซ้ำได้ และถูกบันทึกว่าใครกด"
+      >Re-seal ${num(c.previous)} key${c.previous === 1 ? '' : 's'}</button>` : ''}
+    ${v.last_reseal ? `<div class="hint">ผนึกใหม่ครั้งล่าสุด ${
+      esc(new Date(v.last_reseal.at).toLocaleString())} · ${num(v.last_reseal.resealed)} ใบ</div>` : ''}
+  </div>`;
+}
+
 async function loadAccess() {
   // โควตาอ่านต่อคน · กิจกรรมอ่านต่อ key · ล้มแล้วไม่ทำให้ทั้งหน้าพัง เพราะสองอันนี้
   // เป็นข้อมูลประกอบ ไม่ใช่สิ่งที่หน้านี้มีไว้ทำ
-  const [users, workspaces, keys, groups, quota, activity] = await Promise.all([
+  const [users, workspaces, keys, groups, quota, activity, vault] = await Promise.all([
     api('/admin/users'), api('/admin/workspaces'), api('/admin/api-keys'),
     api('/admin/access-groups'),
     api('/admin/usage/quota').catch(() => ({ data: [] })),
     api('/admin/usage/by-key?days=7').catch(() => ({ data: [] })),
+    // ผู้ดูแลเท่านั้น — manager ถามแล้วได้ 403 ซึ่งไม่ใช่ข้อผิดพลาดของหน้านี้
+    myRole === 'admin' ? api('/admin/key-vault').catch(() => null) : null,
   ]);
   const quotaOf = Object.fromEntries((quota.data || []).map((q) => [q.user_id, q]));
   const seenOf = Object.fromEntries((activity.data || []).map((a) => [a.api_key_id, a]));
@@ -3210,7 +3291,7 @@ async function loadAccess() {
              <button data-scope="${esc(k.id)}" data-name="${esc(k.name || k.key_prefix)}">Models…</button>
              ${myRole !== 'admin' ? '' : k.revealable
                ? `<button data-reveal="${esc(k.id)}" data-label="${esc(k.name || k.key_prefix)}">Reveal</button>`
-               : '<div class="menu-note">ดู key ไม่ได้ — เก็บแค่ hash</div>'}
+               : `<div class="menu-note">${esc(sealNote(k) || 'ดู key ไม่ได้ — เก็บแค่ hash')}</div>`}
              <button class="danger" data-revoke="${esc(k.id)}">Revoke</button>
            </div></span>`;
     return `<div class="kcard${k.revoked ? ' kdim' : ''}">
@@ -3218,7 +3299,8 @@ async function loadAccess() {
         <div class="kc-id">
           <div class="kc-label"><code>${esc(k.key_prefix)}…</code> ${esc(k.name || '—')}${
             k.kind === 'service' ? ' <span class="pill mute">service</span>' : ''}${
-            noAdminAccess(k) ? ` <span class="pill warn" title="${esc(NO_ADMIN_ACCESS)}">no admin access</span>` : ''}</div>
+            noAdminAccess(k) ? ` <span class="pill warn" title="${esc(NO_ADMIN_ACCESS)}">no admin access</span>` : ''}${
+            myRole === 'admin' ? sealPill(k) : ''}</div>
           <div class="hint">${esc(u ? u.external_id : k.user_id)}${
             workspace ? ' · ' + esc(workspace.code) : ''}${scope ? ' · ' + scope : ''}</div>
         </div>
@@ -3361,6 +3443,31 @@ async function loadAccess() {
         + 'การลบเป็นการเอาแถวออกจากรายการ ประวัติการใช้งานยังอยู่ครบ')) return;
       try { await del(`/admin/api-keys/${btn.dataset.purge}/purge`); await loadAccess(); }
       catch (e) { showError(e.message); }
+    };
+  }
+
+  // สำเนาที่ผนึกไว้: บอกสถานะและให้สั่งผนึกใหม่ · การผนึกใหม่ไม่เกิดเองตอน restart โดยตั้งใจ
+  // — ของที่ย้ายไปอยู่ใต้ secret อีกตัวควรเป็นสิ่งที่มีคนกด และมีชื่อคนกดอยู่ใน audit log
+  $('key-vault').innerHTML = keyVaultPanel(vault);
+  const resealBtn = $('vault-reseal');
+  if (resealBtn) {
+    resealBtn.onclick = async () => {
+      const pending = vault.counts.previous;
+      if (!confirm(`ผนึกสำเนา ${pending} ใบใหม่ ใต้ secret ตัวปัจจุบัน?\n\n`
+        + 'ทุกใบยังเปิดดูได้เหมือนเดิมตลอดทาง · กดซ้ำได้ · หลังจากนี้เอา '
+        + 'GW_KEY_REVEAL_SECRET_PREVIOUS ออกได้เมื่อหน้านี้บอกว่าไม่มีใบไหนต้องใช้มันแล้ว\n\n'
+        + 'สำรองข้อมูลก่อน (scripts/backup.sh) ถ้ายังไม่ได้ทำ')) return;
+      try {
+        const out = await post('/admin/key-vault/reseal', {});
+        await loadAccess();
+        // บอกตามที่เซิร์ฟเวอร์รายงานว่าย้ายจริง ไม่ใช่ตามจำนวนที่ตั้งใจจะย้าย
+        const left = out.vault.counts.previous;
+        banner('error', left || out.lost ? 'warn' : 'ok',
+          `ผนึกใหม่แล้ว ${num(out.resealed)} ใบ`
+          + (left ? ` · ยังเหลือ ${num(left)} ใบ — กดอีกครั้ง` : '')
+          + (out.lost ? ` · เปิดไม่ได้ ${num(out.lost)} ใบ (ไม่ได้แตะ)` : '')
+          + (!left && !out.lost ? ' · เอา GW_KEY_REVEAL_SECRET_PREVIOUS ออกจาก .env แล้ว restart ได้' : ''));
+      } catch (e) { showError(e.message); }
     };
   }
 
