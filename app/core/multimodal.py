@@ -308,6 +308,12 @@ def profile_openai_request(body: dict[str, Any], policy: VisionPolicy) -> Reques
     # นิยาม tool ถูกส่งทุกเทิร์นและยาวได้เป็นหมื่น token — เดิมไม่ถูกนับเลย
     profile.add_text(_json_text(body.get("tools")))
     profile.add_text(_json_text(body.get("functions")))
+    # `response_format` **ไม่ถูกนับ** โดยตั้งใจ: llama.cpp แปลง schema เป็น grammar ที่คุมการสุ่ม
+    # ไม่ได้ render ลง prompt — วัดกับเครื่องจริง 2026-10-09 (b11046) `usage.prompt_tokens` = 17
+    # ทั้งมีและไม่มี schema ~110 อักขระ และเท่ากันทุกรูปของ response_format ที่ลอง · นับเพิ่มคือ
+    # ประมาณเกินของจริง · profiler ของ /v1/responses กับ /v1/messages ข้างล่างนับ schema ไว้
+    # (ของเดิม) จึงประมาณเกินเท่าขนาด schema เมื่อเครื่องที่เสิร์ฟเป็น llama.cpp · สองทางยัง
+    # ไม่ตรงกัน และ vLLM ยังไม่ได้วัด
 
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
