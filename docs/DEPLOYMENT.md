@@ -744,7 +744,7 @@ you; disabling it takes its models away everywhere at once, reversibly.
 "Everywhere" includes API keys limited to the bundle. A key whose only limit is
 access groups, all of them switched off, deleted or empty, **calls nothing**
 (`403 MODEL_NOT_PERMITTED`, `reason_code: key_bundle_off`) until one is switched
-back on or the key is given a model list. Until 2026-10 such a key fell through
+back on or the key is given a model list. Until 1.13.0 such a key fell through
 to "no limit was written" and could call everything its owner could — switching
 a bundle off widened the keys that named it. A key that has a model list as well
 keeps the list. And a bundle cannot be deleted while a key that is not revoked
@@ -826,9 +826,28 @@ refusal is `403 INSUFFICIENT_SCOPE` and says who can do it instead
 administrator to their own workspace and send `{"models": []}` to that
 administrator's model-limited key, turning it back into a full admin key.
 
-One thing is unchanged and worth knowing: a manager can still add an
-administrator to a workspace they manage, and then sees that administrator among
-the users, the names, prefixes and limits of their keys, and their usage.
+**An administrator is added to a workspace by an administrator.** The first step
+of that chain is closed as well. Being in a workspace gives an administrator
+nothing — they are not scoped by membership — but it puts them inside the
+manager's views: their row among the users, the names, prefixes and limits of
+their keys, their usage. From 1.13.0 a manager who tries to add an administrator
+(`POST /admin/workspaces/{id}/join`, the bulk `…/members`, or
+`scripts/provision.py`, which goes through `/join`) gets `403
+INSUFFICIENT_SCOPE` with `reason_code: enrol_administrator`; in a bulk request
+one administrator refuses the whole list and nobody is added. An administrator
+who wants to be in a workspace adds themselves, or another administrator does.
+
+Only people who would actually be added are checked, so nothing that exists is
+disturbed: an administrator who is already a member stays one and stays visible
+to that workspace's managers, a roster sent again still goes through, and a
+manager can still *remove* an administrator. To see whether you have any such
+case, look at **Access & Keys → People** for a row whose role is `admin` and
+whose Workspaces column is not empty (`GET /admin/users` → `workspaces`).
+
+What a manager can still do, by design: enrol **any** person who is not an
+administrator, by their user id — including another manager, or a member who
+until then belonged only to somebody else's workspace — and from then on issue
+keys in that person's name, within the models the manager could grant.
 
 Why: a key is issued for a job, and "this key may only call `coding`" is a
 statement about that job. While the key still carried its owner's role it could
@@ -2179,6 +2198,14 @@ It compares `app/config.py:VERSION` against the latest release of
 `neronain/AiGatewayLocal` and prints the commands for however *this* host was
 installed — checkout, container, or copied files, decided by what is on disk.
 
+"The latest release" is whatever GitHub names as that repository's latest
+published release, and — when no release has been published there — the
+highest version-shaped **git tag**. That is the only signal: a gateway on 1.12.1
+is told an update is available once a release or the tag `v1.13.0` exists on
+the repository, not when the code is merged. Until then it is compared with
+whatever the newest release or tag is at that moment, and a gateway already
+running 1.13.0 answers that it is "newer than the latest release".
+
 What it does not do matters as much on a customer site:
 
 | | |
@@ -2199,7 +2226,7 @@ other client on the host.
 
 #### Before upgrading: keys that lose admin rights
 
-From 2026-10 an API key that carries a limit of its own — a model list, an
+From 1.13.0 an API key that carries a limit of its own — a model list, an
 access group, a workspace, a quota of its own — no longer carries its owner's
 manager or admin rights (§2.2). There is no switch: the rule applies from the
 first start of the new version. A scheduled job that uses such a key for
@@ -2255,7 +2282,14 @@ The report has three sections:
 PostgreSQL needs `psycopg` or `psycopg2` beside `asyncpg`, and this script has no
 test that runs it against PostgreSQL.
 
-#### What this upgrade changes, and what to know before rolling back
+On a host that is updated with the console's **Update now** button, "the new
+checkout" is the folder `GW_UPDATE_SOURCE` names. The button pulls it for you
+when it runs, which is too late for a report that has to come first — so bring
+the folder up to date by hand (`git -C /srv/AiGatewayLocal pull`, or however the
+source reaches that machine), run the report from there, and only then press the
+button.
+
+#### Upgrading to 1.13.0: what changes, and what to know before rolling back
 
 *Changes made for you at the first start:*
 
@@ -2276,7 +2310,23 @@ repaired or answered with `400` instead of being forwarded
 ([API.md](API.md#post-v1chatcompletions)); `/v1/responses` and `/v1/messages`
 refuse a structured-output format the translator cannot carry.
 
-*Rolling back to the previous version:*
+*Not changed for you, and worth a look:* an administrator who was added to a
+manager's workspace before the upgrade stays in it and stays visible to that
+manager — their user row, their keys' names, prefixes and limits, their usage.
+1.13.0 stops managers adding administrators; it does not take existing ones out.
+Check **Access & Keys → People** for rows with role `admin` and a non-empty
+Workspaces column, and remove them from those workspaces if that was not
+intended.
+
+*Not installed by the Update button:* the fixes in `scripts/backup.sh` and
+`scripts/restore.sh` and the new `scripts/restricted_key_report.py`. The button
+installs `app/` and `pyproject.toml` only; copy those three by hand — the
+commands are under
+[The update button](#the-update-button-and-why-it-is-built-this-way). A host
+upgraded by re-running `scripts/bootstrap.sh` from the checkout gets them with
+everything else.
+
+*Rolling back to 1.12.1 or earlier:*
 
 * **Remove `quality_score` from every model file first.** The older registry
   schema rejects unknown keys, so a file that has the line fails to load.
@@ -2381,6 +2431,36 @@ updater the log says so and prints the one command to install it:
 sudo install -m 755 -o root -g root /srv/AiGatewayLocal/scripts/self_update.sh \
   /opt/litegate/scripts/self_update.sh
 ```
+
+**It does not update the other scripts either — and for those nothing tells
+you.** Everything else under `/opt/litegate/scripts/` is what the last
+`bootstrap.sh` put there. A release that fixes one of them reaches a
+button-updated host only when somebody copies it, and unlike the updater the log
+does not mention it. 1.13.0 is such a release: `backup.sh` (the restore command
+written into each archive's `MANIFEST`) and `restore.sh` (the pepper comparison
+that refused a valid restore, and the printed `tar` command that did not run on
+GNU tar) were fixed, and `restricted_key_report.py` is new. See what differs
+first, then install, as root:
+
+```bash
+SRC=/srv/AiGatewayLocal        # the folder GW_UPDATE_SOURCE names
+DST=/opt/litegate
+
+for f in backup.sh restore.sh restricted_key_report.py; do
+  sudo cmp "$SRC/scripts/$f" "$DST/scripts/$f" && echo "$f: identical"
+done
+
+sudo install -m 755 -o root -g root \
+  "$SRC/scripts/backup.sh" "$SRC/scripts/restore.sh" \
+  "$SRC/scripts/restricted_key_report.py" "$DST/scripts/"
+```
+
+`cmp` prints where a file differs, or that it does not exist yet; a line saying
+`identical` means there is nothing to copy for that one. Until `restore.sh` is
+copied, a restore on that host behaves as it did before the fixes — including
+refusing an in-place restore when the same pepper is written with and without
+quotes in the two `.env` files. The same goes for any later release whose notes
+name a file under `scripts/`.
 
 When the host has a checkout of this repository:
 
@@ -2776,7 +2856,7 @@ nothing to warn about.
 A key whose copy is `lost` or `off` **still authenticates**. Only showing it
 again is affected.
 
-**Finding the secret a lost copy needs.** Copies sealed by this version record a
+**Finding the secret a lost copy needs.** Copies sealed by 1.13.0 or later record a
 *key id* — eight hex characters derived from the secret, safe to display, of no
 use for guessing it. The console and `keyvault status` show the key id each lost
 copy was sealed under. To check a secret you still hold against it without

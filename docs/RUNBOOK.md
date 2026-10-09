@@ -288,7 +288,7 @@ identical to the user and are not fixed on the key's model list:
 |---|---|
 | `not available to you. Allowed by the model list on this key` | The key's own scope |
 | the workspace's models | The workspace, or it is suspended |
-| `this key is limited to an access group that is switched off or no longer exists` | Every access group the key names is off, deleted or empty, and the key has no model list. It calls nothing until a group is switched back on (**Access & Keys → Access groups**) or the key is given a model list. A caller that sends `model: "auto"` gets the same answer. Before 2026-10 such a key called everything instead, so this can appear right after an upgrade |
+| `this key is limited to an access group that is switched off or no longer exists` | Every access group the key names is off, deleted or empty, and the key has no model list. It calls nothing until a group is switched back on (**Access & Keys → Access groups**) or the key is given a model list. A caller that sends `model: "auto"` gets the same answer. Before 1.13.0 such a key called everything instead, so this can appear right after an upgrade |
 | unknown model | The alias is not in the registry — a typo, or the file failed validation (`/readyz`) |
 
 One more case looks the same to the caller and is not about permission at all:
@@ -322,7 +322,7 @@ error says which:
 ```
 
 This is the rule doing its job, and it appears on the first start of the version
-that introduced it (2026-10) for keys issued long before. The key can report on
+that introduced it (1.13.0) for keys issued long before. The key can report on
 itself, with nothing but itself:
 
 ```bash
@@ -370,6 +370,15 @@ rights over workspaces they do not manage. The fix is the one the message
 names: ask the owner or an administrator. A manager can still issue another
 manager a key *with* a model list or a workspace, and everything about members'
 keys is as it was.
+
+A third refusal belongs to the same family: a manager adding an administrator to
+their workspace gets `403` with `reason_code: enrol_administrator` (from
+1.13.0), and in a bulk enrolment the whole list is refused — nobody is added.
+Take the administrators out of the list and send it again; an administrator who
+should be in the workspace adds themselves, or another administrator does. An
+administrator who was already a member before the upgrade is not affected, and
+is not removed either — **Access & Keys → People** shows them as a row with role
+`admin` and a non-empty Workspaces column.
 
 ## Reveal fails for a key
 
@@ -584,6 +593,14 @@ version, against the database of the one still running:
 ```bash
 python scripts/restricted_key_report.py --db /opt/litegate/data/gateway.db
 ```
+
+On a host updated with the console's **Update now** button the new version is
+the folder `GW_UPDATE_SOURCE` names — pull it by hand first, because the button
+only pulls when it runs. The button also leaves `scripts/` alone: after
+upgrading to 1.13.0 that way, copy the fixed `backup.sh` and `restore.sh` (and
+the report itself) into `/opt/litegate/scripts/` with the commands in
+[DEPLOYMENT.md](DEPLOYMENT.md#the-update-button-and-why-it-is-built-this-way),
+or the next restore on that host runs the old script.
 
 It writes nothing. Exit `0` means no key changes; `1` means at least one does —
 read the list; `2` means the report could not be produced (no such file, not a
