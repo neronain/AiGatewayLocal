@@ -18,7 +18,8 @@
 
 ขอบเขต: เฉพาะฟิลด์ที่เกตเวย์อ่านเองหรือแปลเอง · ฟิลด์อื่น (`frequency_penalty`, `logit_bias`,
 …) ผ่านไปให้ backend ตัดสินเหมือนเดิม — backend ตอบ 400 ของมันเองได้ และเราไม่ต้องตามสเปก
-ของทุกเซิร์ฟเวอร์
+ของทุกเซิร์ฟเวอร์ · ข้อยกเว้นคือ `response_format` ของ chat: backend ในบ้าน *ไม่* ตอบ 400 กับ
+รูปที่ผิด มันตอบ 200 โดยไม่ใช้ schema (วัด 2026-10-09 — ดู app/core/responseformat.py)
 
 ค่าที่ถูกแต่มาในรูปที่ไม่ตรงเป๊ะถูกปรับให้เข้ารูปใน body เลย (`max_tokens: 100.0` -> `100`):
 JSON ไม่แยก int กับ float และ client บางตัวส่งเลขจำนวนเต็มเป็นทศนิยม · ด่านถัดไปจึงเห็น
@@ -29,6 +30,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core import notices, responseformat
 from app.core.errors import ErrorCode, GatewayError
 
 # เท่ากับเพดานที่ OpenAI ระบุไว้สำหรับ `n` · เกินนี้ไม่ใช่การใช้งาน เป็นการพิมพ์ผิด
@@ -134,6 +136,20 @@ def _sampling(body: dict[str, Any]) -> None:
     _number(body, "top_p", 0.0, 1.0)
 
 
+def _response_format(body: dict[str, Any]) -> None:
+    """รูปของ structured output — ซ่อมใน body เลย แล้วบอกผู้เรียกว่าแก้อะไร
+
+    ทำที่ด่านนี้เพราะทุกอย่างถัดไป (แคชคำตอบ · payload ที่ส่งจริง) อ่านจาก body ก้อนเดียวกัน
+    จึงเห็นรูปที่แก้แล้วเหมือนกันหมด · null = ไม่ได้ขอ ส่งต่อเหมือนเดิม
+    """
+    wanted = body.get("response_format")
+    if wanted is None:
+        return
+    body["response_format"], adjusted = responseformat.normalize(wanted)
+    if adjusted:
+        notices.put(notices.ADJUSTED, ", ".join(adjusted))
+
+
 def validate_chat_params(body: dict[str, Any]) -> None:
     """/v1/chat/completions"""
     _positive_int(body, "max_tokens")
@@ -155,6 +171,7 @@ def validate_chat_params(body: dict[str, Any]) -> None:
     choice = body.get("tool_choice")
     if choice is not None and not isinstance(choice, (str, dict)):
         raise _bad("tool_choice", f"must be a string or an object, not {_describe(choice)}.")
+    _response_format(body)
 
 
 def validate_messages_params(body: dict[str, Any]) -> None:

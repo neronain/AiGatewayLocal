@@ -36,6 +36,9 @@ from contextvars import ContextVar
 OUTPUT_CAP = "x-litegate-output-cap"
 # นิยามเครื่องมือที่ตัวแปลข้ามไป เพราะ backend ในบ้านรันไม่ได้ (เครื่องมือที่ผู้ให้บริการรันเอง)
 IGNORED = "x-litegate-ignored"
+# ฟิลด์ของคำขอที่เกตเวย์เขียนใหม่ให้เข้ารูปก่อนส่ง (ตอนนี้: `response_format` ที่คีย์อยู่ผิดที่ —
+# app/core/responseformat.py) · คั่นด้วย ", " ชิ้นละ `ต้นทาง->ปลายทาง` หรือ `ตำแหน่ง="ค่าที่เติม"`
+ADJUSTED = "x-litegate-adjusted"
 
 _book: ContextVar[dict[str, str] | None] = ContextVar("litegate_notices", default=None)
 
