@@ -120,7 +120,9 @@ def test_the_whole_chain_from_holding_the_key_ends_nowhere(client):
     k = limited["api_key"]
 
     whose = call(client, k, "GET", "/v1/me").json()["user_id"]
-    # ใส่ admin เข้าวิชาตัวเอง: ยังทำได้ (เป็นเรื่องให้เจ้าของงานเคาะ) — ที่ต้องไม่ได้คือผลของมัน
+    # ใส่ admin เข้าวิชาตัวเอง: ถูกปฏิเสธแล้วเช่นกัน (เจ้าของงานเคาะ 2026-10-09 — ดู
+    # test_a_manager_does_not_enrol_an_administrator.py) · ข้อนี้ไม่ขึ้นกับด่านนั้น: ไม่ว่า
+    # ขั้นแรกจะผ่านหรือไม่ ปลายทางต้องไม่ได้
     as_person(client, "boss", "POST", f"/admin/workspaces/{ws['id']}/join",
               json={"user_id": whose})
     lifted = as_person(client, "boss", "PATCH", f"/admin/api-keys/{limited['id']}",

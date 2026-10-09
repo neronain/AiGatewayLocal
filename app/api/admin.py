@@ -128,6 +128,57 @@ async def _assert_owns(session: AsyncSession, actor: Principal, workspace_id: st
     )
 
 
+async def _assert_may_enrol(
+    session: AsyncSession, actor: Principal, user_ids: list[str]
+) -> None:
+    """An administrator is added to a workspace by an administrator.
+
+    For every route that *adds* a member by id, asked about the people actually
+    being added - not about somebody who is in the workspace already, so a
+    roster sent again after a partial failure still goes through, and
+    memberships that exist are left as they are.
+
+    Membership gives an administrator nothing: they are not scoped by it. What
+    it does is put them inside the manager's views - their user row, the list
+    of their keys with names, prefixes and limits, their usage and quota. A
+    manager who held a model-limited key an administrator had issued for the
+    class read the owner's id from `GET /v1/me`, enrolled that administrator,
+    and from there lifted the limit on the key (independent review, 2026-10-09).
+    The lifting is closed by `_assert_may_decide_key`; this closes the step that
+    made the key visible in the first place. An administrator who wants to be
+    in a class adds themselves.
+
+    Removing is not held to this: taking somebody out narrows what a manager
+    sees, and it has to stay possible for an administrator who is already in a
+    manager's workspace when this rule arrives.
+
+    A manager enrolling another manager is left alone on purpose. That is how a
+    co-teacher is added, and what the enrolling manager gains is what enrolling
+    a member gives - nothing of the other manager's rights, which a key would
+    have to carry and `_assert_may_decide_key` does not let them issue.
+    """
+    if actor.is_admin or not user_ids:
+        return
+    rows = await session.execute(
+        select(User.external_id, User.role)
+        .where(User.id.in_(user_ids))
+        .order_by(User.external_id)
+    )
+    administrators = [name for name, role in rows if normalise_role(role) == "admin"]
+    if not administrators:
+        return
+    named = ", ".join(administrators[:5]) + (
+        f" and {len(administrators) - 5} more" if len(administrators) > 5 else ""
+    )
+    raise GatewayError(
+        ErrorCode.INSUFFICIENT_SCOPE,
+        f"{named} {'is an administrator' if len(administrators) == 1 else 'are administrators'}. "
+        "Only an administrator can add an administrator to a workspace - they "
+        "can add themselves, or another administrator can. Nobody was added.",
+        details={"reason_code": "enrol_administrator", "administrators": administrators[:50]},
+    )
+
+
 async def _assert_may_grant(
     session: AsyncSession, actor: Principal, aliases: list[str], state: AppState
 ) -> None:
@@ -994,6 +1045,7 @@ async def add_members(
         )
     }
     added = sorted(known - already)
+    await _assert_may_enrol(session, actor, added)
     for user_id in added:
         session.add(Membership(workspace_id=workspace_id, user_id=user_id))
 
@@ -1354,6 +1406,7 @@ async def join(
     )
     if existing.scalar_one_or_none():
         return {"workspace_id": workspace_id, "user_id": user_id, "status": "already_joined"}
+    await _assert_may_enrol(session, actor, [user_id])
     session.add(
         Membership(
             workspace_id=workspace_id, user_id=user_id, role=payload.get("role", "member")
