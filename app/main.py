@@ -109,6 +109,12 @@ def _configure_logging(level: str) -> None:
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    # aiosqlite เขียนทุกคำสั่ง SQL **พร้อมค่าที่ผูก** ที่ระดับ DEBUG · GW_LOG_LEVEL=DEBUG
+    # จึงเท่ากับคัดลอกฐานลง journal ทีละแถว — hash ของ API key · hash ของรหัสผ่าน ·
+    # สำเนา key ที่ผนึกไว้ (เจอ 2026-10-09 ตอนเขียนเทสการผนึกใหม่) · log ถูกส่งต่อและเก็บ
+    # นานกว่าฐาน ของพวกนี้ไม่ควรไปอยู่ที่นั่น · จะดู SQL ให้เปิด echo ของ SQLAlchemy
+    # ซึ่งเป็นสิ่งที่ต้องตั้งใจทำ
+    logging.getLogger("aiosqlite").setLevel(logging.INFO)
 
 
 async def _bootstrap_admin(app: FastAPI) -> None:

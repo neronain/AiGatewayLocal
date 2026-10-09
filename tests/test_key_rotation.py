@@ -304,3 +304,29 @@ def test_mixed_old_rows_all_open_under_current_plus_previous(secrets, client):
     assert all(opens(client, created) for created in [*old_v1, *old_new, mid])
     as_deployed_version_wrote(client, mid, B)     # v1 ใต้ตัวปัจจุบันก็ต้องยังเป็น current
     assert listed(client)[mid["id"]]["seal_state"] == "current"
+
+
+# ── log ระดับ DEBUG ─────────────────────────────────────────────────────────
+
+def test_debug_logging_does_not_copy_the_database_into_the_log(secrets, client, caplog):
+    """GW_LOG_LEVEL=DEBUG ต้องไม่ทำให้ค่าที่ผนึกและ hash ของ key ไหลลง log
+
+    เจอตอนเขียนเทสการผนึกใหม่ (2026-10-09): aiosqlite เขียนทุกคำสั่ง SQL **พร้อมค่าที่ผูก**
+    ที่ระดับ DEBUG · การเก็บสำเนาแลกมาด้วยข้อสัญญาว่า "ฐานที่หลุดไปอย่างเดียวไม่เผยอะไร"
+    ซึ่งไม่มีความหมายถ้า log — ที่ถูกส่งต่อและเก็บนานกว่าฐาน — มีของชุดเดียวกันอยู่
+    """
+    import logging
+
+    from app.core.auth import hash_api_key
+
+    caplog.set_level(logging.DEBUG)
+    (created,) = issued_under(client, secrets, A, 1, prefix="x", fmt="new")
+    stored = sealed_column(client)[created["id"]]
+    listed(client)
+
+    # ยืนยันว่ากำลังจับ log ระดับ DEBUG อยู่จริง ไม่ใช่ผ่านเพราะไม่มีอะไรถูกจับเลย
+    logging.getLogger("app.tests.marker").debug("debug-capture-is-live")
+    assert "debug-capture-is-live" in caplog.text
+    assert stored.rsplit(":", 1)[-1] not in caplog.text, "ค่าที่ผนึก"
+    assert hash_api_key(created["api_key"]) not in caplog.text, "hash ที่ใช้ยืนยันตัว"
+    assert created["api_key"] not in caplog.text
