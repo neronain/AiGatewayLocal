@@ -76,6 +76,7 @@ message:
 |---|---|---|
 | `INSUFFICIENT_SCOPE` | `restricted_key` | The key's owner is a manager or an admin, but the key carries a limit of its own and so does not carry those rights. `details.limited_by` and `details.owner_role` say which — see [Keys that carry a limit](#keys-that-carry-a-limit) |
 | `INSUFFICIENT_SCOPE` | `key_carries_rights` | A manager tried to issue, change or revoke another manager's key that has no limit on it. Such a key carries its owner's manager rights, so only an administrator or its owner decides it — see [Who may decide a key](#who-may-decide-a-key) |
+| `INSUFFICIENT_SCOPE` | `enrol_administrator` | A manager tried to add an administrator to a workspace. `details.administrators` lists them (up to 50, by `external_id`); nobody in the request was added — see [Who may decide a key](#who-may-decide-a-key) |
 | `MODEL_NOT_PERMITTED` | `key_bundle_off` | The key is limited to access groups and none of them grants anything now — switched off, deleted or empty. `details.allowed` is `[]`. The key calls nothing until a group is switched back on or the key is given a model list |
 | `MODEL_NOT_PERMITTED` | `workspace_left` | The key was issued for a workspace its owner is no longer a member of |
 
@@ -826,8 +827,9 @@ network at the proxy (SEC-5).
 ### Keys that carry a limit
 
 The role in the table below is the role of the **person**. Whether a particular
-API key carries that role's rights is a second question, and the answer is no
-for any key that has a limit of its own written on it:
+API key carries that role's rights is a second question, and — from 1.13.0; in
+1.12.1 and earlier the owner's role alone decided — the answer is no for any key
+that has a limit of its own written on it:
 
 | `limited_by` | The limit | Lifted by |
 |---|---|---|
@@ -898,10 +900,25 @@ limit here too.
 The verb is `issue`, `change` or `revoke`; `t0001` stands for the owner's
 `external_id`.
 
-What this does not change: a manager can still add an administrator to a
-workspace they manage, and from then on sees that administrator in the user
-list, the names, prefixes and limits of their keys in the key list, and their
-usage. They cannot act on those keys.
+**An administrator is added to a workspace by an administrator.** Membership
+gives an administrator nothing — they are not scoped by it — but it puts them
+inside that workspace's manager's views: their user row, the names, prefixes
+and limits of their keys, their usage. So from 1.13.0
+`POST /admin/workspaces/{id}/join` and `POST /admin/workspaces/{id}/members`
+refuse a manager who names an administrator:
+
+```json
+{ "error": { "code": "INSUFFICIENT_SCOPE",
+    "message": "staff001 is an administrator. Only an administrator can add an administrator to a workspace - they can add themselves, or another administrator can. Nobody was added.",
+    "details": { "reason_code": "enrol_administrator", "administrators": ["staff001"] } } }
+```
+
+Only people who would actually be *added* are checked. An administrator who is
+already a member does not cause a refusal (a roster sent again goes through),
+existing memberships are left as they are, a manager can still remove an
+administrator from their workspace, and a manager can still enrol another
+manager. An administrator who was put into a manager's workspace before 1.13.0
+stays there, and stays visible to that manager, until somebody removes them.
 
 | Method | Path | Role | Purpose |
 |---|---|---|---|
@@ -911,10 +928,10 @@ usage. They cannot act on those keys.
 | POST | `/admin/workspaces` | admin | Create a workspace |
 | GET | `/admin/workspaces` | manager | List workspaces |
 | POST | `/admin/workspaces/{id}/models` | manager | Replace the allowed alias list |
-| POST | `/admin/workspaces/{id}/join` | manager | Enroll a user |
+| POST | `/admin/workspaces/{id}/join` | manager | Enroll a user. A manager cannot enrol an administrator — `403`, `reason_code: enrol_administrator` |
 | PATCH | `/admin/workspaces/{id}/status` | manager | `active` / `suspended` — reversible |
 | DELETE | `/admin/workspaces/{id}` | admin | Refused while it has members or keys |
-| POST | `/admin/workspaces/{id}/members` | manager | Enrol several people at once |
+| POST | `/admin/workspaces/{id}/members` | manager | Enrol several people at once. From a manager, one administrator among the people who would be added refuses the whole list and adds nobody |
 | POST | `/admin/access-groups` | admin | Name a bundle of aliases |
 | GET | `/admin/access-groups` | manager | List bundles and who holds them |
 | PATCH | `/admin/access-groups/{id}` | admin | Edit — reaches every workspace holding it |
