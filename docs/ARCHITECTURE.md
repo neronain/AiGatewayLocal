@@ -365,12 +365,26 @@ The same function is imported by `scripts/restricted_key_report.py`, so the
 pre-upgrade report and the request path cannot disagree about what "limited"
 means.
 
+Making "no limit" mean "carries the owner's rights" has a second half: lifting
+a limit now hands rights out, and limiting or revoking takes them away. That is
+decided in one place too — `_assert_may_decide_key` in `api/admin.py`, called by
+the three routes that issue, amend and revoke a key. An administrator's key is
+an administrator's to decide; a manager's key that carries their rights, before
+the change or after it, is that manager's or an administrator's; everything else
+is governed by the workspace and model checks that were already there. Revoking
+is held to the same rule as narrowing because it is the same act done
+irreversibly, and so is extending an expiry, because reviving an expired key
+hands the same rights out again.
+
 *Cost:* a per-key quota lives in another table, so knowing about it costs a
-query. `authenticate` asks only when the answer can change something — the
+query. `authenticate` asks only when the answer can change the *decision* — the
 owner is a manager or an admin and the key has no other limit — so member
-traffic, which is nearly all of it, pays nothing. The consequence is visible:
-`limited_by` in a `403` or from `/v1/me/key` lists `cap` only in that case,
-while the admin key list, which looks every key up in one query, always does.
+traffic, which is nearly all of it, pays nothing. `Principal.key_limits` is
+therefore enough to decide privilege and is not the full list. Anything that
+*shows* the limits to a person asks for the full list instead
+(`key_limits_in_full`): one more query on `GET /v1/me/key` and on the refusal
+path of the admin and manager gates, none on the request path. A field with one
+name answers the same wherever it is read.
 
 ### An empty result of a written limit is an empty allow-list
 
@@ -473,7 +487,9 @@ open and are not rewritten on upgrade, because the previous version cannot read
 harder.
 
 State is always decided by **actually opening** the copy, never by reading the
-label: `current`, `previous`, `lost`, `off`, or `none`.
+label: `current`, `previous`, `lost`, `off`, or `none`. A `lost` copy carries
+the reason, because the remedies differ: a missing secret can be supplied, a
+damaged copy cannot be repaired, a newer format needs an upgrade.
 
 Moving copies from the previous secret to the current one (`core/keyrotation.py`)
 is an explicit action — console, API or command line — and is not done at
@@ -489,9 +505,19 @@ value that was read (compare-and-swap on the sealed value itself, which changes
 on every seal because the nonce does); the new value is opened before it is
 written; rows already current, and rows nothing opens, are not touched.
 
-*Cost:* one previous secret, not a chain. A copy is authenticated against its
-secret, not against the row it is stored in. And none of this covers
-`data/secrets.json`, the upstream provider keys, which are stored unsealed.
+Opening is not the last check. The seal authenticates a copy against a secret,
+not against the row it is stored in, so a sealed value moved from one row to
+another would open — and Reveal would hand out one person's key under another
+key's name, with the audit log recording the wrong key. Whatever opens is
+therefore hashed and compared with the row's own `key_hash` before it is shown,
+counted as revealable or re-sealed; a mismatch is `lost` with the reason
+`not_this_key`, and the re-seal leaves it untouched rather than carrying a wrong
+copy forward under the current secret.
+
+*Cost:* one previous secret, not a chain. Changing `GW_API_KEY_PEPPER` turns
+every copy into `not_this_key`, since the hash they are checked against is
+computed under the pepper. And none of this covers `data/secrets.json`, the
+upstream provider keys, which are stored unsealed.
 
 ---
 
