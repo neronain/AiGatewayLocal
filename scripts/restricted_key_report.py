@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""Which live keys stop being administrator keys when the gateway is upgraded.
+
+Until 2026-10 an API key carried its owner's role whatever was written on it: a
+key an administrator issued for one script and limited to one model could still
+call every /admin route, including the one that lifts its own limit. From this
+release a key that carries any limit of its own - a model list, an access
+group, a workspace, a quota of its own - has no admin or manager rights. It
+calls its models exactly as before.
+
+That is a behaviour change for keys already in circulation: a scheduled job
+that uses such a key for admin calls gets 403 the moment the new version
+starts. This reads a gateway's database and says which keys those are. It
+writes nothing - a SQLite file is opened read-only.
+
+    python scripts/restricted_key_report.py --db /opt/litegate/data/gateway.db
+    python scripts/restricted_key_report.py                    # uses GW_DATABASE_URL
+    python scripts/restricted_key_report.py --db <url|path> --json
+
+It prints a key's id, prefix, label and its owner's role. Never the key, never
+its hash - neither is read from the database at all.
+
+The second section is the other change in the same release: a key limited only
+to access groups that are switched off or gone used to call everything, and now
+calls nothing.
+
+Exit status: 0 nothing changes, 1 at least one key changes, 2 could not run.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+sys.path.insert(0, str(HERE))
+
+try:
+    from sqlalchemy import create_engine, inspect, literal, select
+    from sqlalchemy.orm import Session
+except ImportError:  # pragma: no cover - the venv always has it
+    sys.exit("sqlalchemy is not installed; run this from the gateway's venv")
+
+# ไดรเวอร์ sync ของ Postgres เลือกไว้แล้วในรายงานพี่น้อง — ใช้ตัวเดียวกัน ไม่เขียนซ้ำ
+from access_change_report import sync_url  # noqa: E402
+
+# กติกามาจากที่เดียวกับด่านจริง: รายงานที่นิยาม "ถูกจำกัด" เองจะเริ่มตอบไม่ตรงกับเกตเวย์
+# ในวันที่มีคนเพิ่มข้อจำกัดชนิดใหม่ แล้วไม่มีอะไรแดง
+from app.core.auth import (  # noqa: E402
+    PRIVILEGED_ROLES,
+    cap_still_runs,
+    limits_on_key,
+    normalise_role,
+)
+from app.db.models import AccessGroup, ApiKey, QuotaPolicy, User  # noqa: E402
+
+LIMIT_WORDS = {
+    "models": "รายการโมเดลบนใบ",
+    "access_groups": "มัดโมเดลบนใบ",
+    "workspace": "ผูก workspace",
+    "cap": "เพดานโควตาเฉพาะใบ",
+}
+
+
+def read_only_url(target: str) -> str:
+    """URL ที่เปิดฐานข้อมูลได้โดยเขียนไม่ได้ · รับได้ทั้ง URL และ path ของไฟล์ SQLite
+
+    `mode=ro` ไม่ใช่ `immutable=1`: เกตเวย์ที่รันอยู่ใช้ WAL และของที่เพิ่ง commit ยังอยู่ใน
+    ไฟล์ -wal — immutable ข้ามไฟล์นั้นไปเลย รายงานจะอ่านฐานของเมื่อวานแล้วบอกว่าไม่มีอะไร
+    เปลี่ยน · mode=ro อ่าน WAL ครบ และไดรเวอร์เป็นคนปฏิเสธการเขียนเอง ไม่ใช่เรา "สัญญา"
+    ว่าจะไม่เขียน
+    """
+    url = target
+    if "://" not in url:
+        url = f"sqlite:///{Path(target).expanduser().resolve()}"
+    url = sync_url(url)
+    if not url.startswith("sqlite"):
+        return url
+    path = url.split("///", 1)[1].split("?", 1)[0]
+    if not path or path == ":memory:":
+        sys.exit("ต้องเป็นไฟล์ฐานข้อมูลของเกตเวย์ ไม่ใช่ฐานในหน่วยความจำ")
+    # .env ของเกตเวย์เขียน path แบบสัมพัทธ์ (`sqlite+aiosqlite:///./data/gateway.db`)
+    file = Path(path).expanduser().resolve()
+    # ไม่มีไฟล์แล้ว sqlite จะบอกว่า "unable to open database file" ซึ่งอ่านเหมือนสิทธิ์ไม่พอ
+    if not file.is_file():
+        sys.exit(f"ไม่พบไฟล์ฐานข้อมูล: {file}")
+    return f"sqlite:///file:{file}?mode=ro&uri=true"
+
+
+def _present(engine, model, *names):
+    """คอลัมน์ที่ฐานนี้มีจริง · ตัวที่ยังไม่มีได้ NULL แทน และถูกจดไว้ใน `missing`
+
+    ฐานของเครื่องที่ยังไม่ได้อัปเกรดคือฐานที่รายงานนี้ต้องอ่านให้ได้ — ตารางของรุ่นเก่าอาจยัง
+    ไม่มี `access_groups` หรือ `quota_policies.api_key_id` การ SELECT ทั้ง ORM จะล้มด้วย
+    "no such column" ก่อนได้บอกอะไรเลย · คอลัมน์ที่ไม่มี = ข้อจำกัดชนิดนั้นยังไม่มีในฐานนี้
+    """
+    table = model.__table__
+    inspector = inspect(engine)
+    if not inspector.has_table(table.name):
+        return None, [f"{table.name} (ทั้งตาราง)"]
+    have = {c["name"] for c in inspector.get_columns(table.name)}
+    columns, missing = [], []
+    for name in names:
+        column = getattr(model, name)
+        if column.property.columns[0].name in have:
+            columns.append(column)
+        else:
+            columns.append(literal(None).label(name))
+            missing.append(f"{table.name}.{column.property.columns[0].name}")
+    return columns, missing
+
+
+def load(engine) -> dict:
+    """ทุกอย่างที่กติกาต้องใช้ · ไม่มี key_hash และ key_sealed ใน SELECT ไหนเลย"""
+    missing: list[str] = []
+    now = datetime.now(timezone.utc)
+
+    with Session(engine) as db:
+        columns, gone = _present(
+            engine, ApiKey, "id", "user_id", "workspace_id", "name", "key_prefix",
+            "scopes", "models", "access_groups", "expires_at", "last_used_at",
+        )
+        missing += gone
+        keys = [
+            dict(zip(
+                ("id", "user_id", "workspace_id", "name", "key_prefix", "scopes",
+                 "models", "access_groups", "expires_at", "last_used_at", "role"),
+                row, strict=True,
+            ))
+            for row in db.execute(
+                select(*columns, User.role)
+                .join(User, User.id == ApiKey.user_id)
+                .where(ApiKey.revoked_at.is_(None))
+                .order_by(ApiKey.created_at, ApiKey.id)
+            )
+        ]
+
+        capped: set[str] = set()
+        columns, gone = _present(engine, QuotaPolicy, "api_key_id", "enabled", "expires_at")
+        missing += gone
+        if columns is not None and not gone:
+            for api_key_id, enabled, expires_at in db.execute(
+                select(*columns).where(QuotaPolicy.api_key_id.is_not(None))
+            ):
+                if enabled and cap_still_runs(expires_at, now):
+                    capped.add(api_key_id)
+
+        # มัดที่ยังให้อะไรอยู่จริง: เปิดอยู่ และมีโมเดลอย่างน้อยหนึ่งตัว
+        granting: set[str] = set()
+        columns, gone = _present(engine, AccessGroup, "id", "enabled", "models")
+        missing += gone
+        if columns is not None and not gone:
+            for group_id, enabled, models in db.execute(select(*columns)):
+                if enabled and models:
+                    granting.add(group_id)
+
+    return {"keys": keys, "capped": capped, "granting": granting,
+            "missing": missing, "now": now}
+
+
+def describe(key: dict, data: dict) -> dict:
+    """หนึ่งแถวของรายงาน · ชื่อฟิลด์เดียวกับที่ `GET /v1/me/key` ใช้"""
+    role = normalise_role(key["role"] or "")
+    limits = limits_on_key(
+        models=key["models"], access_groups=key["access_groups"],
+        workspace_id=key["workspace_id"], capped=key["id"] in data["capped"],
+    )
+    expires = key["expires_at"]
+    named = list(key["access_groups"] or [])
+    return {
+        "id": key["id"],
+        "key_prefix": key["key_prefix"],
+        "name": key["name"] or "",
+        "owner_role": role,
+        "limited_by": list(limits),
+        "loses_admin_access": role in PRIVILEGED_ROLES and bool(limits),
+        # ระบุแต่มัด และไม่มีมัดไหนให้อะไรเลย: เดิมเรียกได้ทุกโมเดล ตอนนี้เรียกไม่ได้สักตัว
+        "bundles_grant_nothing": bool(named) and not key["models"]
+        and not any(group in data["granting"] for group in named),
+        "expired": expires is not None and not cap_still_runs(expires, data["now"]),
+        "last_used_at": key["last_used_at"].isoformat() if key["last_used_at"] else None,
+        "scopes": list(key["scopes"] or []),
+    }
+
+
+def build(engine) -> dict:
+    data = load(engine)
+    rows = [describe(key, data) for key in data["keys"]]
+    return {
+        "live_keys": len(rows),
+        "loses_admin_access": [r for r in rows if r["loses_admin_access"]],
+        "bundles_grant_nothing": [r for r in rows if r["bundles_grant_nothing"]],
+        "unchanged": [r for r in rows
+                      if not r["loses_admin_access"] and not r["bundles_grant_nothing"]],
+        "columns_missing": data["missing"],
+    }
+
+
+def _line(row: dict) -> str:
+    used = row["last_used_at"] or "ไม่เคยใช้"
+    return (
+        f"  {row['key_prefix']}… · id {row['id']} · {row['name'] or '(ไม่มีชื่อ)'}"
+        f" · เจ้าของเป็น {row['owner_role']}"
+        f"{' · หมดอายุแล้ว' if row['expired'] else ''}\n"
+        f"      จำกัดด้วย: {', '.join(LIMIT_WORDS[n] for n in row['limited_by'])}"
+        f" · ใช้ล่าสุด: {used}\n"
+    )
+
+
+def render(report: dict) -> str:
+    out: list[str] = []
+    losers, dead, same = (report["loses_admin_access"], report["bundles_grant_nothing"],
+                          report["unchanged"])
+    out.append(f"\nkey ที่ยังไม่ถูกเพิกถอน: {report['live_keys']} ใบ\n")
+
+    if report["columns_missing"]:
+        out.append("  ฐานนี้ยังไม่มี: " + ", ".join(report["columns_missing"]))
+        out.append("  (ของรุ่นเก่ากว่า — ข้อจำกัดชนิดนั้นยังไม่มีใครตั้งได้ จึงนับว่าไม่มี)\n")
+
+    if losers:
+        out.append(f"── เสียสิทธิ์ผู้ดูแล {len(losers)} ใบ ─────────────────────────────────")
+        out.append("  ใบพวกนี้เรียก /admin/* ได้อยู่วันนี้ และจะได้ 403 ทันทีที่อัปเกรด")
+        out.append("  ยังเรียกโมเดลได้ตามเดิมทุกอย่าง\n")
+        out += [_line(row) for row in losers]
+        out.append("  ถ้าใบไหนมีงานดูแลระบบใช้อยู่ ก่อนอัปเกรดให้ทำอย่างใดอย่างหนึ่ง:")
+        out.append("    · ออกใบใหม่ให้งานนั้นโดยไม่ใส่ข้อจำกัด แล้วเปลี่ยนในสคริปต์")
+        out.append("    · หรือถอดข้อจำกัดของใบเดิมในคอนโซล (Access → Models… / แท็บ Quota)")
+        out.append("  ใบที่ใช้เรียกโมเดลอย่างเดียว ไม่ต้องทำอะไร — นั่นคือสิ่งที่กติกานี้ตั้งใจ\n")
+    else:
+        out.append("── ไม่มีใบไหนเสียสิทธิ์ผู้ดูแล ─────────────────────────────────\n")
+
+    if dead:
+        out.append(f"── จำกัดไว้ด้วยมัดที่ไม่ให้อะไรเลย {len(dead)} ใบ ────────────────────")
+        out.append("  มัดที่ใบพวกนี้ระบุถูกปิด ถูกลบ หรือว่างเปล่า · วันนี้ใบเรียกได้ทุกโมเดล")
+        out.append("  (บั๊ก) หลังอัปเกรดจะเรียกไม่ได้สักตัว จนกว่าจะเปิดมัดกลับหรือใส่รายการให้ใบ\n")
+        out += [_line(row) for row in dead]
+    else:
+        out.append("── ไม่มีใบไหนจำกัดไว้ด้วยมัดที่ไม่ให้อะไร ─────────────────────────\n")
+
+    out.append(f"── ไม่เปลี่ยน {len(same)} ใบ ─────────────────────────────────────")
+    keeps = [r for r in same if r["owner_role"] in PRIVILEGED_ROLES]
+    if keeps:
+        out.append("  ใบของ admin/manager ที่ยังมีสิทธิ์ผู้ดูแลเหมือนเดิม (ไม่มีข้อจำกัดบนใบ):")
+        out += [
+            f"    {r['key_prefix']}… · {r['name'] or '(ไม่มีชื่อ)'} · {r['owner_role']}"
+            + (f" · scopes {r['scopes']} (ไม่ถูกนับ — ไม่เคยถูกบังคับ)" if r["scopes"] else "")
+            for r in keeps
+        ]
+    out.append("")
+    return "\n".join(out)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--db", default=os.environ.get("GW_DATABASE_URL", ""),
+                        help="database URL, or the path of a SQLite file")
+    parser.add_argument("--json", action="store_true", help="machine-readable output")
+    args = parser.parse_args(argv)
+
+    if not args.db:
+        sys.stderr.write("no database: pass --db or set GW_DATABASE_URL\n")
+        return 2
+
+    engine = create_engine(read_only_url(args.db))
+    try:
+        report = build(engine)
+    finally:
+        engine.dispose()
+
+    print(json.dumps(report, indent=2, ensure_ascii=False) if args.json else render(report))
+    return 1 if report["loses_admin_access"] or report["bundles_grant_nothing"] else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -295,7 +295,12 @@ async def has_cap_in_force(session: AsyncSession, api_key_id: str) -> bool:
         )
     )
     now = utcnow()
-    return any(expires is None or _aware(expires) > now for (expires,) in rows)
+    return any(cap_still_runs(expires, now) for (expires,) in rows)
+
+
+def cap_still_runs(expires_at: datetime | None, now: datetime) -> bool:
+    """แยกออกมาให้ `scripts/restricted_key_report.py` ใช้ตัวเดียวกัน"""
+    return expires_at is None or _aware(expires_at) > now
 
 
 
