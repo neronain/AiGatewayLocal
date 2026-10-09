@@ -1737,7 +1737,8 @@ async def list_api_keys(
         # เปิดจริงแล้วทิ้งผล เก็บแค่สถานะ · เดิมตอบ `revealable: true` ให้ทุกใบที่มีสำเนา
         # ตราบที่ตั้ง secret อะไรไว้สักตัว หน้าเว็บจึงวาดปุ่ม Reveal ให้ใบที่ผนึกด้วย secret
         # ตัวอื่น ซึ่งกดแล้วล้มแน่ ๆ
-        seal_state = keyvault.inspect(k.key_sealed, k.key_hash).state
+        opened = keyvault.inspect(k.key_sealed, k.key_hash)
+        seal_state = opened.state
         data.append({
             "id": k.id,
             "user_id": k.user_id,
@@ -1760,6 +1761,8 @@ async def list_api_keys(
             "revealable": seal_state in (keyvault.CURRENT, keyvault.PREVIOUS),
             # none · current · previous (รอผนึกใหม่) · lost (เปิดไม่ได้) · off (ฟีเจอร์ปิด)
             "seal_state": seal_state,
+            # เหตุของ lost — ว่างเมื่อไม่ใช่ lost · หน้าเว็บใช้เลือกคำแนะนำที่จริงสำหรับเหตุนั้น
+            "seal_reason": opened.reason,
         })
     return {"data": data}
 

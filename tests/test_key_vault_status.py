@@ -28,6 +28,7 @@ from tests.keyvault_kit import (
     issued_under,
     listed,
     person,
+    put_sealed,
     sealed_column,
     secret_switch,
     vault,
@@ -373,3 +374,84 @@ def test_the_console_does_not_offer_a_reseal_with_nothing_to_reseal(secrets, cli
     html = _console(["vaultAdvice", "keyVaultPanel"],
                     f"keyVaultPanel({json.dumps(vault(client).json())})")
     assert html and 'id="vault-reseal"' not in html
+
+
+# ── เหตุที่เปิดไม่ได้มีหลายแบบ — คำแนะนำบนหน้าจอต้องจริงสำหรับแบบนั้น ───────────
+
+def every_kind_of_lost(client, secrets):
+    """ห้าใบ ห้าเหตุ ผ่านฐานจริง · คืน {เหตุ: key ที่ออกไป} แล้วจบที่ secret A ตัวเดียว"""
+    damaged, mismatched, source, newer = issued_under(
+        client, secrets, A, 4, prefix="k", fmt="new")
+    (legacy,) = issued_under(client, secrets, C, 1, prefix="v1-", fmt="v1")
+    (other,) = issued_under(client, secrets, C, 1, prefix="c-", fmt="new")
+    stored = sealed_column(client)
+
+    head, _, payload = stored[damaged["id"]].rpartition(":")
+    flipped = "A" if payload[20] != "A" else "B"
+    put_sealed(client, damaged["id"], f"{head}:{payload[:20]}{flipped}{payload[21:]}")
+    put_sealed(client, mismatched["id"], stored[source["id"]])
+    put_sealed(client, newer["id"], "v9:from-a-newer-litegate:AAAA")
+    secrets(A)
+    return {"unknown_secret": other, "unreadable": legacy, "damaged": damaged,
+            "not_this_key": mismatched, "unknown_format": newer}
+
+
+def test_the_key_list_says_why_a_copy_cannot_be_opened(secrets, client):
+    """รายการเดิมบอกแค่ `lost` — หน้าเว็บจึงไม่มีทางรู้ว่าต้องแนะนำอะไร"""
+    kinds = every_kind_of_lost(client, secrets)
+    rows = listed(client)
+
+    for reason, created in kinds.items():
+        assert rows[created["id"]]["seal_state"] == "lost"
+        assert rows[created["id"]]["seal_reason"] == reason
+    fine = next(row for row in rows.values() if row["seal_state"] == "current")
+    assert fine["seal_reason"] == ""
+
+
+def test_the_console_gives_advice_that_is_true_for_each_reason(secrets, client):
+    """ผู้ตรวจอิสระ 2026-10-09: ข้อความแทนปุ่ม Reveal บอกว่า "ผนึกด้วย secret ตัวอื่น · ใส่ secret
+    เดิมเป็น PREVIOUS" ทุกกรณี — กับสำเนาที่เสีย · สำเนาผิดใบ · รูปแบบที่ใหม่กว่า คำแนะนำนั้นผิด
+    และพาผู้ดูแลไปหา secret ที่ไม่ช่วยอะไร"""
+    kinds = every_kind_of_lost(client, secrets)
+    rows = listed(client)
+    picked = {reason: rows[created["id"]] for reason, created in kinds.items()}
+
+    notes = dict(zip(picked, _console(
+        ["sealNote"], f"{json.dumps(list(picked.values()))}.map(sealNote)"), strict=True))
+    put_it_back = "GW_KEY_REVEAL_SECRET_PREVIOUS"
+    assert put_it_back in notes["unknown_secret"]
+    assert put_it_back in notes["unreadable"] and "เสีย" in notes["unreadable"]
+    for reason in ("damaged", "not_this_key", "unknown_format"):
+        assert put_it_back not in notes[reason], f"{reason}: เอา secret เดิมกลับมาไม่ช่วย"
+        assert "secret ตัวอื่น" not in notes[reason]
+    assert "เสีย" in notes["damaged"]
+    assert "ไม่ใช่" in notes["not_this_key"] and "นอกเกตเวย์" in notes["not_this_key"]
+    assert "อัปเกรด" in notes["unknown_format"]
+    assert all(note.startswith("ดู key ไม่ได้") for note in notes.values())
+
+    # เหตุที่หน้านี้ยังไม่รู้จัก (เซิร์ฟเวอร์รุ่นใหม่กว่า) ต้องได้ข้อความที่จริงสำหรับทุกเหตุ
+    unknown = _console(["sealNote"],
+                       'sealNote({seal_state: "lost", seal_reason: "something_new"})')
+    assert put_it_back not in unknown and "secret ตัวอื่น" not in unknown
+
+
+def test_the_console_panel_names_the_reason_beside_each_lost_key(secrets, client):
+    kinds = every_kind_of_lost(client, secrets)
+    body = vault(client).json()
+
+    html = _console(["vaultAdvice", "keyVaultPanel"], f"keyVaultPanel({json.dumps(body)})")
+    items = {prefix: item for item in html.split("<li>")
+             for prefix in [k["key_prefix"] for k in kinds.values()] if prefix in item}
+    assert set(items) == {k["key_prefix"] for k in kinds.values()}
+
+    def beside(reason: str) -> str:
+        return items[kinds[reason]["key_prefix"]]
+
+    assert "key id" in beside("unknown_secret")
+    assert "เสีย" in beside("damaged") and "key id" not in beside("damaged")
+    assert "ใบอื่น" in beside("not_this_key") and "key id" not in beside("not_this_key")
+    assert "อัปเกรด" in beside("unknown_format")
+    # คำเตือนรวมต้องไม่บอกทุกใบว่า "ใส่ secret เดิม" และต้องมีเรื่องสำเนาผิดใบแยกออกมา
+    assert {"lost", "sealed_copy_mismatch"} <= {w["code"] for w in body["warnings"]}
+    assert "นอกเกตเวย์" in html
+    assert all(k["api_key"] not in html for k in kinds.values())

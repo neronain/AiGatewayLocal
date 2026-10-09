@@ -3015,17 +3015,33 @@ function sealPill(k) {
       + 'แต่ต้องผนึกใหม่ก่อนเอา GW_KEY_REVEAL_SECRET_PREVIOUS ออก">re-seal pending</span>';
   }
   if (k.seal_state === 'lost') {
-    return ' <span class="pill err" title="มีสำเนาผนึกไว้ แต่ secret ที่ตั้งอยู่เปิดไม่ได้ · '
+    return ' <span class="pill err" title="มีสำเนาผนึกไว้ แต่เปิดดูไม่ได้ — เหตุอยู่ในเมนูของใบนี้ · '
       + 'ตัว key ยังใช้งานได้ตามปกติ">copy unreadable</span>';
   }
   return '';
 }
 
 // ข้อความแทนที่ปุ่ม Reveal เมื่อใบนั้นมีสำเนาแต่เปิดไม่ได้ · ว่าง = ใช้ข้อความ "เก็บแค่ hash"
+//
+// แยกตามเหตุ (`seal_reason`) เพราะทางออกไม่เหมือนกัน · เดิมทุกเหตุได้ประโยคเดียวว่า "ผนึกด้วย
+// secret ตัวอื่น · ใส่ secret เดิมเป็น PREVIOUS" ซึ่งผิดสำหรับสำเนาที่เสีย สำเนาผิดใบ และรูปแบบ
+// ที่ใหม่กว่า — พาผู้ดูแลไปหา secret ที่ไม่ช่วยอะไร (ผู้ตรวจอิสระ 2026-10-09) · เหตุที่หน้านี้ยัง
+// ไม่รู้จักได้ข้อความกลางที่จริงสำหรับทุกเหตุ ไม่เดาว่าเป็นเรื่อง secret
 function sealNote(k) {
   if (k.seal_state === 'lost') {
-    return 'ดู key ไม่ได้ — สำเนาผนึกไว้ด้วย secret ตัวอื่น · ถ้ายังมี secret เดิม ใส่เป็น '
-      + 'GW_KEY_REVEAL_SECRET_PREVIOUS แล้ว restart · ถ้าไม่มีแล้ว ออก key ใหม่ (ใบเดิมยังใช้งานได้)';
+    const restore = 'ถ้ายังมี secret เดิม ใส่เป็น GW_KEY_REVEAL_SECRET_PREVIOUS แล้ว restart · '
+      + 'ถ้าไม่มีแล้ว ออก key ใหม่';
+    const why = {
+      unknown_secret: `สำเนาผนึกไว้ด้วย secret ตัวอื่น · ${restore}`,
+      unreadable: 'สำเนาผนึกไว้ด้วย secret ตัวอื่น หรือเสียหาย (รุ่น 1.12.1 ลงไปไม่ได้จดว่า secret '
+        + `ตัวไหนผนึก) · ${restore}`,
+      damaged: 'สำเนาที่ผนึกไว้เสียหาย secret ตัวไหนก็เปิดไม่ได้ · ออก key ใหม่ถ้าต้องดูซ้ำ',
+      not_this_key: 'สำเนาที่เก็บอยู่ในแถวนี้ไม่ใช่สำเนาของ key ใบนี้ จึงไม่แสดง · แถวในฐานถูกแก้จาก'
+        + 'นอกเกตเวย์ — หาสาเหตุ แล้วออก key ใหม่ถ้าต้องดูซ้ำ',
+      unknown_format: 'สำเนาผนึกด้วยรูปแบบที่รุ่นนี้อ่านไม่ได้ (น่าจะเขียนโดย LiteGate รุ่นใหม่กว่า) · '
+        + 'อัปเกรดแล้วเปิดได้',
+    }[k.seal_reason] || 'สำเนาที่ผนึกไว้เปิดดูไม่ได้ · ดูเหตุที่แผงเหนือรายการ หรือออก key ใหม่';
+    return `ดู key ไม่ได้ — ${why} (ใบเดิมยังใช้งานได้)`;
   }
   if (k.seal_state === 'off') {
     return 'ดู key ไม่ได้ — มีสำเนาผนึกไว้ แต่ไม่ได้ตั้ง GW_KEY_REVEAL_SECRET';
@@ -3037,12 +3053,17 @@ function sealNote(k) {
 // แทนที่จะเงียบ — คำเตือนที่ไม่ขึ้นเพราะคอนโซลตามไม่ทันคือคำเตือนที่ไม่มีอยู่
 function vaultAdvice(v, w) {
   const c = v.counts || {};
+  // สำเนาผิดใบนับอยู่ใน lost ด้วย แต่มีคำเตือนของตัวเอง — แยกออกให้จำนวนในสองข้อไม่ซ้อนกัน
+  const mismatched = (v.lost || []).filter((k) => k.reason === 'not_this_key').length;
   const thai = {
     rotation_pending: `สำเนา ${num(c.previous)} ใบยังเปิดได้ด้วย secret ตัวเก่าเท่านั้น · ผนึกใหม่ก่อน `
       + 'แล้วค่อยเอา GW_KEY_REVEAL_SECRET_PREVIOUS ออก — เอาออกก่อน ใบพวกนี้จะเปิดไม่ได้',
-    lost: `สำเนา ${num(c.lost)} ใบเปิดไม่ได้ด้วย secret ที่ตั้งอยู่ · ตัว key ยังใช้งานได้ตามปกติ · `
-      + 'ถ้ายังมี secret เดิม ใส่เป็น GW_KEY_REVEAL_SECRET_PREVIOUS แล้ว restart · '
-      + 'ถ้าไม่มีแล้ว ออก key ใหม่ให้คนที่ต้องการดูของตัวเองซ้ำ',
+    lost: `สำเนา ${num((c.lost || 0) - mismatched)} ใบเปิดดูไม่ได้ · ตัว key ยังใช้งานได้ตามปกติ · `
+      + 'เหตุของแต่ละใบอยู่ข้างล่าง: ใบที่ผนึกด้วย secret ตัวอื่นกู้ได้โดยใส่ secret เดิมเป็น '
+      + 'GW_KEY_REVEAL_SECRET_PREVIOUS แล้ว restart · ใบที่กู้ไม่ได้ ออก key ใหม่ให้คนที่ต้องการดูซ้ำ',
+    sealed_copy_mismatch: `สำเนา ${num(mismatched)} ใบเปิดออกได้ แต่ไม่ใช่สำเนาของ key ใบที่มันเก็บอยู่ด้วย `
+      + '— ไม่แสดง และไม่ผนึกใหม่ให้ · แถวในฐานถูกแก้จากนอกเกตเวย์ (restore หรือ merge ที่สลับแถว '
+      + 'หรือมีคนแก้) หรือ GW_API_KEY_PEPPER เปลี่ยน · หาสาเหตุก่อนเชื่อฐานนี้',
     previous_unused: 'ไม่มีสำเนาใบไหนต้องใช้ GW_KEY_REVEAL_SECRET_PREVIOUS แล้ว · เอาออกจาก .env แล้ว '
       + 'restart ได้ · เก็บ secret เก่าไว้ในที่ปลอดภัยตราบที่ยังเก็บ backup ที่ทำก่อนการผนึกใหม่',
     previous_equals_current: 'GW_KEY_REVEAL_SECRET_PREVIOUS เป็นค่าเดียวกับ GW_KEY_REVEAL_SECRET '
@@ -3061,10 +3082,16 @@ function vaultAdvice(v, w) {
 function keyVaultPanel(v) {
   if (!v || !(v.warnings || []).length) return '';
   const c = v.counts || {};
+  const why = (k) => ({
+    damaged: 'สำเนาเสีย — secret ตัวไหนก็เปิดไม่ได้',
+    not_this_key: 'เป็นสำเนาของ key ใบอื่น — แถวถูกแก้จากนอกเกตเวย์',
+    unknown_format: 'รูปแบบที่รุ่นนี้อ่านไม่ได้ — อัปเกรดแล้วเปิดได้',
+    unreadable: 'ผนึกด้วย secret ตัวอื่น หรือเสีย (รุ่นเก่าไม่ได้จดว่า secret ตัวไหน)',
+    unknown_secret: k.sealed_key_id
+      ? `ผนึกด้วย secret ที่มี key id <code>${esc(k.sealed_key_id)}</code>` : 'ผนึกด้วย secret ตัวอื่น',
+  }[k.reason] || 'เปิดดูไม่ได้');
   const lost = (v.lost || []).map((k) => `<li><code>${esc(k.key_prefix)}…</code> ${esc(k.name || '—')}${
-    k.revoked ? ' (revoked)' : ''}${
-    k.reason === 'damaged' ? ' · สำเนาเสีย — secret ตัวไหนก็เปิดไม่ได้'
-      : k.sealed_key_id ? ` · ผนึกด้วย secret ที่มี key id <code>${esc(k.sealed_key_id)}</code>` : ''}</li>`).join('');
+    k.revoked ? ' (revoked)' : ''} · ${why(k)}</li>`).join('');
   const ids = v.current_key_id
     ? ` · key id ปัจจุบัน <code>${esc(v.current_key_id)}</code>${
       v.previous_key_id ? ` · ตัวเก่า <code>${esc(v.previous_key_id)}</code>` : ''}`
