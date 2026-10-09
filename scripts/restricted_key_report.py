@@ -25,6 +25,9 @@ to access groups that are switched off or gone used to call everything, and now
 calls nothing.
 
 Exit status: 0 nothing changes, 1 at least one key changes, 2 could not run.
+Status 1 is only ever the answer to the question: every way of failing to read
+the database - no such file, not a gateway database, no permission, no driver,
+no server - is 2, with the reason on stderr and nothing on stdout.
 """
 
 from __future__ import annotations
@@ -59,6 +62,16 @@ from app.core.auth import (  # noqa: E402
 )
 from app.db.models import AccessGroup, ApiKey, QuotaPolicy, User  # noqa: E402
 
+
+class CannotRun(Exception):
+    """อ่านฐานข้อมูลไม่ได้ — `main` แปลงเป็น exit status 2
+
+    ไม่ใช้ `sys.exit("ข้อความ")`: Python จบแบบนั้นด้วย status 1 ซึ่งในสคริปต์นี้แปลว่า "มี
+    key ที่เปลี่ยน" · สคริปต์ deploy ที่แตกกิ่งตาม status จึงอ่าน "ไม่พบไฟล์ฐานข้อมูล" เป็น
+    "มีใบกระทบ" (ทีมเอกสารรันเจอ 2026-10-09)
+    """
+
+
 LIMIT_WORDS = {
     "models": "รายการโมเดลบนใบ",
     "access_groups": "มัดโมเดลบนใบ",
@@ -78,17 +91,22 @@ def read_only_url(target: str) -> str:
     url = target
     if "://" not in url:
         url = f"sqlite:///{Path(target).expanduser().resolve()}"
-    url = sync_url(url)
+    try:
+        url = sync_url(url)
+    except SystemExit as stop:
+        # รายงานพี่น้องจบด้วย `sys.exit(ข้อความ)` เมื่อไม่มีไดรเวอร์ sync ของ Postgres —
+        # ข้อความของมันบอกวิธีแก้ครบแล้ว เปลี่ยนแค่ status
+        raise CannotRun(str(stop.code)) from None
     if not url.startswith("sqlite"):
         return url
     path = url.split("///", 1)[1].split("?", 1)[0]
     if not path or path == ":memory:":
-        sys.exit("ต้องเป็นไฟล์ฐานข้อมูลของเกตเวย์ ไม่ใช่ฐานในหน่วยความจำ")
+        raise CannotRun("ต้องเป็นไฟล์ฐานข้อมูลของเกตเวย์ ไม่ใช่ฐานในหน่วยความจำ")
     # .env ของเกตเวย์เขียน path แบบสัมพัทธ์ (`sqlite+aiosqlite:///./data/gateway.db`)
     file = Path(path).expanduser().resolve()
     # ไม่มีไฟล์แล้ว sqlite จะบอกว่า "unable to open database file" ซึ่งอ่านเหมือนสิทธิ์ไม่พอ
     if not file.is_file():
-        sys.exit(f"ไม่พบไฟล์ฐานข้อมูล: {file}")
+        raise CannotRun(f"ไม่พบไฟล์ฐานข้อมูล: {file}")
     return f"sqlite:///file:{file}?mode=ro&uri=true"
 
 
@@ -125,6 +143,12 @@ def load(engine) -> dict:
             engine, ApiKey, "id", "user_id", "workspace_id", "name", "key_prefix",
             "scopes", "models", "access_groups", "expires_at", "last_used_at",
         )
+        if columns is None:
+            # ตารางของข้อจำกัด (มัด · เพดาน) ขาดได้ — ฐานของรุ่นเก่า · ตารางของ key เองขาด
+            # ไม่ได้: ไฟล์นี้ไม่ใช่ฐานของเกตเวย์ และ "0 ใบ ไม่มีอะไรเปลี่ยน" คือคำตอบที่ผิด
+            raise CannotRun(
+                f"ไม่มีตาราง {ApiKey.__tablename__} — ไฟล์นี้ไม่ใช่ฐานข้อมูลของเกตเวย์"
+            )
         missing += gone
         keys = [
             dict(zip(
@@ -270,14 +294,45 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("no database: pass --db or set GW_DATABASE_URL\n")
         return 2
 
-    engine = create_engine(read_only_url(args.db))
     try:
-        report = build(engine)
-    finally:
-        engine.dispose()
+        report = read(args.db)
+    except CannotRun as stop:
+        sys.stderr.write(f"รันไม่ได้ — {stop}\n")
+        return 2
 
     print(json.dumps(report, indent=2, ensure_ascii=False) if args.json else render(report))
     return 1 if report["loses_admin_access"] or report["bundles_grant_nothing"] else 0
+
+
+def read(target: str) -> dict:
+    """รายงานทั้งใบ หรือ `CannotRun` — ไม่มีครึ่งทาง
+
+    ทุกอย่างที่ล้มระหว่างเปิดและอ่านฐานถูกจับที่นี่ที่เดียว: ไฟล์ที่ไม่ใช่ฐานข้อมูล · ไม่มีสิทธิ์
+    อ่าน · ไฟล์ SQLite ที่ไม่มีตารางของเกตเวย์ · เซิร์ฟเวอร์ที่ต่อไม่ติด · ถ้าปล่อยให้หลุดออก
+    ไปเป็น traceback Python จะจบด้วย status 1 เหมือนกัน
+
+    ข้อความมาจากไดรเวอร์ (`exc.orig`) ไม่ใช่จาก URL ที่รับเข้ามา — URL ของ PostgreSQL มี
+    รหัสผ่านอยู่ในตัว และ stderr ของสคริปต์นี้ถูกแปะลง ticket ได้เท่ากับ stdout
+    """
+    try:
+        engine = create_engine(read_only_url(target))
+    except CannotRun:
+        raise
+    except Exception as exc:  # noqa: BLE001 - URL ที่ SQLAlchemy อ่านไม่ออก ก็คือรันไม่ได้
+        raise CannotRun(f"URL ของฐานข้อมูลใช้ไม่ได้ ({type(exc).__name__})") from None
+    try:
+        return build(engine)
+    except CannotRun:
+        raise
+    except Exception as exc:  # noqa: BLE001 - ดู docstring: ทุกทางที่ล้มคือ status 2
+        cause = getattr(exc, "orig", None) or exc
+        said = (str(cause).strip().splitlines() or [type(cause).__name__])[0]
+        raise CannotRun(
+            f"อ่านฐานข้อมูลไม่ได้: {said}\n"
+            "  ตรวจว่า --db ชี้ไปที่ฐานข้อมูลของเกตเวย์ และผู้ใช้นี้อ่านได้"
+        ) from None
+    finally:
+        engine.dispose()
 
 
 if __name__ == "__main__":

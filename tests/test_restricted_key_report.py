@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -309,12 +310,99 @@ def test_it_takes_the_database_the_way_an_operator_has_it(tmp_path, monkeypatch,
     assert _load().read_only_url(given) == f"sqlite:///file:{db.resolve()}?mode=ro&uri=true"
 
 
-def test_a_database_that_is_not_there_is_said_plainly(tmp_path):
-    done = run(tmp_path / "nope.db")
+# ── exit status: 1 แปลว่า "มีใบที่เปลี่ยน" เท่านั้น ─────────────────────────────
+#
+# ทีมเอกสารรันสคริปต์จริง 2026-10-09: ไฟล์ฐานข้อมูลที่ไม่มีอยู่ และ URL ของ PostgreSQL บน
+# เครื่องที่ไม่มีไดรเวอร์ sync ต่างก็จบด้วย status 1 — เลขเดียวกับ "มี key ที่เปลี่ยน" ·
+# สคริปต์ deploy ที่แตกกิ่งตาม status จะอ่าน "เปิดฐานไม่ได้" เป็น "มีใบกระทบ ไปดูรายงาน"
+# หรือแย่กว่านั้น ตัวครอบที่ถือว่า 1 คือ "ต้องทบทวน ตามปกติ" จะเดินต่อโดยไม่เคยอ่านฐานเลย
+# (`sys.exit("ข้อความ")` ของ Python จบด้วย 1 เสมอ) · ทุกกรณีที่รันไม่ได้ต้องเป็น 2
+# พร้อมเหตุผลบน stderr และ stdout ต้องว่าง — ไม่มีรายงานครึ่งใบให้ใครเอาไปอ่าน
 
-    assert done.returncode != 0
-    assert "ไม่พบไฟล์ฐานข้อมูล" in done.stderr
+def _could_not_run(done: subprocess.CompletedProcess) -> str:
+    assert done.returncode == 2, f"status {done.returncode}\n{done.stdout}\n{done.stderr}"
+    assert done.stdout.strip() == "", "รันไม่ได้แล้วต้องไม่มีรายงานออกมา"
+    assert done.stderr.strip(), "ต้องบอกเหตุผล"
+    assert "Traceback" not in done.stderr, "เหตุผลสำหรับคนอ่าน ไม่ใช่ stack ของ Python"
+    return done.stderr
+
+
+def test_a_database_that_is_not_there_is_said_plainly(tmp_path):
+    for flags in ((), ("--json",)):
+        reason = _could_not_run(run(tmp_path / "nope.db", *flags))
+        assert "ไม่พบไฟล์ฐานข้อมูล" in reason
     assert not (tmp_path / "nope.db").exists(), "รายงานต้องไม่สร้างไฟล์ฐานข้อมูลเปล่าขึ้นมา"
+
+
+def test_a_file_that_is_not_a_database_is_exit_status_two(tmp_path):
+    garbage = tmp_path / "gateway.db"
+    garbage.write_bytes(b"this is a log file somebody pointed --db at\n" * 200)
+
+    reason = _could_not_run(run(garbage, "--json"))
+
+    assert "not a database" in reason
+    assert garbage.read_bytes().startswith(b"this is a log file")
+
+
+def test_a_sqlite_file_that_is_not_a_gateways_is_exit_status_two(tmp_path):
+    """ไฟล์ SQLite ที่ถูกต้องแต่ไม่มีตารางของเกตเวย์ — "0 ใบ ไม่มีอะไรเปลี่ยน" คือคำตอบที่ผิด"""
+    other = tmp_path / "other.db"
+    with sqlite3.connect(other) as raw:
+        raw.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)")
+
+    reason = _could_not_run(run(other))
+
+    assert "api_keys" in reason
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root อ่านไฟล์ได้ทุกไฟล์ ไม่ว่าจะตั้งสิทธิ์ไว้อย่างไร")
+def test_a_database_it_is_not_allowed_to_read_is_exit_status_two(client, fleet):
+    _keys, db_path = fleet
+    copy = Path(db_path).parent / "locked.db"
+    copy.write_bytes(Path(db_path).read_bytes())
+    copy.chmod(0)
+    try:
+        _could_not_run(run(copy))
+    finally:
+        copy.chmod(0o600)
+
+
+def test_a_postgres_url_that_cannot_be_reached_is_exit_status_two():
+    """ไม่ต้องมีเซิร์ฟเวอร์: URL ชี้ไปพอร์ตที่ไม่มีใครฟัง · มีไดรเวอร์ sync ก็ต่อไม่ติด ไม่มีก็
+    หาไดรเวอร์ไม่เจอ — ทางไหนก็คือ "รันไม่ได้" และรหัสผ่านใน URL ต้องไม่ถูกพิมพ์ออกมา"""
+    done = run("postgresql+asyncpg://litegate:not-a-real-password@127.0.0.1:1/litegate")
+
+    reason = _could_not_run(done)
+    assert "not-a-real-password" not in reason
+
+
+def test_a_postgres_url_without_a_sync_driver_is_exit_status_two():
+    """เกตเวย์ใช้ asyncpg ซึ่งรายงานนี้ใช้ไม่ได้ — เครื่องที่ไม่ได้ลง psycopg คือกรณีปกติ
+
+    สคริปต์จริง รันเป็น process แยก โดยทำให้ `find_spec` มองไม่เห็นไดรเวอร์ sync สองตัว
+    (ค่า None ใน sys.modules คือวิธีมาตรฐานที่ Python ใช้บอกว่า "โมดูลนี้ไม่มี") — เทสจึง
+    ตรวจทางนี้ได้ทั้งบนเครื่องที่ลง psycopg ไว้และเครื่องที่ไม่ได้ลง
+    """
+    wrapper = (
+        "import runpy, sys\n"
+        "sys.modules['psycopg'] = sys.modules['psycopg2'] = None\n"
+        f"sys.argv = [{str(SCRIPT)!r}, '--db', "
+        "'postgresql+asyncpg://litegate@127.0.0.1:1/litegate']\n"
+        f"runpy.run_path({str(SCRIPT)!r}, run_name='__main__')\n"
+    )
+    done = subprocess.run([sys.executable, "-c", wrapper],
+                          capture_output=True, text=True, cwd=REPO, timeout=120)
+
+    reason = _could_not_run(done)
+    assert "psycopg" in reason, "ต้องบอกว่าขาดอะไรและลงอย่างไร"
+
+
+def test_no_database_named_at_all_is_exit_status_two(monkeypatch):
+    monkeypatch.delenv("GW_DATABASE_URL", raising=False)
+    done = subprocess.run([sys.executable, str(SCRIPT)],
+                          capture_output=True, text=True, cwd=REPO, timeout=120)
+
+    assert "no database" in _could_not_run(done)
 
 
 # ── ฐานของรุ่นเก่า ────────────────────────────────────────────────────────────
