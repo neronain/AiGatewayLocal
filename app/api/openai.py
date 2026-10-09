@@ -551,6 +551,7 @@ class _RequestContext:
         http_status: int = 200,
         error_code: str | None = None,
         charge: bool = True,
+        cache_hit: bool = False,
     ) -> None:
         """Record usage + quota consumption exactly once per request.
 
@@ -580,6 +581,7 @@ class _RequestContext:
                 http_status=http_status,
                 error_code=error_code,
                 charge=charge,
+                cache_hit=cache_hit,
             )
         )
 
@@ -592,6 +594,7 @@ class _RequestContext:
         http_status: int = 200,
         error_code: str | None = None,
         charge: bool = True,
+        cache_hit: bool = False,
     ) -> None:
         """งานบันทึกจริง — เรียกผ่าน finalize() เท่านั้น"""
         record = usage_mod.build_record(
@@ -610,6 +613,7 @@ class _RequestContext:
             http_status=http_status,
             error_code=error_code,
             client_agent=self.client_agent,
+            cache_hit=cache_hit,
         )
         await self.state.usage.submit(record)
         if not charge:
@@ -683,7 +687,9 @@ async def _complete_chat(build: BuildRequest, ctx: _RequestContext) -> FastJSONR
                 usage = resolve_usage(ctx.profile, data.get("usage"), _rate(ctx))
                 # **ต้องหักโควตาเหมือนไม่ได้แคช** ไม่งั้นถามซ้ำได้ฟรีไม่จำกัด
                 # ซึ่งเป็นช่องโหว่รายได้แบบเดียวกับที่ปิดไปใน 1.6.0 แค่คนละทาง
-                await ctx.finalize(usage)
+                # · `cache_hit` ติดไปกับแถว usage: ~1 ms นี้ไม่ใช่ความเร็วของ backend
+                # รายงานเปอร์เซ็นไทล์ต้องแยกออกได้ (ดู UsageLog.cache_hit)
+                await ctx.finalize(usage, cache_hit=True)
                 return FastJSONResponse(
                     content=data,
                     headers={

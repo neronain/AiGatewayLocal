@@ -315,8 +315,13 @@ async def test_an_existing_database_gains_the_new_column_on_startup(temp_db):
 
     await init_db()
     fresh = await _column_order()
+    # ฐานของรุ่นก่อน client_request_id ไม่มีคอลัมน์ที่ประกาศหลังจากนั้นด้วย (คอลัมน์ใหม่ต่อท้าย
+    # เสมอ) จึงถอดออกทั้งช่วงท้าย ไม่ใช่ตัวเดียว · ถอดเฉพาะตัวกลางแล้วเติมกลับ มันจะไปต่อท้ายตัวที่
+    # ใหม่กว่า ซึ่งเป็นฐานข้อมูลที่ไม่เคยมีอยู่จริง — เทสนี้ล้มแบบนั้นตอนเพิ่ม cache_hit (2026-10-09)
+    newer = fresh[fresh.index("client_request_id"):]
     async with get_engine().begin() as conn:
-        await conn.execute(text("ALTER TABLE usage_logs DROP COLUMN client_request_id"))
+        for name in reversed(newer):
+            await conn.execute(text(f"ALTER TABLE usage_logs DROP COLUMN {name}"))
     await dispose_db()
 
     await init_db()

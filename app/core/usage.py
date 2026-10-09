@@ -79,6 +79,8 @@ class UsageRecord:
     http_status: int = 200
     error_code: str | None = None
     client_agent: str = ""
+    # ตอบจากแคช ไม่มี backend ทำงาน — ดู UsageLog.cache_hit
+    cache_hit: bool = False
 
     @property
     def total_tokens(self) -> int:
@@ -109,6 +111,7 @@ class UsageRecord:
             http_status=self.http_status,
             error_code=self.error_code,
             client_agent=self.client_agent[:128],
+            cache_hit=self.cache_hit,
         )
 
 
@@ -129,6 +132,7 @@ def build_record(
     error_code: str | None = None,
     client_agent: str = "",
     client_request_id: str | None = None,
+    cache_hit: bool = False,
 ) -> UsageRecord:
     return UsageRecord(
         request_id=request_id,
@@ -152,6 +156,7 @@ def build_record(
         http_status=http_status,
         error_code=error_code,
         client_agent=client_agent,
+        cache_hit=cache_hit,
     )
 
 

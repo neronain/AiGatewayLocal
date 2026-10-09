@@ -4203,6 +4203,8 @@ async def usage_requests(
                 "http_status": row.http_status,
                 "error_code": row.error_code,
                 "client_agent": row.client_agent,
+                # NULL = แถวที่เขียนก่อนมีคอลัมน์นี้ หรือโดยรุ่นที่ไม่รู้จักมัน
+                "cache_hit": bool(row.cache_hit),
             }
             for row in (await session.execute(stmt)).scalars()
         ],
