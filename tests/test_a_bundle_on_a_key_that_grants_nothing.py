@@ -184,3 +184,70 @@ def test_a_key_naming_a_bundle_that_is_already_gone_calls_nothing(client):
     client.portal.call(drop)
 
     assert catalogue(client, key) == set()
+
+
+def test_the_refusal_tells_the_admin_something_that_can_be_done(client):
+    """ "Take it away from them first" ใช้กับ key ไม่ได้ — ไม่มีเส้นทางไหนถอดมัดออกจากใบ
+
+    `PATCH /admin/api-keys/{id}` รับแค่ `days` กับ `models` (ผู้ตรวจอิสระ 2026-10-09) ·
+    คำปฏิเสธที่สั่งให้ทำสิ่งที่ทำไม่ได้คือทางตัน: ต้องบอกว่าใบไหน และทางที่มีจริงคือ
+    เพิกถอน/ออกใหม่ หรือปิดมัดแทนการลบ
+    """
+    group = bundle(client)
+    key = key_for(client, person(client), access_groups=[group["id"]])
+
+    error = admin(client, "DELETE", f"/admin/access-groups/{group['id']}").json()["error"]
+
+    message = error["message"]
+    assert "Take it away from them first" not in message
+    assert key["key_prefix"] in message, "ต้องบอกว่าใบไหน ไม่ใช่แค่กี่ใบ"
+    assert "revoke" in message.lower() and "cannot be taken off a key" in message
+    assert "disable" in message.lower()
+    assert error["details"]["keys"] == [
+        {"id": key["id"], "name": "k", "key_prefix": key["key_prefix"]}]
+
+
+def test_what_a_workspace_holds_is_still_told_apart_from_what_a_key_holds(client):
+    """ของ workspace ถอดออกได้จริง — คำแนะนำนั้นต้องยังอยู่ และไม่ปนกับของ key"""
+    group = bundle(client)
+    ws = admin(client, "POST", "/admin/workspaces", json={"code": "CS101", "name": "CS101"}).json()
+    admin(client, "POST", f"/admin/workspaces/{ws['id']}/models",
+          json={"models": [], "access_groups": [group["id"]]})
+
+    error = admin(client, "DELETE", f"/admin/access-groups/{group['id']}").json()["error"]
+
+    assert "1 workspace(s)" in error["message"]
+    assert "Take it away from them first" in error["message"]
+    assert "cannot be taken off a key" not in error["message"]
+
+
+def test_an_expired_key_still_holds_the_bundle_and_the_refusal_says_so(client):
+    """ตัดสินไว้: ใบที่หมดอายุยังนับ — หมดอายุกู้ได้ด้วยปุ่ม Extend เพิกถอนกู้ไม่ได้
+
+    ถ้าปล่อยให้ลบมัดได้ ใบที่ต่ออายุกลับมาทีหลังจะเป็นใบที่ชี้ไปหามัดที่ไม่มีอยู่ เรียกอะไร
+    ไม่ได้ และไม่มีปุ่มไหนแก้ · แต่ต้องบอกว่าที่ค้างอยู่คือใบหมดอายุ ไม่งั้นผู้ดูแลไล่หาใบ
+    ที่ "ยังใช้อยู่" ซึ่งไม่มี
+    """
+    from datetime import timedelta
+
+    from app.db.models import ApiKey, utcnow
+    from app.db.session import session_scope
+
+    group = bundle(client)
+    key = key_for(client, person(client), access_groups=[group["id"]])
+
+    async def lapse():
+        async with session_scope() as session:
+            (await session.get(ApiKey, key["id"])).expires_at = utcnow() - timedelta(days=1)
+
+    client.portal.call(lapse)
+
+    refused = admin(client, "DELETE", f"/admin/access-groups/{group['id']}")
+    assert refused.status_code == 400, refused.text
+    assert "1 of them expired" in refused.json()["error"]["message"]
+    assert refused.json()["error"]["details"]["api_keys_expired"] == 1
+
+    # ต่ออายุกลับมาแล้วใบยังใช้ได้ตามเดิม — นี่คือสิ่งที่การปฏิเสธรักษาไว้
+    assert admin(client, "PATCH", f"/admin/api-keys/{key['id']}",
+                 json={"days": 30}).status_code == 200
+    assert catalogue(client, key["api_key"]) == {"coding"}

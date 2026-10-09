@@ -890,26 +890,54 @@ async def delete_access_group(
     # `access_groups` เป็นคอลัมน์ JSON: ถามว่า "มี id นี้อยู่ในรายการไหม" ด้วย SQL เขียน
     # ไม่เหมือนกันระหว่าง SQLite กับ PostgreSQL จึงอ่านใบที่ยังไม่ถูกเพิกถอนมาดูเอง ·
     # การลบมัดเกิดไม่บ่อยพอที่จะคุ้มกับ SQL สองแบบ
-    naming = sum(
-        1 for (groups,) in await session.execute(
-            select(ApiKey.access_groups).where(ApiKey.revoked_at.is_(None))
-        )
-        if group_id in (groups or [])
+    #
+    # ใบที่ **หมดอายุ** ยังนับ ใบที่ **เพิกถอน** ไม่นับ — ตัดสินไว้ ไม่ใช่บังเอิญ: หมดอายุกู้ได้
+    # ด้วยปุ่ม Extend เพิกถอนกู้ไม่ได้ · ปล่อยให้ลบมัดได้ ใบที่ต่ออายุกลับมาทีหลังจะชี้ไปหามัด
+    # ที่ไม่มีอยู่ เรียกอะไรไม่ได้ และไม่มีปุ่มไหนแก้ · แต่คำปฏิเสธต้องบอกว่าที่ค้างคือใบหมดอายุ
+    now = utcnow()
+    naming = [
+        key for key in (await session.execute(
+            select(ApiKey).where(ApiKey.revoked_at.is_(None)).order_by(ApiKey.created_at)
+        )).scalars()
+        if group_id in (key.access_groups or [])
+    ]
+    lapsed = sum(
+        1 for key in naming if key.expires_at is not None and _aware(key.expires_at) <= now
     )
     if holders or capped or naming:
-        parts = []
+        parts, advice = [], []
         if holders:
             parts.append(f"{holders} workspace(s)")
         if capped:
             parts.append(f"{capped} quota policy(ies)")
+        if holders or capped:
+            advice.append("Take it away from them first.")
         if naming:
-            parts.append(f"{naming} API key(s)")
+            parts.append(
+                f"{len(naming)} API key(s)" + (f", {lapsed} of them expired" if lapsed else "")
+            )
+            # "Take it away" ใช้กับ key ไม่ได้: ไม่มีเส้นทางไหนถอดมัดออกจากใบที่ออกไปแล้ว
+            # (PATCH รับแค่ days กับ models) — บอกว่าใบไหน และทางที่มีจริง
+            shown = ", ".join(
+                f"{key.name or '(unnamed)'} ({key.key_prefix}…)" for key in naming[:5]
+            ) + (f" and {len(naming) - 5} more" if len(naming) > 5 else "")
+            advice.append(
+                "A bundle cannot be taken off a key once it is issued: revoke the "
+                f"key(s) limited to it — {shown} — and issue replacements without it"
+                + (" (an expired key counts until it is revoked, because extending "
+                   "it would bring it back)" if lapsed else "")
+                + "."
+            )
         raise GatewayError(
             ErrorCode.INVALID_REQUEST,
-            f"'{group.name}' is still held by {' and '.join(parts)}. Take it away "
-            "from them first, or disable it — which stops it granting anything "
+            f"'{group.name}' is still held by {' and '.join(parts)}. {' '.join(advice)} "
+            "Or disable it instead of deleting it — which stops it granting anything "
             "without losing the list.",
-            details={"used_by": holders, "quota_policies": capped, "api_keys": naming},
+            details={
+                "used_by": holders, "quota_policies": capped,
+                "api_keys": len(naming), "api_keys_expired": lapsed,
+                "keys": [_key_brief(key) for key in naming[:50]],
+            },
         )
 
     await session.delete(group)
