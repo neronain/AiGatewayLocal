@@ -14,7 +14,7 @@ from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import config
-from app.core import assistant_fit, lmds, release
+from app.core import assistant_fit, keyvault, lmds, release
 from app.core.audit import audit
 from app.core.auth import (
     Principal,
@@ -35,7 +35,7 @@ from app.core.auth import (
 )
 from app.core.capability import compatibility_badges, upstream_model_for
 from app.core.errors import ErrorCode, GatewayError
-from app.core.keyvault import reveal_enabled, seal, unseal
+from app.core.keyvault import seal
 from app.core.modeltest import (
     ModelTestSuite,
     probe_backend,
@@ -1612,19 +1612,67 @@ async def reveal_api_key(
             "That key was revoked, so it cannot be revealed. Issue a new one.",
         )
 
-    plaintext = unseal(row.key_sealed)
-    if plaintext is None:
-        raise GatewayError(
-            ErrorCode.INVALID_REQUEST,
-            "Only this key's hash was stored, so there is nothing to reveal — it "
-            "was issued before reveal was switched on, or GW_KEY_REVEAL_SECRET is "
-            "unset. Issue a replacement instead.",
-        )
+    opened = keyvault.inspect(row.key_sealed)
+    if opened.plaintext is None:
+        raise _cannot_reveal(opened)
 
     await audit(session, request, actor, "apikey.reveal", "apikey", key_id,
                 {"key_prefix": row.key_prefix, "owner": row.user_id})
     await session.commit()
-    return {"id": row.id, "api_key": plaintext, "key_prefix": row.key_prefix}
+    return {"id": row.id, "api_key": opened.plaintext, "key_prefix": row.key_prefix}
+
+
+def _cannot_reveal(opened: keyvault.Opened) -> GatewayError:
+    """ทำไมใบนี้เปิดดูไม่ได้ และทำอะไรต่อได้ — แต่ละเหตุมีทางออกคนละทาง
+
+    เดิมทุกเหตุได้ข้อความเดียวกันว่า "เก็บแค่ hash … ออกก่อนเปิดฟีเจอร์ หรือไม่ได้ตั้ง
+    secret" · กับใบที่มีสำเนาครบแต่ secret ถูกเปลี่ยน ประโยคนั้นผิดทั้งสองข้อ และผู้ดูแลที่
+    เชื่อมันจะไม่มีทางรู้ว่าเอา secret เดิมกลับมาแล้วเปิดได้ (ตรวจ 2026-10-09)
+    """
+    details: dict[str, Any] = {"seal_state": opened.state}
+    if opened.state == keyvault.NONE:
+        message = (
+            "Only this key's hash was stored, so there is nothing to reveal - it was "
+            "issued before reveal was switched on. Issue a replacement instead."
+        )
+    elif opened.state == keyvault.OFF:
+        message = (
+            "A sealed copy of this key is stored, but key reveal is switched off: "
+            "GW_KEY_REVEAL_SECRET is unset. Set it back to the secret that sealed the "
+            "copy and restart, or issue a replacement."
+        )
+    else:
+        details["reason"] = opened.reason
+        if opened.key_id:
+            details["sealed_key_id"] = opened.key_id
+        if opened.reason == keyvault.DAMAGED:
+            message = (
+                "The sealed copy of this key is damaged: it was sealed under a secret "
+                "that is configured, but its contents no longer open. No secret will "
+                "bring it back. The key itself still works - issue a new key if it "
+                "has to be shown again."
+            )
+        elif opened.reason == keyvault.NEWER_FORMAT:
+            message = (
+                "The sealed copy of this key was written in a format this version does "
+                "not read - most likely by a newer LiteGate. Upgrade to open it. The "
+                "key itself still works; issue a new key if it has to be shown now."
+            )
+        else:
+            tried = ("GW_KEY_REVEAL_SECRET or GW_KEY_REVEAL_SECRET_PREVIOUS"
+                     if keyvault.previous_configured() else "GW_KEY_REVEAL_SECRET")
+            # v1 ไม่ได้จดว่า secret ไหนผนึก จึงแยก "ผิดตัว" กับ "ข้อมูลเสีย" ไม่ได้ — บอกตามนั้น
+            cause = ("it was sealed under a different secret"
+                     if opened.reason == keyvault.WRONG_SECRET
+                     else "it was sealed under a different secret, or it is corrupt (copies "
+                          "written by LiteGate 1.12.1 and earlier do not record which)")
+            message = (
+                f"The sealed copy of this key does not open under {tried}: {cause}. If you "
+                "still hold the secret that sealed it, set it as "
+                "GW_KEY_REVEAL_SECRET_PREVIOUS and restart. If it is gone, the key itself "
+                "still works - issue a new key to whoever needs theirs shown again."
+            )
+    return GatewayError(ErrorCode.INVALID_REQUEST, message, details=details)
 
 
 @router.get("/api-keys/{key_id}/reveals")
@@ -1671,32 +1719,36 @@ async def list_api_keys(
             select(User.id, User.role).where(User.id.in_(owners))
         )
     } if owners else {}
-    return {
-        "data": [
-            {
-                "id": k.id,
-                "user_id": k.user_id,
-                "owner_role": roles.get(k.user_id, ""),
-                "workspace_id": k.workspace_id,
-                "name": k.name,
-                "key_prefix": k.key_prefix,
-                "models": list(k.models or []),
-                "access_groups": list(k.access_groups or []),
-                "limited_by": list(limits_on_key(
-                    models=k.models, access_groups=k.access_groups,
-                    workspace_id=k.workspace_id, capped=k.id in capped,
-                )),
-                "kind": k.kind or "person",
-                "revoked": k.revoked_at is not None,
-                "expires_at": k.expires_at.isoformat() if k.expires_at else None,
-                "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
-                # ใบที่ออกก่อนเปิดฟีเจอร์จะเป็น false ตลอดไป · หน้าเว็บต้องรู้ก่อนวาดปุ่ม
-                # ไม่ใช่ให้กดแล้วค่อยบอกว่าทำไม่ได้
-                "revealable": bool(k.key_sealed) and reveal_enabled(),
-            }
-            for k in keys
-        ]
-    }
+    data = []
+    for k in keys:
+        # เปิดจริงแล้วทิ้งผล เก็บแค่สถานะ · เดิมตอบ `revealable: true` ให้ทุกใบที่มีสำเนา
+        # ตราบที่ตั้ง secret อะไรไว้สักตัว หน้าเว็บจึงวาดปุ่ม Reveal ให้ใบที่ผนึกด้วย secret
+        # ตัวอื่น ซึ่งกดแล้วล้มแน่ ๆ
+        seal_state = keyvault.inspect(k.key_sealed).state
+        data.append({
+            "id": k.id,
+            "user_id": k.user_id,
+            "owner_role": roles.get(k.user_id, ""),
+            "workspace_id": k.workspace_id,
+            "name": k.name,
+            "key_prefix": k.key_prefix,
+            "models": list(k.models or []),
+            "access_groups": list(k.access_groups or []),
+            "limited_by": list(limits_on_key(
+                models=k.models, access_groups=k.access_groups,
+                workspace_id=k.workspace_id, capped=k.id in capped,
+            )),
+            "kind": k.kind or "person",
+            "revoked": k.revoked_at is not None,
+            "expires_at": k.expires_at.isoformat() if k.expires_at else None,
+            "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
+            # ใบที่ออกก่อนเปิดฟีเจอร์จะเป็น false ตลอดไป · หน้าเว็บต้องรู้ก่อนวาดปุ่ม
+            # ไม่ใช่ให้กดแล้วค่อยบอกว่าทำไม่ได้
+            "revealable": seal_state in (keyvault.CURRENT, keyvault.PREVIOUS),
+            # none · current · previous (รอผนึกใหม่) · lost (เปิดไม่ได้) · off (ฟีเจอร์ปิด)
+            "seal_state": seal_state,
+        })
+    return {"data": data}
 
 
 @router.patch("/api-keys/{key_id}")

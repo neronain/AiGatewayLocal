@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     # ต้องมาจาก environment ไม่ใช่ฐานข้อมูล — เก็บกุญแจไว้ในกล่องเดียวกับของที่ล็อก
     # แล้วการเข้ารหัสไม่ได้ซื้ออะไรเลย · ดู app/core/keyvault.py
     key_reveal_secret: str = ""
+    # secret ตัวก่อนหน้า ตั้งไว้ชั่วคราวระหว่างเปลี่ยน GW_KEY_REVEAL_SECRET เท่านั้น
+    #
+    # ใช้ **เปิด** ของที่ผนึกไว้ใต้ตัวเก่าได้ แต่ไม่เคยใช้ผนึกของใหม่ และตั้งตัวเดียวไม่ได้
+    # เปิดฟีเจอร์ · เมื่อผนึกใหม่ครบแล้ว (คอนโซล → API keys หรือ
+    # `python -m app.tools keyvault reseal`) ให้เอาออก — secret ที่ไม่ต้องใช้แล้วไม่ควร
+    # นอนอยู่บนเครื่อง · ดู app/core/keyrotation.py
+    key_reveal_secret_previous: str = ""
     # Kept as a raw string: pydantic-settings JSON-decodes complex types straight
     # from the environment, before any validator runs, so a plain
     # "a,b" - or an empty value - would fail to parse as list[str].
