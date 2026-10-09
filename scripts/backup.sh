@@ -143,12 +143,21 @@ else
     echo "  secrets    none — no provider key has been set from the console"
 fi
 
+# The restore line is a command somebody will copy while something is broken, so
+# it has to run as written. It used to read `scripts/restore.sh $stamp.tar.gz`:
+# not the file's name (litegate-$stamp.tar.gz), not where it was put, and without
+# the mode restore.sh insists on (found 2026-10-09). It now names the archive
+# where this run wrote it and rehearses into a scratch directory - the safe
+# mode, and the one restore.sh itself defaults people towards.
 cat > "$staging/MANIFEST" <<MANIFEST
 litegate-backup
 created:  $(date -u +%Y-%m-%dT%H:%M:%SZ)
 host:     $(hostname)
 database: ${GW_DATABASE_URL%%://*}://…
-restore:  scripts/restore.sh $stamp.tar.gz
+restore:  scripts/restore.sh $(printf '%q' "$OUT_DIR/litegate-$stamp.tar.gz") --into ./restored
+          (run from the install directory. That rehearses into ./restored and
+          touches nothing running; --in-place restores over the deployment.
+          If the archive has been moved since, give its new path instead.)
 MANIFEST
 
 mkdir -p "$OUT_DIR"

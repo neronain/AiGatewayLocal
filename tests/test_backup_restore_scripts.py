@@ -383,3 +383,37 @@ def test_a_pepper_that_really_differs_is_still_refused_and_nothing_is_touched(
     assert done.returncode == 1 and "REFUSING" in done.stderr
     assert live_db.read_bytes() == before, "ปฏิเสธแล้วต้องไม่มีอะไรถูกเขียนทับ"
     assert not list((install / "data").glob("gateway.db.before-restore-*"))
+
+
+# ── MANIFEST: คำสั่ง restore ที่เขียนไว้ใน archive ต้องรันได้ ──────────────────
+
+def manifest_restore_command(archive: Path) -> str:
+    with tarfile.open(archive) as tar:
+        member = next(m for m in tar.getmembers() if m.name.endswith("/MANIFEST"))
+        text = tar.extractfile(member).read().decode("utf-8")
+    return next(line.split(":", 1)[1].strip() for line in text.splitlines()
+                if line.startswith("restore:"))
+
+
+@pytest.mark.parametrize("out", [None, "elsewhere/kept backups"], ids=["default", "custom-out"])
+def test_the_restore_command_written_into_the_archive_actually_runs(tmp_path, out):
+    """ตรวจ 2026-10-09: MANIFEST เขียนว่า `scripts/restore.sh <เวลา>.tar.gz`
+
+    ไฟล์จริงชื่อ `litegate-<เวลา>.tar.gz` อยู่ในโฟลเดอร์ backup และ restore.sh บังคับให้เลือก
+    --into หรือ --in-place — คำสั่งที่เขียนไว้จึงผิดทั้งชื่อไฟล์ พาธ และขาดโหมด · MANIFEST คือ
+    สิ่งแรกที่ restore.sh พิมพ์ให้คนที่กำลังกู้ระบบอ่าน คำสั่งในนั้นต้องคัดลอกไปรันได้
+    """
+    install = make_install(tmp_path / "live")
+    args = ["--out", str(tmp_path / out)] if out else ["--out", "backups"]
+    done = run(install / "scripts" / "backup.sh", *args, cwd=install)
+    assert done.returncode == 0, done.stderr
+    where = tmp_path / out if out else install / "backups"
+    (archive,) = where.glob("litegate-*.tar.gz")
+
+    command = manifest_restore_command(archive)
+    assert archive.name in command, f"ต้องเป็นชื่อไฟล์จริง: {command}"
+    ran = subprocess.run(["bash", "-c", command], cwd=install, capture_output=True, text=True,
+                         timeout=60)
+    assert ran.returncode == 0, ran.stdout + ran.stderr
+    assert (install / "restored" / "data" / "gateway.db").is_file(), "ซ้อมลงโฟลเดอร์แยก ไม่ทับของจริง"
+    assert json.loads((install / "restored" / "data" / "secrets.json").read_text()) == PROVIDER_KEYS
