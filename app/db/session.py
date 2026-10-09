@@ -97,7 +97,18 @@ def get_engine() -> AsyncEngine:
     if _engine is None:
         settings = get_settings()
         _ensure_sqlite_dir(settings.database_url)
-        kwargs: dict = {"echo": False, "future": True}
+        # hide_parameters: ข้อผิดพลาดของฐานข้อมูลต้องไม่พาค่าที่ผูกกับคำสั่งออกไปด้วย
+        #
+        # เคสจริง 2026-10-09: การผนึกสำเนา key ใหม่ที่เขียนไม่สำเร็จ (ฐานถูกล็อก · สายหลุด ·
+        # ดิสก์เต็ม) โยนข้อผิดพลาดที่มี `[parameters: ('v2:…', …)]` — ตัวจับกลางของ main.py
+        # `log.exception` ที่ระดับ ERROR สำเนาที่ผนึกทั้งเก่าและใหม่จึงลง journal ทั้งก้อน
+        # ตั้งที่ engine ไม่ใช่ที่จุดนั้นจุดเดียว เพราะคำสั่งเกือบทุกตัวของแอปนี้ผูก hash ของ key ·
+        # hash ของรหัสผ่าน · หรือสำเนาที่ผนึก ไว้ที่ใดที่หนึ่ง และ log ถูกเก็บนานกว่าฐาน
+        #
+        # สิ่งที่ยังอยู่ในข้อความ: ชนิดของข้อผิดพลาด · ข้อความของไดรเวอร์ ("database is locked"
+        # ที่โค้ดโควตาอ่านเพื่อลองใหม่) · ตัวคำสั่ง SQL · สิ่งที่หายคือค่าที่ผูก — จะดูค่า
+        # ต้องทำซ้ำกับฐานสำเนาแล้วเปิด echo เอง ซึ่งเป็นสิ่งที่ต้องตั้งใจทำ
+        kwargs: dict = {"echo": False, "future": True, "hide_parameters": True}
         sqlite = is_sqlite(settings.database_url)
         if sqlite:
             # ให้ไดรเวอร์รอล็อกด้วย ไม่ใช่แค่ตัว SQLite เอง
