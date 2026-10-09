@@ -401,7 +401,9 @@ Format `edu_sk_<43 url-safe base64 chars>` (256 bits of entropy).
 > the admin plane, and it sees `/v1/models` without `upstream_model`. Console
 > sessions and keys without a limit are as the table says. As originally built,
 > privilege followed the owner's role alone, so a key limited to one model could
-> lift its own limit. Current behaviour:
+> lift its own limit. For the same reason "issue member keys" has an edge: a
+> manager does not issue, change or revoke an administrator's key, nor another
+> manager's key that has no limit on it. Current behaviour:
 > [DEPLOYMENT.md §2.2](DEPLOYMENT.md#22-create-a-workspace-and-issue-member-keys).
 
 ### FR-19 — Workspace-scoped model permission · **P0**

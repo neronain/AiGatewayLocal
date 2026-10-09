@@ -348,7 +348,11 @@ an access group, a workspace, or a quota of its own. Limit a key to `coding`
 for one script and that key can call `coding` and nothing under `/admin`,
 whoever owns it; otherwise the limit would be a request, since the key could
 lift it itself, and one leaked script key would be the whole gateway. Console
-sessions are not affected. The console marks such keys `no admin access`, the
+sessions are not affected. The same reasoning runs the other way: since a key
+without a limit carries its owner's rights, only an administrator can issue,
+change or revoke an administrator's key, and a manager's unlimited key is that
+manager's or an administrator's to decide — not another manager's, even one who
+shares a workspace with them. The console marks such keys `no admin access`, the
 key can ask about itself at `GET /v1/me/key`, and
 `scripts/restricted_key_report.py` lists the keys this changes **before** you
 upgrade a gateway that predates the rule —
@@ -412,7 +416,8 @@ Consequences that are easy to get wrong, and are tested:
   too.** A key limited only to groups that are all off (or deleted) calls
   nothing until one is switched back on — it used to fall through to
   "unrestricted", so the switch that was meant to stop a bundle widened every
-  key that named it. A group a live key still names cannot be deleted.
+  key that named it. A group that a key still names cannot be deleted until
+  the key is revoked — an expired key counts, because it can be extended.
 - **A spent allowance can be handed back** without raising anyone's limit — admin
   only, audit-logged, usage records untouched. One runaway loop can burn a month's
   quota on a Tuesday afternoon; the limit was not wrong and the person is blocked
