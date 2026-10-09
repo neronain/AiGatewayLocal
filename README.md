@@ -104,7 +104,10 @@ is blank in this screenshot and the output carries a placeholder.</sub>
 | 🏷 **Stable aliases** | Members use `coding`. Admins repoint it from one model to another with zero member-side change. Repository names are never member-visible. |
 | ♻️ **Failover between endpoints** | Two machines behind one alias take over for each other — retried only before the first byte is streamed, so nobody sees half an answer twice. |
 | 📊 **Real quota** | Per member, workspace, model or group — over requests, text tokens, **visual tokens**, output tokens and images, plus per-minute rate limits. |
+| 🧭 **`model: "auto"`** | A member sends `auto` and the gateway picks from the models that key may already use — the fastest by speed measured on your own traffic, or by a quality score you set per model, or a weighted mix of the two. The strategy is an administrator's choice, made on screen. |
+| 📐 **Structured output that is actually applied** | A `response_format` with its keys in the wrong place is repaired and the repair announced in a response header, or refused with a `400` naming the field. It is never forwarded as it came, because the backends answer `200` and quietly ignore the schema. |
 | 🤖 **Claude Code and Codex work** | `/v1/messages` and `/v1/responses` are served even when the backend speaks only OpenAI. The gateway translates both ways, streaming included. |
+| ⏱ **Percentiles, not an average** | p50 / p95 / p99 of latency and time to first token, per model and — for administrators — per machine, each figure beside its sample count. Too few samples is shown as no number, not as a reassuring one. |
 | 🔒 **Private by default** | No prompt, no response, no image is ever written to disk. The schema has no column for them. |
 | 🔔 **Says when it is behind** | The console compares the running version against the latest release — **only when an administrator presses the button**. Nothing leaves the machine otherwise. |
 
@@ -338,6 +341,19 @@ what exists.** Adding a model touches GPUs and machine configuration, which is
 not a people-management decision. A manager's reach stops at the workspaces they
 actually run — they cannot see, quota or issue keys for anyone outside them.
 
+**A key that carries a limit does not carry its owner's admin rights.** The table
+above is about people. An API key issued to a manager or an administrator has
+those rights only while nothing was written on it to narrow it — a model list,
+an access group, a workspace, or a quota of its own. Limit a key to `coding`
+for one script and that key can call `coding` and nothing under `/admin`,
+whoever owns it; otherwise the limit would be a request, since the key could
+lift it itself, and one leaked script key would be the whole gateway. Console
+sessions are not affected. The console marks such keys `no admin access`, the
+key can ask about itself at `GET /v1/me/key`, and
+`scripts/restricted_key_report.py` lists the keys this changes **before** you
+upgrade a gateway that predates the rule —
+[DEPLOYMENT.md § Routine upgrade](docs/DEPLOYMENT.md#before-upgrading-keys-that-lose-admin-rights).
+
 **Reading a key back.** By default only a digest is stored, so a lost key can only
 be replaced — which means finding every config file and CI secret that held the
 old one. Set `GW_KEY_REVEAL_SECRET` and a sealed second copy is kept that an
@@ -346,8 +362,14 @@ leaked database dump alone still reveals nothing, because the seal key is not in
 it; a host compromise reaching both the dump and the environment reveals every
 sealed key at once — which is why it is off unless switched on. Reveal never works
 on a revoked key, every opening is recorded and shown beside the key, and keys
-issued before it was enabled stay unreadable and say so.
-[Details](docs/DEPLOYMENT.md#reading-an-issued-key-back-optional).
+issued before it was enabled stay unreadable and say so. The secret can be
+changed without losing the copies: the old value goes in
+`GW_KEY_REVEAL_SECRET_PREVIOUS`, an administrator presses **Re-seal**, and the
+old value is removed — each key stays readable the whole way through, and a
+copy that no configured secret opens is reported as such instead of as "only a
+hash was stored".
+[Details](docs/DEPLOYMENT.md#reading-an-issued-key-back-optional) ·
+[the rotation procedure](docs/RUNBOOK.md#change-gw_key_reveal_secret).
 
 ---
 
@@ -386,6 +408,11 @@ Consequences that are easy to get wrong, and are tested:
   something that worked and chasing down everywhere it had been pasted — so people
   issued wide keys up front, the opposite of what a scope is for. An empty list
   means unrestricted, and the dialog says so before you save.
+- **Switching an access group off takes its models away from keys limited to it,
+  too.** A key limited only to groups that are all off (or deleted) calls
+  nothing until one is switched back on — it used to fall through to
+  "unrestricted", so the switch that was meant to stop a bundle widened every
+  key that named it. A group a live key still names cannot be deleted.
 - **A spent allowance can be handed back** without raising anyone's limit — admin
   only, audit-logged, usage records untouched. One runaway loop can burn a month's
   quota on a Tuesday afternoon; the limit was not wrong and the person is blocked
@@ -750,7 +777,7 @@ code removed was never checking anything.
 | **v1.7** — client tools: on-prem mirror (verify → stage → gated promote), console *เครื่องมือ* tab | ✅ done |
 | **Ops hardening** — tool-parser mismatch detection, SQLite lock under auth load, reinstall and add-model from the console | ✅ done |
 | **1.12** — Python 3.10–3.13 and containers (LXC / Docker), verified against real images | ✅ done |
-| **Latest** — retrieval surfaces (`/v1/embeddings`, `/v1/rerank`), batch ceiling, console version check | ✅ done |
+| **Latest** — retrieval surfaces (`/v1/embeddings`, `/v1/rerank`), batch ceiling, console version check; quality-aware `model: "auto"`, `response_format` repair, latency percentiles, key-reveal secret rotation, limited keys without admin rights | ✅ done |
 | M5 — image upload, PDF, richer dashboard | planned |
 
 Verified end-to-end against real backends on a live fleet, not only against the
