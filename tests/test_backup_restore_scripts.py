@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
 import stat
@@ -126,8 +127,6 @@ def test_an_install_without_console_keys_still_backs_up_and_says_so(tmp_path):
 
 def test_an_unreadable_key_file_stops_the_backup(tmp_path):
     """ไฟล์มีอยู่แต่อ่านไม่ได้ (0600 ของผู้ใช้อื่น) — archive ที่ขาดมันแล้วรายงานสำเร็จคือบั๊กเดิมในรูปใหม่"""
-    import os
-
     if os.geteuid() == 0:
         pytest.skip("root อ่านได้ทุกไฟล์")
     install = make_install(tmp_path / "live")
@@ -140,3 +139,70 @@ def test_an_unreadable_key_file_stops_the_backup(tmp_path):
         (install / "data" / "secrets.json").chmod(0o600)
     assert done.returncode != 0
     assert not list((install / "backups").glob("litegate-*.tar.gz")), "ห้ามมี archive ที่ขาดไฟล์นี้"
+
+
+# ── secret ที่ผนึกสำเนา API key ──────────────────────────────────────────────
+
+def restore_in_place(install: Path, archive: Path) -> subprocess.CompletedProcess:
+    """restore ทับ install เดิม · ตอบคำถามยืนยันของสคริปต์ทาง stdin เหมือนคนพิมพ์"""
+    return subprocess.run(
+        ["bash", str(install / "scripts" / "restore.sh"), str(archive), "--in-place"],
+        cwd=install, input="restore\n", capture_output=True, text=True, timeout=60,
+        # สคริปต์อ่านค่าจากสภาพแวดล้อมก่อน .env — เครื่องที่รันเทสต้องไม่มีผลกับเทส
+        env={k: v for k, v in os.environ.items() if not k.startswith("GW_")},
+    )
+
+
+def set_env(install: Path, **values: str) -> None:
+    lines = ["GW_API_KEY_PEPPER=pepper-of-this-install"]
+    lines += [f"{name}={value}" for name, value in values.items()]
+    (install / ".env").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_restoring_a_backup_from_before_a_secret_change_says_what_to_keep(tmp_path):
+    """backup ก่อนเปลี่ยน GW_KEY_REVEAL_SECRET → restore ทับหลังเปลี่ยน
+
+    restore แบบ --in-place ไม่แตะ .env ของเครื่อง ฐานที่ได้กลับมาจึงผนึกด้วย secret ที่เครื่องนี้
+    ไม่มีแล้ว · เดิมสคริปต์รายงานว่า ".env ตรงกับ backup" ทั้งที่เทียบแค่ pepper แล้วผู้ดูแลไปรู้
+    ตอนกด Reveal ไม่ได้ · key ทุกใบยังใช้งานได้ จึงเป็นคำเตือน ไม่ใช่การปฏิเสธ
+    """
+    install = make_install(tmp_path / "live")
+    set_env(install, GW_KEY_REVEAL_SECRET="old-reveal-secret-not-real")
+    archive = backup(install)
+    set_env(install, GW_KEY_REVEAL_SECRET="new-reveal-secret-not-real")
+
+    done = restore_in_place(install, archive)
+    assert done.returncode == 0, done.stderr
+    said = done.stdout + done.stderr
+    assert "WARNING" in said and "GW_KEY_REVEAL_SECRET_PREVIOUS" in said
+    assert "reseal" in said, "บอกขั้นถัดไปด้วย ไม่ใช่แค่บอกว่ามีปัญหา"
+    assert "old-reveal-secret-not-real" not in said and "new-reveal-secret-not-real" not in said
+    assert "already matches the backup" not in said, "เทียบแค่ pepper — ห้ามบอกว่า .env ตรงทั้งไฟล์"
+    # .env ของเครื่องต้องไม่ถูกแตะ — secret ปัจจุบันยังเป็นตัวใหม่
+    assert "new-reveal-secret-not-real" in (install / ".env").read_text(encoding="utf-8")
+
+
+def test_restoring_under_the_same_reveal_secret_says_nothing_about_it(tmp_path):
+    """ยามที่ร้องทุกครั้งคือยามที่ไม่มีใครฟัง"""
+    install = make_install(tmp_path / "live")
+    set_env(install, GW_KEY_REVEAL_SECRET="same-reveal-secret-not-real")
+    archive = backup(install)
+
+    done = restore_in_place(install, archive)
+    assert done.returncode == 0, done.stderr
+    assert "GW_KEY_REVEAL_SECRET" not in done.stdout + done.stderr
+
+
+def test_restoring_when_the_backups_secret_is_the_live_previous_one_is_not_alarming(tmp_path):
+    """ผู้ดูแลทำตามขั้นตอนแล้ว (ใส่ secret ของ backup เป็น PREVIOUS) — บอกแค่ว่าต้องผนึกใหม่อีกรอบ"""
+    install = make_install(tmp_path / "live")
+    set_env(install, GW_KEY_REVEAL_SECRET="old-reveal-secret-not-real")
+    archive = backup(install)
+    set_env(install, GW_KEY_REVEAL_SECRET="new-reveal-secret-not-real",
+            GW_KEY_REVEAL_SECRET_PREVIOUS="old-reveal-secret-not-real")
+
+    done = restore_in_place(install, archive)
+    assert done.returncode == 0, done.stderr
+    said = done.stdout + done.stderr
+    assert "WARNING" not in said
+    assert "NOTE" in said and "reseal" in said

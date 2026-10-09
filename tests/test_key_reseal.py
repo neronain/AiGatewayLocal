@@ -215,6 +215,60 @@ def test_revoked_keys_are_resealed_too_so_the_count_reaches_zero(secrets, client
     assert reveal(client, keys[0]["id"]).status_code == 400, "เพิกถอนแล้วยังเปิดดูไม่ได้เหมือนเดิม"
 
 
+# ── backup เก่ากับ secret ใหม่ ────────────────────────────────────────────────
+
+@pytest.mark.sqlite_only
+def test_an_older_backup_restored_after_the_change_needs_the_old_secret_back(
+        secrets, temp_db, tmp_path):
+    """สำรองฐาน → เปลี่ยน secret จนจบ (เอาตัวเก่าออกแล้ว) → restore ฐานที่สำรองไว้ทับ
+
+    ฐานที่ได้กลับมาผนึกด้วย secret ตัวเก่า ซึ่งเครื่องนี้ไม่มีแล้ว — สำเนาทุกใบเปิดไม่ได้
+    จนกว่าจะเอา secret เก่ากลับมาเป็น PREVIOUS · นี่คือเหตุที่ต้องเก็บ secret เก่าไว้ตราบที่
+    ยังเก็บ backup ที่ทำก่อนการผนึกใหม่ (archive ของ scripts/backup.sh มี .env ตอนนั้นอยู่ข้างใน)
+    """
+    import sqlite3
+
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from tests.conftest import _bootstrap_key
+    from tests.keyvault_kit import issue_many
+
+    backup = tmp_path / "backup.sqlite"
+    secrets(A)
+    with TestClient(create_app()) as gateway:
+        gateway.admin_key = admin_key = _bootstrap_key(gateway)
+        keys = issue_many(gateway, 3)
+        # สำเนาที่สอดคล้องของฐานที่กำลังถูกใช้ — วิธีเดียวกับ `.backup` ใน scripts/backup.sh
+        source, target = sqlite3.connect(temp_db), sqlite3.connect(backup)
+        source.backup(target)
+        source.close()
+        target.close()
+
+        secrets(B, previous=A)
+        assert reseal(gateway).json()["resealed"] == 3
+        secrets(B)
+        assert all(opens(gateway, k) for k in keys), "เปลี่ยนจบแล้ว ทุกใบเปิดได้ด้วยตัวใหม่"
+
+    # restore: เกตเวย์ปิดอยู่ วางไฟล์ที่สำรองไว้ทับ
+    for leftover in (temp_db, temp_db.with_name(temp_db.name + "-wal"),
+                     temp_db.with_name(temp_db.name + "-shm")):
+        leftover.unlink(missing_ok=True)
+    backup.rename(temp_db)
+
+    with TestClient(create_app()) as gateway:
+        gateway.admin_key = admin_key
+        assert not any(opens(gateway, k) for k in keys), "ฐานเก่า + secret ใหม่ตัวเดียว"
+        body = vault(gateway).json()
+        assert body["counts"]["lost"] == 3 and "lost" in {w["code"] for w in body["warnings"]}
+
+        secrets(B, previous=A)           # เอา secret เก่ากลับมา
+        assert all(opens(gateway, k) for k in keys)
+        assert reseal(gateway).json()["resealed"] == 3
+        secrets(B)
+        assert all(opens(gateway, k) for k in keys)
+
+
 # ── ใครสั่งได้ และมีบันทึกว่าใครสั่ง ─────────────────────────────────────────
 
 def test_only_an_admin_can_reseal(secrets, client, member_key):

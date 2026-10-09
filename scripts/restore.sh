@@ -63,6 +63,52 @@ echo
 backup_pepper=""
 [[ -f "$unpacked/env" ]] && backup_pepper="$(grep -E '^GW_API_KEY_PEPPER=' "$unpacked/env" | tail -1 | cut -d= -f2- || true)"
 
+# --- the secret that sealed the key copies ---------------------------------
+# Unlike the pepper this is a warning and not a refusal: every key in the backup
+# still authenticates. What stops working is *showing* a key again, for copies
+# the backup's GW_KEY_REVEAL_SECRET sealed - and until 2026-10-09 nothing said
+# so. An in-place restore leaves the live .env alone, so a backup made before
+# the secret was changed comes back sealed under a secret this deployment no
+# longer has, and the first anyone hears of it is a Reveal that fails.
+#
+# Compares values, never prints them.
+env_value() {  # env_value NAME FILE -> last value of NAME in FILE, or nothing
+    [[ -f "$2" ]] && grep -E "^$1=" "$2" | tail -1 | cut -d= -f2- || true
+}
+reveal_note() {
+    local backup_reveal live_reveal live_previous
+    backup_reveal="$(env_value GW_KEY_REVEAL_SECRET "$unpacked/env")"
+    [[ -n "$backup_reveal" ]] || return 0
+    live_reveal="${GW_KEY_REVEAL_SECRET:-$(env_value GW_KEY_REVEAL_SECRET "$ROOT/.env")}"
+    live_previous="${GW_KEY_REVEAL_SECRET_PREVIOUS:-$(env_value GW_KEY_REVEAL_SECRET_PREVIOUS "$ROOT/.env")}"
+    [[ "$backup_reveal" == "$live_reveal" ]] && return 0
+    if [[ "$backup_reveal" == "$live_previous" ]]; then
+        cat <<'NOTE'
+NOTE: this backup was sealed under the secret this deployment now has as
+GW_KEY_REVEAL_SECRET_PREVIOUS. Sealed key copies will open after the restore.
+Re-seal them again before removing the previous secret
+(console: Access & Keys > API keys, or `python -m app.tools keyvault reseal`).
+
+NOTE
+        return 0
+    fi
+    cat <<'WARN'
+WARNING: this backup's GW_KEY_REVEAL_SECRET is not the one this deployment has.
+
+Every API key in the backup will still work. What will not work is showing a
+key again: the sealed copies in this backup open only under the backup's secret.
+To keep them readable after the restore, before starting the gateway:
+
+  1. put the backup's value in this deployment's .env as
+     GW_KEY_REVEAL_SECRET_PREVIOUS (leave GW_KEY_REVEAL_SECRET as it is):
+       tar -xzOf ARCHIVE '*/env' | grep '^GW_KEY_REVEAL_SECRET='
+  2. start the gateway, then re-seal: console > Access & Keys > API keys,
+     or `python -m app.tools keyvault reseal`
+  3. remove GW_KEY_REVEAL_SECRET_PREVIOUS again and restart
+
+WARN
+}
+
 if [[ "$IN_PLACE" -eq 1 ]]; then
     live_pepper="${GW_API_KEY_PEPPER:-}"
     if [[ -z "$live_pepper" && -f "$ROOT/.env" ]]; then
@@ -81,6 +127,7 @@ If that is genuinely what you want, set the pepper from the backup first:
 STOP
         exit 1
     fi
+    reveal_note
     read -rp "Restore over $ROOT? Stop the gateway first. Type 'restore' to go on: " reply
     [[ "$reply" == "restore" ]] || { echo "Nothing was changed."; exit 1; }
 fi
@@ -129,7 +176,9 @@ if [[ -f "$unpacked/env" && "$IN_PLACE" -eq 0 ]]; then
     chmod 600 "$TARGET/.env"
     echo "  .env       restored (mode 600)"
 elif [[ -f "$unpacked/env" ]]; then
-    echo "  .env       left alone — the live one already matches the backup"
+    # Only the pepper was compared above. Saying "matches the backup" about the
+    # whole file claimed more than this script checked.
+    echo "  .env       left alone — its GW_API_KEY_PEPPER matches the backup's"
 fi
 
 # --- provider keys set from the console ------------------------------------
