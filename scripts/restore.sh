@@ -72,8 +72,24 @@ backup_pepper=""
 # longer has, and the first anyone hears of it is a Reveal that fails.
 #
 # Compares values, never prints them.
-env_value() {  # env_value NAME FILE -> last value of NAME in FILE, or nothing
-    [[ -f "$2" ]] && grep -E "^$1=" "$2" | tail -1 | cut -d= -f2- || true
+#
+# Compares what the gateway would *read*, not the raw text of the line. systemd
+# (EnvironmentFile) and pydantic-settings both drop one pair of surrounding
+# quotes and trailing whitespace, so `X="abc"`, `X='abc'`, `X=abc ` and a line
+# ending in CR all give the gateway the same secret. Comparing raw text called
+# those different and warned for no reason (found by review, 2026-10-09) - and a
+# warning that is wrong teaches people to stop reading warnings.
+env_value() {  # env_value NAME FILE -> last value of NAME in FILE as the gateway reads it
+    local v
+    [[ -f "$2" ]] || return 0
+    v="$(grep -E "^(export[[:space:]]+)?$1=" "$2" | tail -1 | cut -d= -f2- || true)"
+    v="${v%$'\r'}"
+    v="${v#"${v%%[![:space:]]*}"}"       # leading whitespace
+    v="${v%"${v##*[![:space:]]}"}"       # trailing whitespace
+    if [[ ${#v} -ge 2 && ( "$v" == \"*\" || "$v" == \'*\' ) ]]; then
+        v="${v:1:${#v}-2}"
+    fi
+    printf '%s' "$v"
 }
 reveal_note() {
     local backup_reveal live_reveal live_previous

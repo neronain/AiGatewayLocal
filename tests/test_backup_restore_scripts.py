@@ -143,13 +143,16 @@ def test_an_unreadable_key_file_stops_the_backup(tmp_path):
 
 # ── secret ที่ผนึกสำเนา API key ──────────────────────────────────────────────
 
-def restore_in_place(install: Path, archive: Path) -> subprocess.CompletedProcess:
-    """restore ทับ install เดิม · ตอบคำถามยืนยันของสคริปต์ทาง stdin เหมือนคนพิมพ์"""
+def restore_in_place(install: Path, archive: Path, **exported: str) -> subprocess.CompletedProcess:
+    """restore ทับ install เดิม · ตอบคำถามยืนยันของสคริปต์ทาง stdin เหมือนคนพิมพ์
+
+    `exported` = ตัวแปรที่ shell ของผู้ดูแล export ไว้ (สคริปต์อ่านจากสภาพแวดล้อมก่อน .env)
+    """
     return subprocess.run(
         ["bash", str(install / "scripts" / "restore.sh"), str(archive), "--in-place"],
         cwd=install, input="restore\n", capture_output=True, text=True, timeout=60,
-        # สคริปต์อ่านค่าจากสภาพแวดล้อมก่อน .env — เครื่องที่รันเทสต้องไม่มีผลกับเทส
-        env={k: v for k, v in os.environ.items() if not k.startswith("GW_")},
+        # เครื่องที่รันเทสต้องไม่มีผลกับเทส — เหลือเฉพาะที่เทสตั้งเอง
+        env={**{k: v for k, v in os.environ.items() if not k.startswith("GW_")}, **exported},
     )
 
 
@@ -206,3 +209,50 @@ def test_restoring_when_the_backups_secret_is_the_live_previous_one_is_not_alarm
     said = done.stdout + done.stderr
     assert "WARNING" not in said
     assert "NOTE" in said and "reseal" in said
+
+
+SAME = "same-secret-not-real"
+REVEAL = "GW_KEY_REVEAL_SECRET"
+
+
+@pytest.mark.parametrize("in_backup, live_file, live_shell", [
+    # .env ของ backup ใส่เครื่องหมายคำพูด · shell ของผู้ดูแล export ค่าเดียวกันแบบไม่มี
+    (f'{REVEAL}="{SAME}"', None, SAME),
+    # สองไฟล์เขียนค่าเดียวกันคนละแบบ
+    (f"{REVEAL}={SAME}", f"{REVEAL}='{SAME}'", None),
+    # ไฟล์ที่ถูกแก้บน Windows — มี \r ท้ายบรรทัด
+    (f"{REVEAL}={SAME}\r", f"{REVEAL}={SAME}", None),
+    # ช่องว่างท้ายบรรทัดที่มองไม่เห็น
+    (f"{REVEAL}={SAME}  ", f"{REVEAL}={SAME}", None),
+], ids=["quoted-file-vs-exported", "quoted-vs-bare", "crlf", "trailing-space"])
+def test_the_same_secret_written_differently_is_still_the_same_secret(
+        tmp_path, in_backup, live_file, live_shell):
+    """ผู้ตรวจอิสระ 2026-10-09: สคริปต์เทียบ *ข้อความดิบ* ของบรรทัดใน .env กับค่าที่ shell export
+
+    systemd (EnvironmentFile) และ pydantic-settings ถอดเครื่องหมายคำพูดออกทั้งคู่ เกตเวย์จึงเห็น
+    ค่าเดียวกัน — แต่สคริปต์เห็นว่าต่าง แล้วเตือนให้ผู้ดูแลไปตั้ง PREVIOUS และผนึกใหม่โดยไม่มีเหตุ
+    คำเตือนที่ผิดสอนให้คนเลิกอ่านคำเตือน
+    """
+    pepper = "GW_API_KEY_PEPPER=pepper-of-this-install\n"
+    install = make_install(tmp_path / "live")
+    (install / ".env").write_text(pepper + in_backup + "\n", encoding="utf-8")
+    archive = backup(install)
+    (install / ".env").write_text(pepper + (live_file + "\n" if live_file else ""),
+                                  encoding="utf-8")
+
+    exported = {"GW_KEY_REVEAL_SECRET": live_shell} if live_shell else {}
+    done = restore_in_place(install, archive, **exported)
+    assert done.returncode == 0, done.stderr
+    assert "GW_KEY_REVEAL_SECRET" not in done.stdout + done.stderr
+
+
+def test_a_quoted_secret_that_really_differs_still_warns(tmp_path):
+    """การถอดเครื่องหมายคำพูดต้องไม่ทำให้ค่าที่ต่างกันจริงเงียบไปด้วย"""
+    install = make_install(tmp_path / "live")
+    set_env(install, GW_KEY_REVEAL_SECRET='"old-reveal-secret-not-real"')
+    archive = backup(install)
+    set_env(install, GW_KEY_REVEAL_SECRET="'new-reveal-secret-not-real'")
+
+    done = restore_in_place(install, archive)
+    assert done.returncode == 0, done.stderr
+    assert "WARNING" in done.stdout + done.stderr
