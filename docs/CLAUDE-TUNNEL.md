@@ -61,7 +61,7 @@ actually call, so nothing is offered that would be refused on use.
 That holds whoever owns the key. A key with a model list written on it does not
 carry its owner's manager or admin rights — issue it under your own
 administrator account and it still reaches those aliases and nothing under
-`/admin`. (Before 2026-10 such a key kept its owner's role, and one issued by an
+`/admin`. (Before 1.13.0 such a key kept its owner's role, and one issued by an
 administrator could lift its own list.)
 
 Keep this key revealable (`GW_KEY_REVEAL_SECRET` set) and it can be read back

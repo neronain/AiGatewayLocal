@@ -394,8 +394,8 @@ Format `edu_sk_<43 url-safe base64 chars>` (256 bits of entropy).
 | `manager` | `member` + `manager` | The above, plus manage own workspace, issue member keys, read usage |
 | `admin` | everything, including `upstream_model` | Everything, plus registry reload and quota policy |
 
-> **Updated 2026-10-09 — the "Can" column is about the person, not every key
-> they hold.** An API key that carries a limit of its own (a model list, an
+> **Updated 2026-10-09 (1.13.0) — the "Can" column is about the person, not
+> every key they hold.** An API key that carries a limit of its own (a model list, an
 > access group, a workspace, or a quota of its own) no longer carries its
 > owner's `manager` or `admin` rights: it calls its models and is refused on
 > the admin plane, and it sees `/v1/models` without `upstream_model`. Console
@@ -403,7 +403,8 @@ Format `edu_sk_<43 url-safe base64 chars>` (256 bits of entropy).
 > privilege followed the owner's role alone, so a key limited to one model could
 > lift its own limit. For the same reason "issue member keys" has an edge: a
 > manager does not issue, change or revoke an administrator's key, nor another
-> manager's key that has no limit on it. Current behaviour:
+> manager's key that has no limit on it, and "manage own workspace" does not
+> include adding an administrator to it. Current behaviour:
 > [DEPLOYMENT.md §2.2](DEPLOYMENT.md#22-create-a-workspace-and-issue-member-keys).
 
 ### FR-19 — Workspace-scoped model permission · **P0**
@@ -888,7 +889,7 @@ Context is built per request and scoped by role:
 The last row matters: FR-27 keeps repository names away from members, and an
 assistant that would recite them on request defeats it.
 
-> **Updated 2026-10-09.** The `admin` column applies to an administrator's
+> **Updated 2026-10-09 (1.13.0).** The `admin` column applies to an administrator's
 > console session and to an administrator's key that carries no limit of its
 > own. An administrator's key that was limited (§7.2) gets the member column: it
 > is a script, not an operator.

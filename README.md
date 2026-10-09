@@ -352,10 +352,11 @@ sessions are not affected. The same reasoning runs the other way: since a key
 without a limit carries its owner's rights, only an administrator can issue,
 change or revoke an administrator's key, and a manager's unlimited key is that
 manager's or an administrator's to decide — not another manager's, even one who
-shares a workspace with them. The console marks such keys `no admin access`, the
+shares a workspace with them. Nor can a manager add an administrator to a
+workspace, which would bring that administrator's keys into the manager's view. The console marks such keys `no admin access`, the
 key can ask about itself at `GET /v1/me/key`, and
 `scripts/restricted_key_report.py` lists the keys this changes **before** you
-upgrade a gateway that predates the rule —
+upgrade a gateway that predates the rule (1.12.1 or earlier) to 1.13.0 —
 [DEPLOYMENT.md § Routine upgrade](docs/DEPLOYMENT.md#before-upgrading-keys-that-lose-admin-rights).
 
 **Reading a key back.** By default only a digest is stored, so a lost key can only
@@ -713,6 +714,11 @@ tell you. It also prints **the update commands that match how this machine was
 installed** — a checkout, a container, or files copied onto the host — decided
 from what is on disk, so that half works with no internet at all.
 
+"The latest release" means the newest release published on the repository, or —
+when none has been published — its highest version tag. A release therefore
+becomes visible to other installs when it is tagged (`v1.13.0`), not when its
+code is merged.
+
 Three rules the button lives under:
 
 - **It only runs when pressed.** Nothing is checked at startup, on page load or on
@@ -782,7 +788,7 @@ code removed was never checking anything.
 | **v1.7** — client tools: on-prem mirror (verify → stage → gated promote), console *เครื่องมือ* tab | ✅ done |
 | **Ops hardening** — tool-parser mismatch detection, SQLite lock under auth load, reinstall and add-model from the console | ✅ done |
 | **1.12** — Python 3.10–3.13 and containers (LXC / Docker), verified against real images | ✅ done |
-| **Latest** — retrieval surfaces (`/v1/embeddings`, `/v1/rerank`), batch ceiling, console version check; quality-aware `model: "auto"`, `response_format` repair, latency percentiles, key-reveal secret rotation, limited keys without admin rights | ✅ done |
+| **1.13** — retrieval surfaces (`/v1/embeddings`, `/v1/rerank`), batch ceiling, console version check; quality-aware `model: "auto"`, `response_format` repair, latency percentiles, key-reveal secret rotation, limited keys without admin rights | ✅ done |
 | M5 — image upload, PDF, richer dashboard | planned |
 
 Verified end-to-end against real backends on a live fleet, not only against the
