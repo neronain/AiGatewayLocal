@@ -440,6 +440,14 @@ class GatewaySetting(Base):
 # which is what a fresh install wants and what most stay on.
 ASSISTANT_MODEL_KEY = "assistant_model"
 
+# กลยุทธ์ที่ `model="auto"` ใช้จัดอันดับ (app/core/auto.py: STRATEGIES) · ไม่มีแถว = `fastest`
+# ซึ่งคือพฤติกรรมของทุกการติดตั้งก่อนมีคีย์นี้
+#
+# อยู่ที่นี่ ไม่ใช่ใน gateway.yaml: เป็นการตัดสินใจที่ทำจากหน้าจอและ worker ทุกตัวต้องเห็นตรงกันทันที ·
+# และถอยเวอร์ชันได้ปลอดภัย — โค้ดเก่าไม่อ่านแถวนี้ ต่างจากคีย์ใหม่ใน gateway.yaml ที่ `extra="forbid"`
+# ของ schema รุ่นเก่าจะปฏิเสธทั้งไฟล์ แล้วนโยบายภาพ/โควตา/สิทธิ์กลับไปเป็นค่าตั้งต้นเงียบ ๆ
+AUTO_STRATEGY_KEY = "auto_strategy"
+
 
 class AuditLog(Base):
     """Admin-plane mutations. Retained longer than usage."""

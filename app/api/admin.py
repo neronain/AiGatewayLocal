@@ -3898,6 +3898,8 @@ async def auto_preview(
     vision: bool = Query(False, description="คำขอมีภาพไหม"),
     tools: bool = Query(False, description="คำขอขอ tool ไหม"),
     protocol: str = Query("openai"),
+    strategy: str | None = Query(
+        None, description="ลองกลยุทธ์อื่นโดยไม่บันทึก · ไม่ส่ง = ใช้ตัวที่ตั้งไว้"),
     actor: Principal = Depends(require_manager),
     session: AsyncSession = Depends(get_session),
     state: AppState = Depends(get_state),
@@ -3906,10 +3908,22 @@ async def auto_preview(
 
     ใช้ตัวจัดอันดับตัวเดียวกับทางเดินคำขอจริง ไม่ได้เขียนสูตรซ้ำ — คำอธิบายกับของจริง
     จึงเพี้ยนจากกันไม่ได้ · ตัวเลขที่โชว์คือสิ่งที่ตัวจัดอันดับใช้ตัดสินจริง ๆ
+
+    `strategy=` ให้ผู้ดูแลดูก่อนว่ากลยุทธ์อื่นจะเลือกอะไร แล้วค่อยกดใช้ — ไม่แก้ค่าที่ตั้งไว้
     """
     from app.core import auto as auto_mod
     from app.core.auth import permitted_aliases
     from app.core.multimodal import ImageRef, RequestProfile
+    from app.core.perf import MIN_SAMPLES
+
+    configured = await auto_mod.configured_strategy(session)
+    if strategy is not None and strategy not in auto_mod.STRATEGIES:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            f"Unknown strategy '{strategy}'. Choose one of: {', '.join(auto_mod.STRATEGIES)}.",
+            param="strategy",
+        )
+    used = strategy or configured
 
     snapshot = state.registry.snapshot
     permission = await permitted_aliases(session, actor, snapshot.gateway)
@@ -3926,16 +3940,64 @@ async def auto_preview(
         requires_tools=tools,
         text_chars=prompt_tokens * 4,
     )
-    rows = auto_mod.explain(allowed, profile=profile, protocol=protocol, perf=state.perf)
-    choice = auto_mod.choose(allowed, profile=profile, protocol=protocol, perf=state.perf)
+    # จัดอันดับครั้งเดียว แล้วให้ explain อ่านจากผลนั้น — เดิมจัดสองรอบ (explain กับ choose)
+    # ซึ่งคำขอที่จบระหว่างสองรอบทำให้ตารางกับ "ตัวที่เลือก" มาจากสถิติคนละชุดได้
+    choice = auto_mod.choose(
+        allowed, profile=profile, protocol=protocol, perf=state.perf, strategy=used)
     return {
         "asked": {"prompt_tokens": prompt_tokens, "vision": vision,
                   "tools": tools, "protocol": protocol},
+        "strategy": used,
+        "configured_strategy": configured,
+        "strategies": list(auto_mod.STRATEGIES),
         "chosen": choice.model.alias if choice else None,
         "reason": choice.reason if choice else "ไม่มีโมเดลที่คุณใช้ได้ตัวไหนรับคำขอรูปนี้ได้",
-        "ranked": rows,
-        "min_samples": auto_mod.__dict__.get("MIN_SAMPLES") or 3,
+        "ranked": auto_mod.explain(choice),
+        "min_samples": MIN_SAMPLES,
     }
+
+
+class AutoStrategyIn(BaseModel):
+    strategy: str
+
+
+@router.put("/auto/strategy")
+async def set_auto_strategy(
+    payload: AutoStrategyIn,
+    request: Request,
+    actor: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """เลือกว่า `model="auto"` จัดอันดับด้วยอะไร — มีผลกับคำขอถัดไปของทุก worker
+
+    เป็นของแอดมินเท่านั้น (พรีวิวข้างบนผู้จัดการดูได้): คำสั่งเดียวย้ายงาน `auto` ของทั้งเกตเวย์ไป
+    อีกโมเดลได้ ซึ่งคือการตัดสินใจเรื่องภาระของเครื่อง ไม่ใช่เรื่องของกลุ่มใดกลุ่มหนึ่ง
+    """
+    from app.core import auto as auto_mod
+    from app.db.models import AUTO_STRATEGY_KEY
+
+    strategy = payload.strategy.strip()
+    if strategy not in auto_mod.STRATEGIES:
+        raise GatewayError(
+            ErrorCode.INVALID_REQUEST,
+            f"Unknown strategy '{strategy}'. Choose one of: {', '.join(auto_mod.STRATEGIES)}.",
+            param="strategy",
+        )
+    previous = await auto_mod.configured_strategy(session)
+    row = await session.get(GatewaySetting, AUTO_STRATEGY_KEY)
+    if row is None:
+        row = GatewaySetting(key=AUTO_STRATEGY_KEY)
+        session.add(row)
+    row.value = strategy
+    row.updated_at = utcnow()
+    row.updated_by = actor.user_id
+    await audit(
+        session, request, actor, "auto.strategy", "setting", AUTO_STRATEGY_KEY,
+        {"strategy": strategy, "previous": previous},
+    )
+    await session.commit()
+    return {"strategy": strategy, "previous": previous,
+            "strategies": list(auto_mod.STRATEGIES)}
 
 
 @router.get("/usage/savings")

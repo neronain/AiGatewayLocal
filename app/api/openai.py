@@ -231,6 +231,8 @@ async def run_chat(
             profile=draft,
             protocol="openai",
             perf=state.perf,
+            # ผู้ดูแลเลือกจากหน้าจอ · ไม่เคยเลือก = fastest เหมือนที่เป็นมา
+            strategy=await auto_mod.configured_strategy(session),
         )
         if auto_choice is None:
             raise _nothing_for_auto(allowed, draft)
