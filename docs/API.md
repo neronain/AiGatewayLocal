@@ -75,11 +75,14 @@ message:
 | `code` | `details.reason_code` | Meaning |
 |---|---|---|
 | `INSUFFICIENT_SCOPE` | `restricted_key` | The key's owner is a manager or an admin, but the key carries a limit of its own and so does not carry those rights. `details.limited_by` and `details.owner_role` say which — see [Keys that carry a limit](#keys-that-carry-a-limit) |
+| `INSUFFICIENT_SCOPE` | `key_carries_rights` | A manager tried to issue, change or revoke another manager's key that has no limit on it. Such a key carries its owner's manager rights, so only an administrator or its owner decides it — see [Who may decide a key](#who-may-decide-a-key) |
 | `MODEL_NOT_PERMITTED` | `key_bundle_off` | The key is limited to access groups and none of them grants anything now — switched off, deleted or empty. `details.allowed` is `[]`. The key calls nothing until a group is switched back on or the key is given a model list |
 | `MODEL_NOT_PERMITTED` | `workspace_left` | The key was issued for a workspace its owner is no longer a member of |
 
 `MODEL_NOT_PERMITTED` carries other `reason_code` values for the ordinary
-cases; the message names the models the key does allow.
+cases; the message names the models the key does allow. `key_bundle_off` and
+`workspace_left` are answered the same way when the request names
+`model: "auto"` instead of an alias.
 
 ### Request ids
 
@@ -307,7 +310,7 @@ Called with a console session instead of a key, the answer is
 | Field | Meaning |
 |---|---|
 | `limited_to_models`, `limited_to_groups` | The model list and the access groups written on this key. Empty = the key adds no narrowing of its own |
-| `limited_by` | Every kind of limit written on this key, in a fixed order: `models`, `access_groups`, `workspace` (the key was issued for one workspace), `cap` (a quota policy of its own that is enabled and not expired). `cap` is looked up only where it can change the answer — for an admin's or manager's key that has none of the other three — so a key that already lists `models` does not also list `cap` here; [`GET /admin/api-keys`](#get-adminapi-keys) lists it for every key |
+| `limited_by` | Every kind of limit written on this key, in a fixed order: `models`, `access_groups`, `workspace` (the key was issued for one workspace), `cap` (a quota policy of its own that is enabled and not expired). The list is complete — the same one [`GET /admin/api-keys`](#get-adminapi-keys) shows for this key |
 | `admin_access` | `true` when this key may call the routes its owner's role allows — the owner is a manager or an admin **and** `limited_by` is empty. A script that got `403` from `/admin` asks here and gets the reason |
 
 ---
@@ -471,6 +474,14 @@ fed into the speed statistics.
 
 `x-litegate-served-by` names what actually ran, and the response `model` field is
 a real alias, never the word `auto`.
+
+When nothing can be chosen, the answer says why. A key that can call nothing for
+a reason the gateway knows — its access groups are switched off, or its owner
+left the workspace it was issued for — gets the same `403 MODEL_NOT_PERMITTED`
+with `details.reason_code` that naming a model would give it. Otherwise
+`404 MODEL_NOT_FOUND`: either no model is available to the key at all, or none
+of the available ones can serve this request, and the message lists what was
+considered.
 
 Staff can see the current ranking and the numbers behind it at
 [`GET /admin/auto/preview`](#get-adminautopreview), or in the console under
@@ -820,7 +831,7 @@ for any key that has a limit of its own written on it:
 
 | `limited_by` | The limit | Lifted by |
 |---|---|---|
-| `models` | a model list on the key | `PATCH /admin/api-keys/{id}` with `"models": []` |
+| `models` | a model list on the key | `PATCH /admin/api-keys/{id}` with `"models": []` — by someone who [may decide that key](#who-may-decide-a-key) |
 | `access_groups` | one or more access groups on the key | cannot be removed from an issued key — issue a new one |
 | `workspace` | the key was issued for one workspace | cannot be removed from an issued key — issue a new one |
 | `cap` | a quota policy aimed at this key that is enabled and has not expired | `DELETE /admin/quota-policies/{id}`, or let it expire |
@@ -838,8 +849,10 @@ able to lift its own limits or issue other keys.
     "details": { "reason_code": "restricted_key", "limited_by": ["models"], "owner_role": "admin" } } }
 ```
 
-`403`. A member's key gets the plain *"Administrator privileges are required."*
-/ *"Manager privileges are required."* it always got, without `details`.
+`403`. The message and `limited_by` name every limit on the key, not only the
+first ("a model list and a quota of its own"). A member's key gets the plain
+*"Administrator privileges are required."* / *"Manager privileges are
+required."* it always got, without `details`.
 
 Not counted as a limit: `scopes` (stored, never enforced — and the bootstrap
 key of every install carries `["admin"]`), the expiry date, and `kind`. Console
@@ -849,6 +862,46 @@ sessions are never limited. A key can read all of this about itself at
 
 To do admin work from a script, use a key issued with no model list, no access
 group, no workspace and no quota of its own — and guard it accordingly.
+
+### Who may decide a key
+
+Because a key without a limit carries its owner's rights, lifting a limit hands
+those rights out, and putting one on — or revoking the key — takes them away.
+`POST /admin/api-keys`, `PATCH /admin/api-keys/{id}` and
+`DELETE /admin/api-keys/{id}` are open to managers, and all three apply one rule
+on top of the workspace scoping described under each:
+
+| The key belongs to | Who may issue, change (models **and** expiry) or revoke it |
+|---|---|
+| an administrator | an administrator only |
+| a manager, and the key has no limit on it — before the change or after it | an administrator, or that manager |
+| a manager, and the key is limited and stays limited | as before: an administrator, or a manager of a workspace the owner is in |
+| a member | as before |
+
+So a manager who is not the owner cannot: amend, extend or revoke an
+administrator's key; issue another manager a key with no limit (a limited one
+is still fine); lift the last limit from another manager's key; or limit,
+extend or revoke another manager's unlimited key. A quota of its own counts as a
+limit here too.
+
+```json
+{ "error": { "code": "INSUFFICIENT_SCOPE",
+    "message": "Only an admin can change an admin key." } }
+```
+
+```json
+{ "error": { "code": "INSUFFICIENT_SCOPE",
+    "message": "A key of t0001's with no limit on it carries their manager rights, which may reach workspaces you do not manage. Only an administrator or t0001 can change one. t0001 can change it from their own console.",
+    "details": { "reason_code": "key_carries_rights", "owner_role": "manager" } } }
+```
+
+The verb is `issue`, `change` or `revoke`; `t0001` stands for the owner's
+`external_id`.
+
+What this does not change: a manager can still add an administrator to a
+workspace they manage, and from then on sees that administrator in the user
+list, the names, prefixes and limits of their keys in the key list, and their
+usage. They cannot act on those keys.
 
 | Method | Path | Role | Purpose |
 |---|---|---|---|
@@ -865,14 +918,14 @@ group, no workspace and no quota of its own — and guard it accordingly.
 | POST | `/admin/access-groups` | admin | Name a bundle of aliases |
 | GET | `/admin/access-groups` | manager | List bundles and who holds them |
 | PATCH | `/admin/access-groups/{id}` | admin | Edit — reaches every workspace holding it |
-| DELETE | `/admin/access-groups/{id}` | admin | Refused (`400`) while a workspace holds it, a quota policy targets it, or an API key that is not revoked names it — `details` carries the three counts as `used_by`, `quota_policies`, `api_keys`. Disable it instead: that stops it granting anything and is reversible |
-| POST | `/admin/api-keys` | manager | Issue a key (**plaintext returned once**) — `models`, `access_groups`, `kind`; blanks filled from the workspace defaults |
+| DELETE | `/admin/access-groups/{id}` | admin | Refused (`400`) while a workspace holds it, a quota policy targets it, or an API key that is not revoked names it. `details` carries `used_by`, `quota_policies` and `api_keys` (counts), `api_keys_expired` (how many of those keys have expired) and `keys` (up to 50 of them as `{id, name, key_prefix}`); the message names up to five. An **expired** key still blocks the delete, deliberately — it can be extended, and would then point at a group that no longer exists; a revoked key does not. A group cannot be taken off an issued key, so for keys the way out is to revoke them and issue replacements — or disable the group instead of deleting it, which stops it granting anything and is reversible |
+| POST | `/admin/api-keys` | manager | Issue a key (**plaintext returned once**) — `models`, `access_groups`, `kind`; blanks filled from the workspace defaults. An administrator's key, and an unlimited key for another manager, are not a manager's to issue — [Who may decide a key](#who-may-decide-a-key) |
 | GET | [`/admin/api-keys?user_id=`](#get-adminapi-keys) | manager | List keys (prefix only), each with what limits it (`limited_by`), its owner's role, and the state of its sealed copy |
 | POST | `/admin/api-keys/{id}/reveal` | **admin** | Show an issued key again — only when a sealed copy exists and opens. See [`POST /admin/api-keys`](#post-adminapi-keys) |
 | GET | [`/admin/key-vault`](#get-adminkey-vault) | admin | Which secret the sealed key copies open under, which cannot be opened, and what in the configuration needs attention |
 | POST | [`/admin/key-vault/reseal`](#post-adminkey-vaultreseal) | admin | Move copies sealed under `GW_KEY_REVEAL_SECRET_PREVIOUS` to the current secret |
-| PATCH | `/admin/api-keys/{id}` | manager | Amend a live key — `{"days": n}` from today (`null` removes it) and/or `{"models": [...]}` replacing the scope. Either alone; neither disturbs the other |
-| DELETE | `/admin/api-keys/{id}` | manager | Revoke |
+| PATCH | `/admin/api-keys/{id}` | manager | Amend a live key — `{"days": n}` from today (`null` removes it) and/or `{"models": [...]}` replacing the scope. Either alone; neither disturbs the other. Subject to [Who may decide a key](#who-may-decide-a-key) |
+| DELETE | `/admin/api-keys/{id}` | manager | Revoke. Subject to [Who may decide a key](#who-may-decide-a-key) |
 | GET | `/admin/users/{id}/quota` | manager | Every limit that can bind this person's requests, each with its own usage |
 | POST | `/admin/users/{id}/quota/reset` | **admin** | Zero every counter that binds this person; reports which were cleared and which were not — usage records untouched |
 | POST | `/admin/quota-policies` | admin | Create a policy — `name`, window limits, per-minute limits, `expires_in_days`, and either `model_alias` or `access_group_id`. Validated by the same rules as PATCH: every limit is a whole number ≥ 0 where **0 means unlimited** and `null` is refused (leave the field out instead); `window` is `hour`/`day`/`month`/`term`; `expires_in_days` is ≥ 1 or `null` for no expiry. `scope` must agree with the target sent (`user` needs `user_id`, `workspace` needs `workspace_id`, `key` needs `api_key_id` and nothing else) and is inferred from the target when omitted; a target that does not exist is a 400 (404 `MODEL_NOT_FOUND` for an unknown alias). A second live policy for the same scope, target and window is refused with **409 `CONFLICT`** naming the existing one (PATCH refuses the same collision when it changes `window` or revives an expired policy); the same target with a *different* window is created but answers `effective: false` with `shadowed_by`, because only the older one is used — except ceilings on an API key, which are all enforced |
@@ -1381,7 +1434,7 @@ they have different remedies:
 |---|---|---|
 | `none` | No copy was kept: the key was issued before reveal was switched on, or reveal is off | — |
 | `off` | A sealed copy is stored, but `GW_KEY_REVEAL_SECRET` is unset. Set it back to the secret that sealed the copy | — |
-| `lost` | A sealed copy is stored and neither configured secret opens it | `reason`, and `sealed_key_id` when the copy records one |
+| `lost` | A sealed copy is stored and cannot be shown: no configured secret opens it, or it opens and is not a copy of this key | `reason`, and `sealed_key_id` when the copy records one |
 
 `reason` for a `lost` copy:
 
@@ -1391,11 +1444,16 @@ they have different remedies:
 | `damaged` | Sealed under a secret that *is* configured, and the contents no longer open | Nothing — issue a new key |
 | `unreadable` | A copy written by 1.12.1 or earlier, which did not record its secret: a wrong secret and a corrupt copy cannot be told apart | Try the old secret as `GW_KEY_REVEAL_SECRET_PREVIOUS` |
 | `unknown_format` | Written in a format this version does not read — most likely by a newer LiteGate | Upgrade |
+| `not_this_key` | The copy opens, but what is inside is not this key: it does not match the key's stored hash, so it is not shown. The row was changed outside the gateway (a restore or merge that mixed rows, or tampering), or `GW_API_KEY_PEPPER` changed after the key was issued | No reveal secret fixes it. Issue a new key, and find out how the row changed |
 
 In every one of these the key itself still authenticates; only showing it again
-is affected. A refused reveal is not written to the reveal log. A revoked key is
-never revealed (`400`, no `seal_state`). The rotation procedure is in
+is affected. A refused reveal is not written to the reveal log — including a
+`not_this_key` one, where the copy did open. A revoked key is never revealed
+(`400`, no `seal_state`). The rotation procedure is in
 [RUNBOOK.md](RUNBOOK.md#change-gw_key_reveal_secret).
+
+Keys issued before v1.4 carry the `edu_sk_` prefix and keep working: a key is
+verified by HMAC over the whole string, so the prefix is only a label.
 
 ### `GET /admin/api-keys`
 
@@ -1409,7 +1467,7 @@ own workspaces.
     "models": ["coding"], "access_groups": [], "limited_by": ["models"],
     "kind": "service", "revoked": false,
     "expires_at": "2027-03-30T…", "last_used_at": "2026-10-09T…",
-    "revealable": true, "seal_state": "current"
+    "revealable": true, "seal_state": "current", "seal_reason": ""
 }] }
 ```
 
@@ -1417,8 +1475,9 @@ own workspaces.
 |---|---|
 | `limited_by` | Every limit on the key: `models`, `access_groups`, `workspace`, `cap`. Non-empty on a key whose `owner_role` is `manager` or `admin` means the key has no admin rights — the console shows `no admin access` |
 | `owner_role` | The role of the person the key belongs to |
-| `seal_state` | `none` — no sealed copy · `current` — opens under `GW_KEY_REVEAL_SECRET` · `previous` — opens only under `GW_KEY_REVEAL_SECRET_PREVIOUS`, waiting for a re-seal · `lost` — opens under neither · `off` — a copy is stored but reveal is switched off |
-| `revealable` | `true` only for `current` and `previous`: the copy was actually opened to decide this, not merely found |
+| `seal_state` | `none` — no sealed copy · `current` — opens under `GW_KEY_REVEAL_SECRET` · `previous` — opens only under `GW_KEY_REVEAL_SECRET_PREVIOUS`, waiting for a re-seal · `lost` — cannot be shown; `seal_reason` says why · `off` — a copy is stored but reveal is switched off |
+| `seal_reason` | Why a `lost` copy cannot be shown — the same values as `details.reason` of a refused reveal (`unknown_secret`, `unreadable`, `damaged`, `unknown_format`, `not_this_key`). Empty for every other state |
+| `revealable` | `true` only for `current` and `previous`: the copy was actually opened, and checked against the key's hash, to decide this — not merely found |
 
 ### `GET /admin/key-vault`
 
@@ -1441,7 +1500,9 @@ is in the answer — only key ids, which are short one-way labels of a secret.
 
 `enabled` is whether `GW_KEY_REVEAL_SECRET` is set. `previous_key_id` is `null`
 unless a previous secret is set, differs from the current one, and reveal is
-enabled. `counts` covers every stored copy, revoked keys included. `last_reseal`
+enabled. `counts` covers every stored copy, revoked keys included; `lost`
+counts every copy that cannot be shown, whatever the reason, and each entry of
+the `lost` list carries its `reason`. `last_reseal`
 is `null` until a re-seal has been recorded; `via` is `console` or `cli`, and
 `by` is `null` for the command line (the audit row carries the operating-system
 user instead).
@@ -1451,10 +1512,11 @@ user instead).
 | Code | Level | Situation |
 |---|---|---|
 | `rotation_pending` | warning | Copies still open only under the previous secret. Re-seal before removing it |
-| `lost` | error | Copies open under neither secret |
-| `previous_unused` | info | The previous secret is set and nothing needs it any more — remove it |
+| `lost` | error | Copies that cannot be revealed because they do not open: sealed under a secret that is not configured, damaged, or in a newer format. The message gives the count of each and what helps for each |
+| `sealed_copy_mismatch` | error | Copies that open but are not copies of the key they are stored on (`not_this_key`). Reported apart from `lost` because no secret is missing — a row was changed outside the gateway, or the pepper changed |
+| `previous_unused` | info | The previous secret is set and nothing needs it any more — remove it. Also the answer when the only unreadable copies are damaged or mismatched ones, which no secret would open |
 | `previous_equals_current` | warning | Both variables hold the same value, so the previous one does nothing |
-| `previous_does_not_match` | warning | A previous secret is set but opens none of the lost copies — it is not the one that sealed them |
+| `previous_does_not_match` | warning | A previous secret is set but opens none of the copies that are lost for want of a secret — it is not the one that sealed them |
 | `sealed_but_disabled` | warning | Copies are stored but `GW_KEY_REVEAL_SECRET` is unset |
 | `previous_without_current` | warning | Only the previous secret is set. It never switches reveal on by itself |
 
@@ -1471,16 +1533,21 @@ Admin. No body. Re-seals every copy that opens only under
   "vault": { "enabled": true, "counts": { "current": 3, "previous": 0, "lost": 1, "off": 0 }, "…": "…" } }
 ```
 
-`vault` is the body of `GET /admin/key-vault` after the run. `changed_meanwhile`
-counts rows somebody else re-sealed between this run reading and writing them;
-they are left alone.
+`vault` is the body of `GET /admin/key-vault` after the run. `lost` counts the
+copies this run could not move — the ones no configured secret opens, and the
+ones that open but belong to a different key. `changed_meanwhile` counts rows
+somebody else re-sealed between this run reading and writing them; they are left
+alone.
 
 It is safe to press twice, to interrupt, and to run from two places at once: each
 row is committed on its own, and written only if it still holds the value that
 was read. Copies already under the current secret are not rewritten, and copies
-neither secret opens are not touched. Copies of revoked keys are re-sealed too,
-so the pending count can reach zero. Each run — including one that failed part
-way — is written to the audit log as `keyvault.reseal`.
+neither secret opens are not touched. Nor is a copy that opens but is not a copy
+of its own key: re-sealing it would dress a wrong copy up as a correctly sealed
+one and erase the sign that the row was changed. Copies of revoked keys are
+re-sealed too, so the pending count can reach zero. Each run — including one
+that failed part way, from the console or from the command line — is written to
+the audit log as `keyvault.reseal`.
 
 `400 INVALID_REQUEST` when `GW_KEY_REVEAL_SECRET` is unset: there is no current
 secret to re-seal under.
@@ -1488,9 +1555,6 @@ secret to re-seal under.
 Nothing re-seals on its own at startup, by design: it changes which secret can
 open the copies, so it is something an administrator does, with a name and a
 time in the audit log, not something a restart does.
-
-Keys issued before v1.4 carry the `edu_sk_` prefix and keep working: a key is
-verified by HMAC over the whole string, so the prefix is only a label.
 
 ### `PATCH /admin/api-keys/{id}`
 
@@ -1522,6 +1586,12 @@ a limited key cannot lift the list written on itself, nor push its own expiry
 out ([Keys that carry a limit](#keys-that-carry-a-limit)). Only `days` and
 `models` can be changed here — the access groups and the workspace a key was
 issued with are fixed.
+
+Both fields are also subject to [Who may decide a key](#who-may-decide-a-key):
+an administrator's key is changed by an administrator only, and a manager's key
+that carries their rights — or would after the change — by an administrator or
+that manager. Extending the expiry is held to the same rule as lifting the list,
+because bringing an expired key back hands the same rights out again.
 
 ### `GET /admin/users/{id}/quota`
 
