@@ -620,20 +620,25 @@ class _RequestContext:
             # ไม่มี backend ไหนได้เห็น = ไม่หักโควตา และคืนที่ที่จองไว้ในลิมิตต่อนาทีตอนรับเข้า
             await self.state.quota.release(self.quota_charge)
             return
-        # ตัวเลขชุดเดียวกับที่บันทึกลง UsageLog — ใช้ต่อทันทีสำหรับจัดอันดับ auto
-        # บันทึกด้วย alias ที่ *รันจริง* ไม่ใช่ที่สมาชิกขอ ไม่งั้นความเร็วของ coding-long
-        # จะไปโผล่ในสถิติของ coding
-        self.state.perf.record(
-            self.model.alias,
-            latency_ms=self.elapsed_ms,
-            ttft_ms=ttft_ms,
-            output_tokens=usage.output_tokens,
-        )
-        # export ด้วย ไม่ใช่เก็บไว้ดูย้อนหลังใน UsageLog อย่างเดียว (ดู main.TTFT)
-        if ttft_ms is not None:
-            from app.main import TTFT
+        # แคชตอบเอง ไม่มี backend ทำงาน — ~1 ms นี้ไม่ใช่ความเร็วของโมเดล · ป้อนเข้าไปแล้ว EWMA
+        # ของตัวที่ถูกถามซ้ำจะพุ่ง (วัดจริง 2026-10-09: 1 คำขอจริง + 5 hit → 1,000 เป็น 4,050 tok/s)
+        # และ `model="auto"` จะจัดอันดับด้วยความเร็วของแคช · ข้ามเฉพาะสถิติความเร็ว —
+        # โควตาข้างล่างยังต้องหักทุกครั้งที่ hit (ดู core/responsecache.py)
+        if not cache_hit:
+            # ตัวเลขชุดเดียวกับที่บันทึกลง UsageLog — ใช้ต่อทันทีสำหรับจัดอันดับ auto
+            # บันทึกด้วย alias ที่ *รันจริง* ไม่ใช่ที่สมาชิกขอ ไม่งั้นความเร็วของ coding-long
+            # จะไปโผล่ในสถิติของ coding
+            self.state.perf.record(
+                self.model.alias,
+                latency_ms=self.elapsed_ms,
+                ttft_ms=ttft_ms,
+                output_tokens=usage.output_tokens,
+            )
+            # export ด้วย ไม่ใช่เก็บไว้ดูย้อนหลังใน UsageLog อย่างเดียว (ดู main.TTFT)
+            if ttft_ms is not None:
+                from app.main import TTFT
 
-            TTFT.labels(self.model.alias).observe(ttft_ms / 1000.0)
+                TTFT.labels(self.model.alias).observe(ttft_ms / 1000.0)
         await self.state.quota.record(
             self.principal.user_id,
             self.limits_window,

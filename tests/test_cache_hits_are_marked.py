@@ -95,3 +95,35 @@ def test_an_upgraded_database_gets_the_column_and_old_rows_are_not_lost(temp_db)
     assert "cache_hit" in fresh
     assert upgraded == fresh, "ฐานที่อัปเกรดต้องได้ลำดับคอลัมน์เดียวกับฐานติดตั้งใหม่ (ดู UsageLog)"
     assert kept == [1234]
+
+
+@respx.mock
+def test_a_cached_answer_is_not_counted_as_backend_speed(client, member_key):
+    """แคชตอบใน ~1 ms — ถ้าถูกป้อนเข้าสถิติความเร็ว โมเดลนั้นจะดู "เร็วขึ้น" ทั้งที่เครื่องไม่ได้ทำงาน
+
+    สถิตินี้ (`core/perf.py`) คือสิ่งที่ `model="auto"` ใช้จัดอันดับภายใต้ `fastest` และ `balanced` — เปิดแคช
+    แล้วมีคำถามซ้ำไม่กี่ครั้ง ตัวที่ถูกถามซ้ำจะชนะด้วยความเร็วของแคช ไม่ใช่ของ backend (เจอตอนรวมงานสองสาย
+    2026-10-09: สาย latency ติดป้าย cache hit ให้แถว usage · สาย auto เพิ่มกลยุทธ์ที่อ่านสถิตินี้หนักขึ้น)
+    """
+    from app.core.responsecache import ResponseCache
+
+    services = client.app.state.services
+    services.response_cache = ResponseCache()
+    services.perf.clear()
+    respx.post(UPSTREAM_CHAT).mock(return_value=httpx.Response(200, json=OPENAI_REPLY))
+
+    first = client.post("/v1/chat/completions", headers=auth(member_key), json=ASK)
+    assert first.headers["x-litegate-cache"] == "miss"
+    after_backend = services.perf.get("coding")
+    assert after_backend is not None and after_backend.samples == 1
+    measured = (after_backend.samples, after_backend.ttft_ms, after_backend.output_tps)
+
+    for _ in range(5):
+        hit = client.post("/v1/chat/completions", headers=auth(member_key), json=ASK)
+        assert hit.headers["x-litegate-cache"] == "hit"
+
+    now = services.perf.get("coding")
+    assert (now.samples, now.ttft_ms, now.output_tps) == measured, (
+        "cache hit ต้องไม่ขยับสถิติความเร็วของ backend")
+    # ข้ามได้เฉพาะสถิติความเร็ว — โควตายังต้องถูกหักทุก hit:
+    # tests/test_response_cache.py::test_a_cache_hit_still_charges_the_tenant
