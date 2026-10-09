@@ -791,18 +791,33 @@ async def delete_access_group(
             QuotaPolicy.access_group_id == group_id
         )
     )).scalar() or 0)
-    if holders or capped:
+    # key ที่ถูกจำกัดด้วยมัดนี้ก็ถือมันไว้ และเดิมไม่ได้นับเหมือนกัน · ลบมัดไปแล้วใบที่ชี้มา
+    # เคยกลายเป็นใบที่ไม่มีอะไรจำกัด (ดู core/auth.permitted_aliases) และตอนนี้จะกลายเป็น
+    # ใบที่เรียกอะไรไม่ได้ โดยไม่มีทางกู้ — ทั้งสองแบบไม่ใช่สิ่งที่คนกดลบตั้งใจ
+    #
+    # `access_groups` เป็นคอลัมน์ JSON: ถามว่า "มี id นี้อยู่ในรายการไหม" ด้วย SQL เขียน
+    # ไม่เหมือนกันระหว่าง SQLite กับ PostgreSQL จึงอ่านใบที่ยังไม่ถูกเพิกถอนมาดูเอง ·
+    # การลบมัดเกิดไม่บ่อยพอที่จะคุ้มกับ SQL สองแบบ
+    naming = sum(
+        1 for (groups,) in await session.execute(
+            select(ApiKey.access_groups).where(ApiKey.revoked_at.is_(None))
+        )
+        if group_id in (groups or [])
+    )
+    if holders or capped or naming:
         parts = []
         if holders:
             parts.append(f"{holders} workspace(s)")
         if capped:
             parts.append(f"{capped} quota policy(ies)")
+        if naming:
+            parts.append(f"{naming} API key(s)")
         raise GatewayError(
             ErrorCode.INVALID_REQUEST,
             f"'{group.name}' is still held by {' and '.join(parts)}. Take it away "
             "from them first, or disable it — which stops it granting anything "
             "without losing the list.",
-            details={"used_by": holders, "quota_policies": capped},
+            details={"used_by": holders, "quota_policies": capped, "api_keys": naming},
         )
 
     await session.delete(group)

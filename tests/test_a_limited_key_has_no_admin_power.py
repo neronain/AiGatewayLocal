@@ -259,8 +259,12 @@ def test_it_calls_its_own_model_and_nothing_else(client):
         ("/v1/messages", {"max_tokens": 8, "messages": [{"role": "user", "content": "hi"}]}),
         ("/v1/responses", {"input": "hi"}),
     ):
-        response = call(client, limited, "POST", surface,
-                        json={"model": "gemma-vision", **body})
+        # ถ้าด่านปล่อยผ่าน คำขอต้องไม่วิ่งออกไปหาเครื่องที่ config/ ตั้งชื่อไว้
+        with respx.mock(assert_all_called=False) as mock:
+            mock.post(url__regex=r"http://dgx0\d:8000/.*").mock(
+                return_value=httpx.Response(500))
+            response = call(client, limited, "POST", surface,
+                            json={"model": "gemma-vision", **body})
         assert response.status_code == 403, f"{surface} → {response.status_code}"
 
 

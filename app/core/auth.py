@@ -468,8 +468,19 @@ async def permitted_aliases(
     on_key = set(principal.key_models)
     if principal.key_access_groups:
         on_key |= await _group_models(session, principal.key_access_groups)
-    if on_key:
+    # "Did the issuer write a limit on this key", not "did it expand to
+    # anything". A key limited to one bundle expanded to nothing the moment that
+    # bundle was switched off, the empty set read as "no limit was written", and
+    # the key got the whole catalogue: switching a bundle off - the thing the
+    # console offers as the way to stop it granting anything - widened every key
+    # limited by it (2026-10-09). An empty result of a limit that was written is
+    # an empty allow-list, the same distinction `_models_via_membership` draws
+    # between "in no workspace" and "in workspaces that allow nothing".
+    if principal.key_models or principal.key_access_groups:
         scope = on_key if scope is None else scope & on_key
+        if not on_key:
+            # Only bundles were named, and none of them grants anything now.
+            return Permission(aliases=set(), reason=BUNDLE_OFF, reason_code="key_bundle_off")
         reason = (
             f"{reason}, and the list on this key" if reason else "the model list on this key"
         )
@@ -480,6 +491,9 @@ async def permitted_aliases(
 
 LEFT_WORKSPACE = (
     "the workspace this key was issued for, which its owner is no longer a member of"
+)
+BUNDLE_OFF = (
+    "the access group this key is limited to, which is switched off or no longer exists"
 )
 
 
@@ -670,6 +684,19 @@ async def assert_model_permitted(
             f"'{alias}' is not available to you: this key was issued for a workspace "
             "its owner is no longer a member of. Ask that workspace's manager to add "
             "you back, or use a key that is not tied to it.",
+            details={"model": alias, "allowed": [], "reason": permission.reason,
+                     "reason_code": permission.reason_code},
+        )
+
+    if permission.reason_code == "key_bundle_off":
+        # Not "ask for the model" either: nothing is wrong with the key or the
+        # person, the bundle it points at was turned off.
+        raise GatewayError(
+            ErrorCode.MODEL_NOT_PERMITTED,
+            f"'{alias}' is not available to you: this key is limited to an access "
+            "group that is switched off or no longer exists, so it can call nothing "
+            "right now. Ask an administrator to switch the group back on, or to "
+            "give this key a model list.",
             details={"model": alias, "allowed": [], "reason": permission.reason,
                      "reason_code": permission.reason_code},
         )
